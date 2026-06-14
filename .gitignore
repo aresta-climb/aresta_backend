@@ -1,3 +1,26 @@
+# ========================
+# Supabase
+# ========================
+# Ignora arquivos temporários e de estado do CLI do Supabase local
+supabase/.temp/
+supabase/.branches/
+
+# ========================
+# Variáveis de Ambiente (CRÍTICO)
+# ========================
+# NUNCA comite arquivos .env, pois eles vão conter a senha do seu banco 
+# de dados e as chaves "service_role" do Supabase que dão acesso total.
+.env
+.env.local
+.env.*
+
+# ========================
+# Dependências (Opcional, mas recomendado)
+# ========================
+# Se você tiver pastas de dependências (como node_modules para o app ou 
+# Deno vendor folders para as Edge Functions)
+node_modules/
+
 # Deno
 # https://deno.com/
 
