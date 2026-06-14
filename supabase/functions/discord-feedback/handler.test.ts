@@ -9,6 +9,24 @@ Deno.test("handleRequest - returns CORS headers for OPTIONS request", async () =
   assertEquals(res.headers.get("Access-Control-Allow-Origin"), "*");
 });
 
+Deno.test("handleRequest - returns 401 if API key is invalid", async () => {
+  Deno.env.set("APP_API_KEY", "secret-key");
+  Deno.env.set("DISCORD_WEBHOOK_URL", "http://test-webhook");
+
+  const req = new Request("http://localhost", { 
+    method: "POST",
+    headers: { "x-api-key": "wrong-key" }
+  });
+  const res = await handleRequest(req);
+  
+  assertEquals(res.status, 401);
+  const body = await res.json();
+  assertEquals(body.error, "Unauthorized");
+
+  Deno.env.delete("APP_API_KEY");
+  Deno.env.delete("DISCORD_WEBHOOK_URL");
+});
+
 Deno.test("handleRequest - returns 500 if DISCORD_WEBHOOK_URL is missing", async () => {
   // Ensure the env var is not set
   const originalEnv = Deno.env.get("DISCORD_WEBHOOK_URL");
@@ -18,9 +36,12 @@ Deno.test("handleRequest - returns 500 if DISCORD_WEBHOOK_URL is missing", async
   const originalConsoleError = console.error;
   console.error = () => {};
 
+  const formData = new FormData();
+  formData.append("description", "Test");
+
   const req = new Request("http://localhost", { 
     method: "POST",
-    body: JSON.stringify({ message: "Test" })
+    body: formData
   });
   const res = await handleRequest(req);
   
@@ -33,37 +54,27 @@ Deno.test("handleRequest - returns 500 if DISCORD_WEBHOOK_URL is missing", async
   if (originalEnv) Deno.env.set("DISCORD_WEBHOOK_URL", originalEnv);
 });
 
-Deno.test("handleRequest - returns 400 if message is missing", async () => {
-  Deno.env.set("DISCORD_WEBHOOK_URL", "http://test-webhook");
-
-  const req = new Request("http://localhost", { 
-    method: "POST",
-    body: JSON.stringify({ userName: "John" })
-  });
-  const res = await handleRequest(req);
-  
-  assertEquals(res.status, 400);
-  const body = await res.json();
-  assertEquals(body.error, "Feedback message is required");
-});
-
-Deno.test("handleRequest - successfully sends to Discord", async () => {
+Deno.test("handleRequest - successfully sends to Discord via multipart/form-data", async () => {
   Deno.env.set("DISCORD_WEBHOOK_URL", "http://test-webhook");
 
   // Mock global fetch
   const originalFetch = globalThis.fetch;
   let fetchCalledWithUrl = "";
-  let fetchCalledWithPayload: any = null;
+  let fetchCalledWithFormData: FormData | null = null;
 
   globalThis.fetch = async (url: string | URL | Request, options?: RequestInit) => {
     fetchCalledWithUrl = url.toString();
-    fetchCalledWithPayload = JSON.parse(options?.body as string);
+    fetchCalledWithFormData = options?.body as FormData;
     return new Response("ok", { status: 200 });
   };
 
+  const formData = new FormData();
+  formData.append("description", "This is a test feedback");
+  formData.append("metadata", JSON.stringify({ os: "android" }));
+
   const req = new Request("http://localhost", { 
     method: "POST",
-    body: JSON.stringify({ message: "This is a test feedback", userName: "Alice" })
+    body: formData
   });
 
   const res = await handleRequest(req);
@@ -73,8 +84,15 @@ Deno.test("handleRequest - successfully sends to Discord", async () => {
   assertEquals(body.success, true);
   
   assertEquals(fetchCalledWithUrl, "http://test-webhook");
-  assertEquals(fetchCalledWithPayload.embeds[0].fields[0].value, "Alice");
-  assertEquals(fetchCalledWithPayload.embeds[0].fields[3].value, "This is a test feedback");
+
+  const actualFormData = fetchCalledWithFormData as any as FormData;
+  const payloadJsonStr = actualFormData?.get("payload_json") as string;
+  const payloadJson = JSON.parse(payloadJsonStr);
+
+  assertEquals(payloadJson.embeds[0].fields[0].name, "Descrição");
+  assertEquals(payloadJson.embeds[0].fields[0].value, "This is a test feedback");
+  assertEquals(payloadJson.embeds[0].fields[1].name, "Metadados de Debug");
+  assertEquals(payloadJson.embeds[0].fields[1].value.includes('"os": "android"'), true);
 
   // Restore fetch
   globalThis.fetch = originalFetch;

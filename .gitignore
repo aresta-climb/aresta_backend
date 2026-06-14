@@ -20,3 +20,15 @@ supabase/.branches/
 # Se você tiver pastas de dependências (como node_modules para o app ou 
 # Deno vendor folders para as Edge Functions)
 node_modules/
+
+# Deno
+# https://deno.com/
+
+# Cache directory (when using project-local DENO_DIR)
+# https://docs.deno.com/runtime/fundamentals/setup/#deno_dir
+.deno/
+
+# Coverage reports
+# https://docs.deno.com/runtime/reference/cli/coverage/
+coverage/
+*.lcov
