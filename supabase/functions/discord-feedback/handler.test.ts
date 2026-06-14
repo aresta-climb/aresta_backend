@@ -94,6 +94,11 @@ Deno.test("handleRequest - successfully sends to Discord via multipart/form-data
   assertEquals(payloadJson.embeds[0].fields[1].name, "Metadados de Debug");
   assertEquals(payloadJson.embeds[0].fields[1].value.includes('"os": "android"'), true);
 
+  // Testa se a thread_name foi criada corretamente (suporte a fóruns)
+  assertEquals(typeof payloadJson.thread_name === "string", true);
+  assertEquals((payloadJson.thread_name as string).includes("vDesconhecida"), true);
+  assertEquals((payloadJson.thread_name as string).includes("This is a test feedback"), true);
+
   // Restore fetch
   globalThis.fetch = originalFetch;
 });

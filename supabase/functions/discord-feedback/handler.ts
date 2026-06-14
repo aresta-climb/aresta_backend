@@ -32,7 +32,7 @@ export const handleRequest = async (req: Request): Promise<Response> => {
     const metadataStr = formData.get('metadata')?.toString() || "{}";
     const screenshot = formData.get('screenshot') as File | null;
 
-    let metadataObj = {};
+    let metadataObj: Record<string, any> = {};
     try {
       metadataObj = JSON.parse(metadataStr);
     } catch (_) {}
@@ -54,7 +54,29 @@ export const handleRequest = async (req: Request): Promise<Response> => {
       });
     }
 
+    let msgPreview = "<No Message>";
+    if (description && description.trim() !== "" && description !== "Sem descrição informada") {
+      msgPreview = description.substring(0, 40).replace(/\n/g, ' ');
+      if (description.length > 40) msgPreview += '...';
+    }
+
+    const appVersion = metadataObj?.appVersion || 'Desconhecida';
+
+    let timestampStr = "";
+    try {
+      timestampStr = new Intl.DateTimeFormat('pt-BR', {
+        timeZone: 'America/Sao_Paulo',
+        day: '2-digit', month: '2-digit', year: 'numeric',
+        hour: '2-digit', minute: '2-digit'
+      }).format(new Date());
+    } catch (e) {
+      timestampStr = new Date().toISOString();
+    }
+
+    const threadName = `${timestampStr} - v${appVersion} - ${msgPreview}`;
+
     const payloadJson = {
+      thread_name: threadName,
       content: "🚀 **Novo Bug/Feedback Reportado no App!**",
       embeds: [{
         color: 16711680, // Vermelho/Laranja para Bug Report
@@ -77,8 +99,9 @@ export const handleRequest = async (req: Request): Promise<Response> => {
     });
 
     if (!discordResponse.ok) {
-      console.error('Discord error:', await discordResponse.text());
-      throw new Error(`Failed to send to Discord (Status: ${discordResponse.status})`);
+      const errorText = await discordResponse.text();
+      console.error('Discord error:', errorText);
+      throw new Error(`Discord rejeitou a requisição (Status: ${discordResponse.status}). Detalhes: ${errorText}`);
     }
 
     // Retorna sucesso rapidamente para o App remover da fila
