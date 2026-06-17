@@ -75,7 +75,7 @@ Deno.test("handleRequest - successfully sends to Discord via multipart/form-data
 
   const formData = new FormData();
   formData.append("description", "This is a test feedback");
-  formData.append("metadata", JSON.stringify({ os: "android", feedback_id: "uuid-1" }));
+  formData.append("metadata", JSON.stringify({ os: "android", feedbackId: "uuid-1" }));
 
   Deno.env.set("SUPABASE_URL", "http://test-supabase");
   Deno.env.set("SUPABASE_SERVICE_ROLE_KEY", "test-key");
@@ -138,7 +138,7 @@ Deno.test("handleRequest - detects duplicate UUID and returns 200 without callin
   };
 
   const formData = new FormData();
-  formData.append("metadata", JSON.stringify({ feedback_id: "duplicated-uuid" }));
+  formData.append("metadata", JSON.stringify({ feedbackId: "duplicated-uuid" }));
 
   const req = new Request("http://localhost", { method: "POST", body: formData });
   const res = await handleRequest(req);
@@ -174,7 +174,7 @@ Deno.test("handleRequest - deletes old UUIDs automatically (TTL)", async () => {
   };
 
   const formData = new FormData();
-  formData.append("metadata", JSON.stringify({ feedback_id: "new-uuid" }));
+  formData.append("metadata", JSON.stringify({ feedbackId: "new-uuid" }));
 
   const req = new Request("http://localhost", { method: "POST", body: formData });
   await handleRequest(req);

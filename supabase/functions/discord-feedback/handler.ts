@@ -60,7 +60,7 @@ export const handleRequest = async (req: Request): Promise<Response> => {
       metadataObj = JSON.parse(metadataStr);
     } catch (_) {}
 
-    const feedbackId = metadataObj?.feedback_id;
+    const feedbackId = metadataObj?.feedbackId;
 
     const supabaseUrl = Deno.env.get('SUPABASE_URL') ?? '';
     const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
