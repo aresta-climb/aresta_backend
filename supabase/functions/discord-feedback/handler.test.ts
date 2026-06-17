@@ -63,14 +63,22 @@ Deno.test("handleRequest - successfully sends to Discord via multipart/form-data
   let fetchCalledWithFormData: FormData | null = null;
 
   globalThis.fetch = async (url: string | URL | Request, options?: RequestInit) => {
-    fetchCalledWithUrl = url.toString();
-    fetchCalledWithFormData = options?.body as FormData;
-    return new Response("ok", { status: 200 });
+    const urlStr = url.toString();
+    if (urlStr.includes("test-webhook")) {
+      fetchCalledWithUrl = urlStr;
+      fetchCalledWithFormData = options?.body as FormData;
+      return new Response("ok", { status: 200 });
+    }
+    // Mock Supabase REST API
+    return new Response(JSON.stringify([{}]), { status: 200, headers: { 'Content-Type': 'application/json' } });
   };
 
   const formData = new FormData();
   formData.append("description", "This is a test feedback");
-  formData.append("metadata", JSON.stringify({ os: "android" }));
+  formData.append("metadata", JSON.stringify({ os: "android", feedback_id: "uuid-1" }));
+
+  Deno.env.set("SUPABASE_URL", "http://test-supabase");
+  Deno.env.set("SUPABASE_SERVICE_ROLE_KEY", "test-key");
 
   const req = new Request("http://localhost", { 
     method: "POST",
@@ -101,4 +109,80 @@ Deno.test("handleRequest - successfully sends to Discord via multipart/form-data
 
   // Restore fetch
   globalThis.fetch = originalFetch;
+  Deno.env.delete("SUPABASE_URL");
+  Deno.env.delete("SUPABASE_SERVICE_ROLE_KEY");
+});
+
+Deno.test("handleRequest - detects duplicate UUID and returns 200 without calling Discord", async () => {
+  Deno.env.set("DISCORD_WEBHOOK_URL", "http://test-webhook");
+  Deno.env.set("SUPABASE_URL", "http://test-supabase");
+  Deno.env.set("SUPABASE_SERVICE_ROLE_KEY", "test-key");
+
+  const originalFetch = globalThis.fetch;
+  let discordCalled = false;
+
+  globalThis.fetch = async (url: string | URL | Request, options?: RequestInit) => {
+    const urlStr = url.toString();
+    if (urlStr.includes("test-webhook")) {
+      discordCalled = true;
+      return new Response("ok", { status: 200 });
+    }
+    if (urlStr.includes("processed_feedbacks") && options?.method === "POST") {
+      // Mock unique constraint violation (duplicate)
+      return new Response(JSON.stringify({ code: "23505", message: "duplicate key value" }), { 
+        status: 409, 
+        headers: { 'Content-Type': 'application/json' } 
+      });
+    }
+    return new Response(JSON.stringify([{}]), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  };
+
+  const formData = new FormData();
+  formData.append("metadata", JSON.stringify({ feedback_id: "duplicated-uuid" }));
+
+  const req = new Request("http://localhost", { method: "POST", body: formData });
+  const res = await handleRequest(req);
+  
+  assertEquals(res.status, 200);
+  const body = await res.json();
+  assertEquals(body.message, "Already processed");
+  assertEquals(discordCalled, false); // Discord SHOULD NOT be called
+
+  globalThis.fetch = originalFetch;
+  Deno.env.delete("SUPABASE_URL");
+  Deno.env.delete("SUPABASE_SERVICE_ROLE_KEY");
+});
+
+Deno.test("handleRequest - deletes old UUIDs automatically (TTL)", async () => {
+  Deno.env.set("DISCORD_WEBHOOK_URL", "http://test-webhook");
+  Deno.env.set("SUPABASE_URL", "http://test-supabase");
+  Deno.env.set("SUPABASE_SERVICE_ROLE_KEY", "test-key");
+
+  const originalFetch = globalThis.fetch;
+  let deleteUrlHit = "";
+
+  globalThis.fetch = async (url: string | URL | Request, options?: RequestInit) => {
+    const urlStr = url.toString();
+    if (urlStr.includes("test-webhook")) {
+      return new Response("ok", { status: 200 });
+    }
+    if (urlStr.includes("processed_feedbacks") && options?.method === "DELETE") {
+      deleteUrlHit = urlStr;
+      return new Response("[]", { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+    return new Response(JSON.stringify([{}]), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  };
+
+  const formData = new FormData();
+  formData.append("metadata", JSON.stringify({ feedback_id: "new-uuid" }));
+
+  const req = new Request("http://localhost", { method: "POST", body: formData });
+  await handleRequest(req);
+  
+  // Verify that a DELETE request with 'created_at=lt.' was fired
+  assertEquals(deleteUrlHit.includes("created_at=lt."), true);
+
+  globalThis.fetch = originalFetch;
+  Deno.env.delete("SUPABASE_URL");
+  Deno.env.delete("SUPABASE_SERVICE_ROLE_KEY");
 });
