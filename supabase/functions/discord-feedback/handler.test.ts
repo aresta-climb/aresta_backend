@@ -78,7 +78,7 @@ Deno.test("handleRequest - successfully sends to Discord via multipart/form-data
   formData.append("metadata", JSON.stringify({ os: "android", feedbackId: "uuid-1" }));
 
   Deno.env.set("SUPABASE_URL", "http://test-supabase");
-  Deno.env.set("SUPABASE_SERVICE_ROLE_KEY", "test-key");
+  Deno.env.set("SUPABASE_SECRET_KEYS", "test-key");
 
   const req = new Request("http://localhost", { 
     method: "POST",
@@ -110,13 +110,13 @@ Deno.test("handleRequest - successfully sends to Discord via multipart/form-data
   // Restore fetch
   globalThis.fetch = originalFetch;
   Deno.env.delete("SUPABASE_URL");
-  Deno.env.delete("SUPABASE_SERVICE_ROLE_KEY");
+  Deno.env.delete("SUPABASE_SECRET_KEYS");
 });
 
 Deno.test("handleRequest - detects duplicate UUID and returns 200 without calling Discord", async () => {
   Deno.env.set("DISCORD_WEBHOOK_URL", "http://test-webhook");
   Deno.env.set("SUPABASE_URL", "http://test-supabase");
-  Deno.env.set("SUPABASE_SERVICE_ROLE_KEY", "test-key");
+  Deno.env.set("SUPABASE_SECRET_KEYS", "test-key");
 
   const originalFetch = globalThis.fetch;
   let discordCalled = false;
@@ -150,13 +150,13 @@ Deno.test("handleRequest - detects duplicate UUID and returns 200 without callin
 
   globalThis.fetch = originalFetch;
   Deno.env.delete("SUPABASE_URL");
-  Deno.env.delete("SUPABASE_SERVICE_ROLE_KEY");
+  Deno.env.delete("SUPABASE_SECRET_KEYS");
 });
 
 Deno.test("handleRequest - deletes old UUIDs automatically (TTL)", async () => {
   Deno.env.set("DISCORD_WEBHOOK_URL", "http://test-webhook");
   Deno.env.set("SUPABASE_URL", "http://test-supabase");
-  Deno.env.set("SUPABASE_SERVICE_ROLE_KEY", "test-key");
+  Deno.env.set("SUPABASE_SECRET_KEYS", "test-key");
 
   const originalFetch = globalThis.fetch;
   let deleteUrlHit = "";
@@ -184,5 +184,5 @@ Deno.test("handleRequest - deletes old UUIDs automatically (TTL)", async () => {
 
   globalThis.fetch = originalFetch;
   Deno.env.delete("SUPABASE_URL");
-  Deno.env.delete("SUPABASE_SERVICE_ROLE_KEY");
+  Deno.env.delete("SUPABASE_SECRET_KEYS");
 });

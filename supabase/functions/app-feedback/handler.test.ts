@@ -203,7 +203,7 @@ Deno.test("app-feedback: retorna 503 se o Discord falhar e remove trava de idemp
   Deno.env.set("SKIP_APP_CHECK_VERIFICATION", "true");
   Deno.env.set("DISCORD_WEBHOOK_URL", "http://test-webhook");
   Deno.env.set("SUPABASE_URL", "http://test-supabase");
-  Deno.env.set("SUPABASE_SERVICE_ROLE_KEY", "test-key");
+  Deno.env.set("SUPABASE_SECRET_KEYS", "test-key");
 
   const originalFetch = globalThis.fetch;
   let rollbackExecuted = false;
@@ -234,5 +234,5 @@ Deno.test("app-feedback: retorna 503 se o Discord falhar e remove trava de idemp
   Deno.env.delete("SKIP_APP_CHECK_VERIFICATION");
   Deno.env.delete("DISCORD_WEBHOOK_URL");
   Deno.env.delete("SUPABASE_URL");
-  Deno.env.delete("SUPABASE_SERVICE_ROLE_KEY");
+  Deno.env.delete("SUPABASE_SECRET_KEYS");
 });

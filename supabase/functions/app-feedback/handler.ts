@@ -19,6 +19,7 @@
  */
 import { createClient } from "@supabase/supabase-js";
 import { createRemoteJWKSet, jwtVerify } from "jose";
+import { extrairChaveSecretaSupabase } from "../compartilhado/cliente_supabase_controle.ts";
 
 export const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -180,7 +181,7 @@ export const handleRequest = async (req: Request): Promise<Response> => {
 
     // 5. Verificação de Idempotência no Supabase (se configurado)
     const supabaseUrl = Deno.env.get('SUPABASE_URL') ?? '';
-    const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
+    const supabaseKey = extrairChaveSecretaSupabase();
     const supabase = (supabaseUrl && supabaseKey) ? createClient(supabaseUrl, supabaseKey) : null;
 
     if (feedbackId && supabase) {
