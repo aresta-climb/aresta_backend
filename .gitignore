@@ -30,5 +30,6 @@ node_modules/
 
 # Coverage reports
 # https://docs.deno.com/runtime/reference/cli/coverage/
+cov_profile/
 coverage/
 *.lcov
