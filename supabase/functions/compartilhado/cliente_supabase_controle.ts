@@ -49,12 +49,41 @@ export function obterClienteSupabaseAdmin(): SupabaseClient {
   return createClient(urlSupabase, chaveSecreta);
 }
 
+export function extrairJwtDeCabecalho(cabecalho: string): string {
+  if (!cabecalho) return "";
+  const limpo = cabecalho.trim();
+  if (limpo.toLowerCase().startsWith("basic ")) {
+    try {
+      const b64 = limpo.substring(6).trim();
+      const decodificado = atob(b64);
+      const partes = decodificado.split(":");
+      if (partes.length >= 2) {
+        if (
+          partes[0].toLowerCase() === "bearer" ||
+          partes[0].toLowerCase() === "x-access-token"
+        ) {
+          return partes.slice(1).join(":");
+        }
+        return partes[1] || partes[0];
+      }
+      return decodificado;
+    } catch {
+      return "";
+    }
+  }
+  return limpo.replace(/^Bearer\s+/i, "").trim();
+}
+
 export async function validarTokenJwt(
   token: string,
   clientePersonalizado?: SupabaseClient,
 ): Promise<DadosUsuarioAutenticado | null> {
   const cliente = clientePersonalizado ?? obterClienteSupabaseAdmin();
-  const tokenLimpo = token.replace(/^Bearer\s+/i, "").trim();
+  const tokenLimpo = extrairJwtDeCabecalho(token);
+
+  if (!tokenLimpo) {
+    return null;
+  }
 
   const { data, error } = await cliente.auth.getUser(tokenLimpo);
   if (error || !data?.user) {

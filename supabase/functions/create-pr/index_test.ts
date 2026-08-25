@@ -14,21 +14,22 @@ Deno.test("create-pr: responde a requisicoes OPTIONS com cabecalhos CORS", async
   assertEquals(resposta.headers.get("Access-Control-Allow-Origin"), "*");
 });
 
-Deno.test("create-pr: rejeita requisicoes sem cabecalho Authorization com 401", async () => {
+Deno.test("create-pr: rejeita requisicoes sem cabecalho Authorization com 401 e WWW-Authenticate", async () => {
   const requisicao = new Request("http://localhost/create-pr", {
     method: "POST",
-    body: JSON.stringify({ branch: "sugestao-1", title: "Titulo" }),
+    body: JSON.stringify({ branch: "edicao-1", title: "Titulo" }),
   });
 
   const resposta = await processarRequisicaoCreatePr(requisicao);
   assertEquals(resposta.status, 401);
+  assertEquals(resposta.headers.get("WWW-Authenticate"), 'Bearer realm="create-pr"');
 });
 
-Deno.test("create-pr: rejeita requisicoes com JWT invalido com 401", async () => {
+Deno.test("create-pr: rejeita requisicoes com JWT invalido com 401 e WWW-Authenticate", async () => {
   const requisicao = new Request("http://localhost/create-pr", {
     method: "POST",
     headers: { "Authorization": "Bearer token-invalido" },
-    body: JSON.stringify({ branch: "sugestao-1", title: "Titulo" }),
+    body: JSON.stringify({ branch: "edicao-1", title: "Titulo" }),
   });
 
   const contextoMock = {
@@ -37,6 +38,7 @@ Deno.test("create-pr: rejeita requisicoes com JWT invalido com 401", async () =>
 
   const resposta = await processarRequisicaoCreatePr(requisicao, contextoMock);
   assertEquals(resposta.status, 401);
+  assertEquals(resposta.headers.get("WWW-Authenticate"), 'Bearer realm="create-pr"');
 });
 
 Deno.test("create-pr: rejeita corpo JSON mal formatado ou faltando campos com 400", async () => {
@@ -199,4 +201,103 @@ Deno.test("create-pr: rejeita metodos HTTP diferentes de POST e OPTIONS com 405"
 
   const resposta = await processarRequisicaoCreatePr(requisicao, contextoMock);
   assertEquals(resposta.status, 405);
+});
+
+Deno.test("create-pr: cria PR com sucesso para branch com prefixo edicao-", async () => {
+  let prCriadoComSucesso: any = null;
+
+  const requisicao = new Request("http://localhost/create-pr", {
+    method: "POST",
+    headers: {
+      "Authorization": "Bearer token-valido",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      branch: "edicao-lapinha-456",
+      title: "Edição na Lapinha",
+      description: "Novas vias adicionadas",
+    }),
+  });
+
+  const contextoMock = {
+    validarJwt: async () => ({
+      idUsuario: "user-789",
+      email: "colaborador@teste.com",
+      nomeCompleto: "Colaborador",
+    }),
+    obterArquivosModificadosBranch: async () => [
+      "database/lapinha/croqui.yaml",
+    ],
+    criarPullRequestGithub: async (dados: any) => {
+      prCriadoComSucesso = dados;
+      return {
+        numeroPr: 88,
+        urlPr: "https://github.com/aresta-climb/aresta_db/pull/88",
+      };
+    },
+    atualizarMetadadosPr: async () => true,
+    salvarMetadadosPr: async () => {},
+  };
+
+  const resposta = await processarRequisicaoCreatePr(requisicao, contextoMock);
+  assertEquals(resposta.status, 200);
+  assertEquals(prCriadoComSucesso.branch, "edicao-lapinha-456");
+  assertEquals(prCriadoComSucesso.nomeAutor, "Colaborador");
+  assertEquals(prCriadoComSucesso.emailAutor, "colaborador@teste.com");
+
+  const corpo = await resposta.json();
+  assertEquals(corpo.numero_pr, 88);
+  assertEquals(corpo.url_pr, "https://github.com/aresta-climb/aresta_db/pull/88");
+  assertEquals(corpo.pr_number, 88);
+  assertEquals(corpo.pr_url, "https://github.com/aresta-climb/aresta_db/pull/88");
+});
+
+Deno.test("create-pr: retorna dados do PR existente sem criar duplicata se branch ja possui PR registrado", async () => {
+  let funcaoCriarPrChamada = false;
+
+  const requisicao = new Request("http://localhost/create-pr", {
+    method: "POST",
+    headers: {
+      "Authorization": "Bearer token-valido",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      branch: "edicao-existente-123",
+      title: "Título",
+    }),
+  });
+
+  const contextoMock = {
+    validarJwt: async () => ({
+      idUsuario: "user-123",
+      email: "autor@teste.com",
+      nomeCompleto: "Autor",
+    }),
+    obterArquivosModificadosBranch: async () => ["database/croqui/croqui.yaml"],
+    obterRegistroBranch: async () => ({
+      id: "reg-1",
+      branch_name: "edicao-existente-123",
+      author_id: "user-123",
+      author_email: "autor@teste.com",
+      author_name: "Autor",
+      pr_number: 105,
+      pr_url: "https://github.com/aresta-climb/aresta_db/pull/105",
+      status: "open",
+    }),
+    criarPullRequestGithub: async () => {
+      funcaoCriarPrChamada = true;
+      return { numeroPr: 999, urlPr: "fake" };
+    },
+  };
+
+  const resposta = await processarRequisicaoCreatePr(requisicao, contextoMock);
+  assertEquals(resposta.status, 200);
+  assertEquals(funcaoCriarPrChamada, false);
+
+  const corpo = await resposta.json();
+  assertEquals(corpo.numero_pr, 105);
+  assertEquals(corpo.url_pr, "https://github.com/aresta-climb/aresta_db/pull/105");
+  assertEquals(corpo.pr_number, 105);
+  assertEquals(corpo.pr_url, "https://github.com/aresta-climb/aresta_db/pull/105");
+  assertEquals(corpo.atualizado, true);
 });

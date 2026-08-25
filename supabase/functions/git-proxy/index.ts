@@ -50,7 +50,10 @@ export async function processarRequisicaoGitProxy(
   if (!cabecalhoAuth) {
     return new Response("Não autorizado: token ausente.", {
       status: 401,
-      headers: CABECALHOS_CORS,
+      headers: {
+        ...CABECALHOS_CORS,
+        "WWW-Authenticate": 'Basic realm="git-proxy"',
+      },
     });
   }
 
@@ -59,7 +62,10 @@ export async function processarRequisicaoGitProxy(
   if (!usuario) {
     return new Response("Não autorizado: token inválido ou expirado.", {
       status: 401,
-      headers: CABECALHOS_CORS,
+      headers: {
+        ...CABECALHOS_CORS,
+        "WWW-Authenticate": 'Basic realm="git-proxy"',
+      },
     });
   }
 
@@ -178,5 +184,16 @@ export async function processarRequisicaoGitProxy(
 }
 
 Deno.serve(async (req) => {
-  return await processarRequisicaoGitProxy(req);
+  try {
+    return await processarRequisicaoGitProxy(req);
+  } catch (erro: any) {
+    console.error("Erro interno no git-proxy:", erro);
+    return new Response(
+      `Erro interno no git-proxy: ${erro?.message || erro}`,
+      {
+        status: 500,
+        headers: CABECALHOS_CORS,
+      },
+    );
+  }
 });

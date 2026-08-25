@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Aresta Contributors
 
-import { Octokit } from "octokit";
+import { Octokit, App } from "octokit";
 
 const DONO_REPOSITORIO_PADRAO = "aresta-climb";
 const NOME_REPOSITORIO_PADRAO = "aresta_db";
@@ -23,22 +23,27 @@ export async function obterTokenAutenticacaoGithub(tokenBot?: string): Promise<s
     Deno.env.get("GITHUB_APP_INSTALLATION_ID");
 
   if (idAppOuClient && privateKey && installationId) {
-    const octokit = new Octokit({
-      auth: {
+    try {
+      const app = new App({
         appId: idAppOuClient,
         privateKey: privateKey.replace(/\\n/g, "\n"),
+      });
+      const autenticacao = (await app.octokit.auth({
+        type: "installation",
         installationId: parseInt(installationId, 10),
-      },
-    });
-    const autenticacao = (await octokit.auth({ type: "installation" })) as any;
-    return autenticacao.token;
+      })) as any;
+      return autenticacao.token || "";
+    } catch (erro: any) {
+      console.error("Erro ao autenticar como GitHub App:", erro?.message || erro);
+      return "";
+    }
   }
 
   return "";
 }
 
-export function obterInstanciaOctokit(tokenBot?: string): Octokit {
-  const token = tokenBot || Deno.env.get("GITHUB_BOT_TOKEN") || "";
+export async function obterInstanciaOctokit(tokenBot?: string): Promise<Octokit> {
+  const token = await obterTokenAutenticacaoGithub(tokenBot);
   return new Octokit({ auth: token });
 }
 
@@ -48,7 +53,7 @@ export async function verificarBranchExisteNoGithub(
   dono = DONO_REPOSITORIO_PADRAO,
   repositorio = NOME_REPOSITORIO_PADRAO,
 ): Promise<boolean> {
-  const octokit = octokitPersonalizado || obterInstanciaOctokit();
+  const octokit = octokitPersonalizado || (await obterInstanciaOctokit());
   const branchLimpa = nomeBranch.replace(/^refs\/heads\//, "");
 
   try {
@@ -62,7 +67,8 @@ export async function verificarBranchExisteNoGithub(
     if (erro.status === 404) {
       return false;
     }
-    throw erro;
+    console.error("Aviso ao verificar branch no GitHub:", erro?.message || erro);
+    return false;
   }
 }
 
@@ -73,7 +79,7 @@ export async function obterArquivosModificadosBranch(
   dono = DONO_REPOSITORIO_PADRAO,
   repositorio = NOME_REPOSITORIO_PADRAO,
 ): Promise<string[]> {
-  const octokit = octokitPersonalizado || obterInstanciaOctokit();
+  const octokit = octokitPersonalizado || (await obterInstanciaOctokit());
   const branchLimpa = nomeBranch.replace(/^refs\/heads\//, "");
 
   const resposta = await octokit.rest.repos.compareCommits({
@@ -93,7 +99,7 @@ export async function excluirBranchRemota(
   dono = DONO_REPOSITORIO_PADRAO,
   repositorio = NOME_REPOSITORIO_PADRAO,
 ): Promise<boolean> {
-  const octokit = octokitPersonalizado || obterInstanciaOctokit();
+  const octokit = octokitPersonalizado || (await obterInstanciaOctokit());
   const branchLimpa = nomeBranch.replace(/^refs\/heads\//, "");
 
   try {
@@ -120,7 +126,7 @@ export async function criarPullRequestGithub(
   dono = DONO_REPOSITORIO_PADRAO,
   repositorio = NOME_REPOSITORIO_PADRAO,
 ): Promise<{ numeroPr: number; urlPr: string }> {
-  const octokit = octokitPersonalizado || obterInstanciaOctokit();
+  const octokit = octokitPersonalizado || (await obterInstanciaOctokit());
   const branchLimpa = dados.branch.replace(/^refs\/heads\//, "");
 
   const corpoFormatado = [
@@ -135,17 +141,37 @@ export async function criarPullRequestGithub(
     `Signed-off-by: ${dados.nomeAutor} <${dados.emailAutor}>`,
   ].join("\n");
 
-  const resposta = await octokit.rest.pulls.create({
-    owner: dono,
-    repo: repositorio,
-    title: dados.titulo,
-    head: branchLimpa,
-    base: "main",
-    body: corpoFormatado,
-  });
+  try {
+    const resposta = await octokit.rest.pulls.create({
+      owner: dono,
+      repo: repositorio,
+      title: dados.titulo,
+      head: branchLimpa,
+      base: "main",
+      body: corpoFormatado,
+    });
 
-  return {
-    numeroPr: resposta.data.number,
-    urlPr: resposta.data.html_url,
-  };
+    return {
+      numeroPr: resposta.data.number,
+      urlPr: resposta.data.html_url,
+    };
+  } catch (erro: any) {
+    try {
+      const pulls = await octokit.rest.pulls.list({
+        owner: dono,
+        repo: repositorio,
+        head: `${dono}:${branchLimpa}`,
+        state: "all",
+      });
+      if (pulls.data && pulls.data.length > 0) {
+        return {
+          numeroPr: pulls.data[0].number,
+          urlPr: pulls.data[0].html_url,
+        };
+      }
+    } catch (_erroBusca) {
+      // Ignora erro de busca e relança erro original
+    }
+    throw erro;
+  }
 }

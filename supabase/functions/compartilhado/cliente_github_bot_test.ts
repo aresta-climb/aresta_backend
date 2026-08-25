@@ -32,6 +32,18 @@ Deno.test("cliente_github_bot: verificarBranchExisteNoGithub retorna true quando
 
   const naoExiste = await verificarBranchExisteNoGithub("sugestao-inexistente", octokitMock);
   assertEquals(naoExiste, false);
+
+  const octokitComErro: any = {
+    rest: {
+      repos: {
+        getBranch: async () => {
+          throw new Error("GitHub API Network Failure / 500");
+        },
+      },
+    },
+  };
+  const resultadoErro = await verificarBranchExisteNoGithub("qualquer-branch", octokitComErro);
+  assertEquals(resultadoErro, false);
 });
 
 Deno.test("cliente_github_bot: obterArquivosModificadosBranch retorna a lista de caminhos de arquivos", async () => {
@@ -116,11 +128,53 @@ Deno.test("cliente_github_bot: criarPullRequestGithub cria PR com template forma
   assertEquals(payloadPr.body.includes("Signed-off-by: Renato Utsch <renatoutsch@gmail.com>"), true);
 });
 
+Deno.test("cliente_github_bot: criarPullRequestGithub faz fallback para PR existente se create falhar", async () => {
+  const octokitMock: any = {
+    rest: {
+      pulls: {
+        create: async () => {
+          const erro: any = new Error("A pull request already exists for aresta-climb:sugestao-lapinha-123");
+          erro.status = 422;
+          throw erro;
+        },
+        list: async ({ head }: { head: string }) => {
+          if (head === "aresta-climb:sugestao-lapinha-123") {
+            return {
+              data: [
+                {
+                  number: 99,
+                  html_url: "https://github.com/aresta-climb/aresta_db/pull/99",
+                },
+              ],
+            };
+          }
+          return { data: [] };
+        },
+      },
+    },
+  };
 
-Deno.test("cliente_github_bot: obterInstanciaOctokit instancia cliente com token do ambiente", () => {
+  const resultado = await criarPullRequestGithub(
+    {
+      branch: "sugestao-lapinha-123",
+      titulo: "Sugestão: Lapinha",
+      descricao: "Nova via",
+      nomeAutor: "Renato",
+      emailAutor: "renato@teste.com",
+    },
+    octokitMock,
+  );
+
+  assertEquals(resultado.numeroPr, 99);
+  assertEquals(resultado.urlPr, "https://github.com/aresta-climb/aresta_db/pull/99");
+});
+
+
+Deno.test("cliente_github_bot: obterInstanciaOctokit instancia cliente com token do ambiente", async () => {
   Deno.env.set("GITHUB_BOT_TOKEN", "token-bot-teste");
-  const octokit = obterInstanciaOctokit();
+  const octokit = await obterInstanciaOctokit();
   assertEquals(typeof octokit.rest.repos.getBranch, "function");
+  Deno.env.delete("GITHUB_BOT_TOKEN");
 });
 
 Deno.test("cliente_github_bot: obterTokenAutenticacaoGithub retorna GITHUB_BOT_TOKEN quando configurado", async () => {
@@ -141,4 +195,18 @@ Deno.test("cliente_github_bot: obterTokenAutenticacaoGithub retorna string vazia
   Deno.env.delete("GITHUB_APP_INSTALLATION_ID");
   const token = await obterTokenAutenticacaoGithub();
   assertEquals(token, "");
+});
+
+Deno.test("cliente_github_bot: obterTokenAutenticacaoGithub captura erro gracefully com chave invalida", async () => {
+  Deno.env.delete("GITHUB_BOT_TOKEN");
+  Deno.env.set("EDITOR_ARESTA_GITHUB_APP_CLIENT_ID", "Iv23fake");
+  Deno.env.set("EDITOR_ARESTA_GITHUB_APP_PRIVATE_KEY", "chave_invalida");
+  Deno.env.set("EDITOR_ARESTA_GITHUB_APP_INSTALLATION_ID", "12345");
+
+  const token = await obterTokenAutenticacaoGithub();
+  assertEquals(token, "");
+
+  Deno.env.delete("EDITOR_ARESTA_GITHUB_APP_CLIENT_ID");
+  Deno.env.delete("EDITOR_ARESTA_GITHUB_APP_PRIVATE_KEY");
+  Deno.env.delete("EDITOR_ARESTA_GITHUB_APP_INSTALLATION_ID");
 });

@@ -19,16 +19,17 @@ Deno.test("git-proxy: responde a requisicoes OPTIONS com cabecalhos CORS", async
   assertEquals(resposta.headers.get("Access-Control-Allow-Origin"), "*");
 });
 
-Deno.test("git-proxy: rejeita requisicoes sem cabecalho Authorization com 401", async () => {
+Deno.test("git-proxy: rejeita requisicoes sem cabecalho Authorization com 401 e WWW-Authenticate", async () => {
   const requisicao = new Request("http://localhost/git-proxy/info/refs?service=git-receive-pack", {
     method: "GET",
   });
 
   const resposta = await processarRequisicaoGitProxy(requisicao);
   assertEquals(resposta.status, 401);
+  assertEquals(resposta.headers.get("WWW-Authenticate"), 'Basic realm="git-proxy"');
 });
 
-Deno.test("git-proxy: rejeita requisicoes com JWT invalido com 401", async () => {
+Deno.test("git-proxy: rejeita requisicoes com JWT invalido com 401 e WWW-Authenticate", async () => {
   const requisicao = new Request("http://localhost/git-proxy/info/refs?service=git-receive-pack", {
     method: "GET",
     headers: { "Authorization": "Bearer token-invalido" },
@@ -40,6 +41,7 @@ Deno.test("git-proxy: rejeita requisicoes com JWT invalido com 401", async () =>
 
   const resposta = await processarRequisicaoGitProxy(requisicao, contextoMock);
   assertEquals(resposta.status, 401);
+  assertEquals(resposta.headers.get("WWW-Authenticate"), 'Basic realm="git-proxy"');
 });
 
 Deno.test("git-proxy: GET /info/refs encaminha para o GitHub e injeta credenciais", async () => {
@@ -286,4 +288,47 @@ Deno.test("git-proxy: rejeita metodos HTTP nao suportados com 405", async () => 
 
   const resposta = await processarRequisicaoGitProxy(requisicao, contextoMock);
   assertEquals(resposta.status, 405);
+});
+
+Deno.test("git-proxy: POST /git-receive-pack cria nova branch com prefixo edicao- e registra corretamente", async () => {
+  let branchRegistrada: any = null;
+  let streamEncaminhado = false;
+
+  const linhaComando = "0000000000000000000000000000000000000000 8a3f5b0000000000000000000000000000000000 refs/heads/edicao-lapinha-nova\0report-status\n";
+  const payload = criarPayloadPktLine(linhaComando);
+
+  const requisicao = new Request("http://localhost/git-proxy/git-receive-pack", {
+    method: "POST",
+    headers: {
+      "Authorization": "Bearer token-jwt-valido",
+      "Content-Type": "application/x-git-receive-pack-request",
+    },
+    body: payload as unknown as BodyInit,
+  });
+
+  const contextoMock = {
+    validarJwt: async () => ({
+      idUsuario: "user-456",
+      email: "colaborador@teste.com",
+      nomeCompleto: "Colaborador",
+    }),
+    verificarBranchExisteNoGithub: async () => false,
+    obterRegistroBranch: async () => null,
+    registrarNovaBranch: async (dados: any) => {
+      branchRegistrada = dados;
+      return { id: "2", ...dados, status: "aberta" };
+    },
+    executarFetchGithub: async () => {
+      streamEncaminhado = true;
+      return new Response("0008NAK\n", { status: 200 });
+    },
+    tokenBot: "bot-token-secreto",
+  };
+
+  const resposta = await processarRequisicaoGitProxy(requisicao, contextoMock);
+  assertEquals(resposta.status, 200);
+  assertEquals(streamEncaminhado, true);
+  assertEquals(branchRegistrada?.branchName, "edicao-lapinha-nova");
+  assertEquals(branchRegistrada?.authorEmail, "colaborador@teste.com");
+  assertEquals(branchRegistrada?.authorName, "Colaborador");
 });

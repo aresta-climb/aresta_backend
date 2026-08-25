@@ -6,7 +6,9 @@ import { validarEscopoArquivos } from "../compartilhado/validador_escopo_arquivo
 import {
   validarTokenJwt,
   atualizarMetadadosPr,
+  obterRegistroBranch,
   DadosUsuarioAutenticado,
+  RegistroBranchSugestao,
 } from "../compartilhado/cliente_supabase_controle.ts";
 import {
   obterArquivosModificadosBranch,
@@ -18,6 +20,7 @@ export interface ContextoCreatePr {
   validarJwt?: (token: string) => Promise<DadosUsuarioAutenticado | null>;
   obterArquivosModificadosBranch?: (branch: string) => Promise<string[]>;
   excluirBranchRemota?: (branch: string) => Promise<boolean>;
+  obterRegistroBranch?: (branch: string) => Promise<RegistroBranchSugestao | null>;
   criarPullRequestGithub?: (dados: {
     branch: string;
     titulo: string;
@@ -63,7 +66,11 @@ export async function processarRequisicaoCreatePr(
       JSON.stringify({ erro: "Não autorizado: token ausente." }),
       {
         status: 401,
-        headers: { ...CABECALHOS_CORS, "Content-Type": "application/json" },
+        headers: {
+          ...CABECALHOS_CORS,
+          "Content-Type": "application/json",
+          "WWW-Authenticate": 'Bearer realm="create-pr"',
+        },
       },
     );
   }
@@ -75,7 +82,11 @@ export async function processarRequisicaoCreatePr(
       JSON.stringify({ erro: "Não autorizado: token inválido ou expirado." }),
       {
         status: 401,
-        headers: { ...CABECALHOS_CORS, "Content-Type": "application/json" },
+        headers: {
+          ...CABECALHOS_CORS,
+          "Content-Type": "application/json",
+          "WWW-Authenticate": 'Bearer realm="create-pr"',
+        },
       },
     );
   }
@@ -150,6 +161,33 @@ export async function processarRequisicaoCreatePr(
     );
   }
 
+  const funcaoObterRegistro =
+    contexto?.obterRegistroBranch ||
+    (async (b: string) => {
+      try {
+        return await obterRegistroBranch(b);
+      } catch {
+        return null;
+      }
+    });
+  const registroExistente = await funcaoObterRegistro(nomeSimplesBranch);
+
+  if (registroExistente && registroExistente.pr_number && registroExistente.pr_url) {
+    return new Response(
+      JSON.stringify({
+        numero_pr: registroExistente.pr_number,
+        url_pr: registroExistente.pr_url,
+        pr_number: registroExistente.pr_number,
+        pr_url: registroExistente.pr_url,
+        atualizado: true,
+      }),
+      {
+        status: 200,
+        headers: { ...CABECALHOS_CORS, "Content-Type": "application/json" },
+      },
+    );
+  }
+
   const funcaoCriarPr = contexto?.criarPullRequestGithub || criarPullRequestGithub;
   const funcaoAtualizarMetadados =
     contexto?.atualizarMetadadosPr ||
@@ -178,6 +216,8 @@ export async function processarRequisicaoCreatePr(
     JSON.stringify({
       numero_pr: resultadoPr.numeroPr,
       url_pr: resultadoPr.urlPr,
+      pr_number: resultadoPr.numeroPr,
+      pr_url: resultadoPr.urlPr,
     }),
     {
       status: 200,
@@ -187,5 +227,19 @@ export async function processarRequisicaoCreatePr(
 }
 
 Deno.serve(async (req) => {
-  return await processarRequisicaoCreatePr(req);
+  try {
+    return await processarRequisicaoCreatePr(req);
+  } catch (erro: any) {
+    console.error("Erro interno no create-pr:", erro);
+    return new Response(
+      JSON.stringify({ erro: `Erro interno no servidor: ${erro?.message || erro}` }),
+      {
+        status: 500,
+        headers: {
+          ...CABECALHOS_CORS,
+          "Content-Type": "application/json",
+        },
+      },
+    );
+  }
 });

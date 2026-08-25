@@ -4,16 +4,20 @@
 import { assertEquals } from "@std/assert";
 import { validarNomeBranch, extrairNomeSimplesBranch } from "./validador_regras_branch.ts";
 
-Deno.test("validador_regras_branch: aceita branches validas com prefixo refs/heads/sugestao-", () => {
-  const resultado = validarNomeBranch("refs/heads/sugestao-lapinha-20260823");
-  assertEquals(resultado.valida, true);
-  assertEquals(resultado.nomeBranch, "sugestao-lapinha-20260823");
+Deno.test("validador_regras_branch: aceita branches validas com prefixo refs/heads/edicao- e sugestao-", () => {
+  const resEdicao = validarNomeBranch("refs/heads/edicao-lapinha-20260823");
+  assertEquals(resEdicao.valida, true);
+  assertEquals(resEdicao.nomeBranch, "edicao-lapinha-20260823");
+
+  const resSugestao = validarNomeBranch("refs/heads/sugestao-lapinha-20260823");
+  assertEquals(resSugestao.valida, true);
+  assertEquals(resSugestao.nomeBranch, "sugestao-lapinha-20260823");
 });
 
 Deno.test("validador_regras_branch: aceita branches validas com caracteres alfanumericos, tracos e sublinhados", () => {
-  const resultado = validarNomeBranch("refs/heads/sugestao_serra_do_cipo_123-abc");
+  const resultado = validarNomeBranch("refs/heads/edicao_serra_do_cipo_123-abc");
   assertEquals(resultado.valida, true);
-  assertEquals(resultado.nomeBranch, "sugestao_serra_do_cipo_123-abc");
+  assertEquals(resultado.nomeBranch, "edicao_serra_do_cipo_123-abc");
 });
 
 Deno.test("validador_regras_branch: rejeita expressamente a branch main", () => {

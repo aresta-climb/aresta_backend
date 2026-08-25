@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Aresta Contributors
 
-const REGEX_BRANCH_SUGESTAO = /^(?:refs\/heads\/)?(sugestao[-_][a-zA-Z0-9_-]+)$/;
+const REGEX_BRANCH_EDICAO = /^(?:refs\/heads\/)?((?:edicao|sugestao)[-_][a-zA-Z0-9_-]+)$/;
 
 export interface ResultadoValidacaoBranch {
   valida: boolean;
@@ -26,11 +26,11 @@ export function validarNomeBranch(nomeReferencia: string): ResultadoValidacaoBra
     };
   }
 
-  const correspondencia = nomeReferencia.match(REGEX_BRANCH_SUGESTAO);
+  const correspondencia = nomeReferencia.match(REGEX_BRANCH_EDICAO);
   if (!correspondencia) {
     return {
       valida: false,
-      motivo: "Apenas branches de sugestão (sugestao-*) são permitidas.",
+      motivo: "Apenas branches de edição (edicao-*) são permitidas.",
     };
   }
 

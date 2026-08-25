@@ -39,6 +39,34 @@ Deno.test("cliente_supabase_controle: validarTokenJwt extrai id, email e nome do
   assertEquals(resultadoValido?.email, "escalador@teste.com");
   assertEquals(resultadoValido?.nomeCompleto, "Renato Utsch");
 
+  // Testa formato Bearer
+  const resultadoBearer = await validarTokenJwt("Bearer token-valido", clienteMock);
+  assertEquals(resultadoBearer?.idUsuario, "user-123");
+
+  // Testa formato Basic bearer:<token>
+  const basicBearer = `Basic ${btoa("bearer:token-valido")}`;
+  const resultadoBasicBearer = await validarTokenJwt(basicBearer, clienteMock);
+  assertEquals(resultadoBasicBearer?.idUsuario, "user-123");
+
+  // Testa formato Basic x-access-token:<token>
+  const basicXAccess = `Basic ${btoa("x-access-token:token-valido")}`;
+  const resultadoBasicXAccess = await validarTokenJwt(basicXAccess, clienteMock);
+  assertEquals(resultadoBasicXAccess?.idUsuario, "user-123");
+
+  // Testa formato Basic sem prefixo user:token
+  const basicUser = `Basic ${btoa("user:token-valido")}`;
+  const resultadoBasicUser = await validarTokenJwt(basicUser, clienteMock);
+  assertEquals(resultadoBasicUser?.idUsuario, "user-123");
+
+  // Testa formato Basic com apenas token
+  const basicPuro = `Basic ${btoa("token-valido")}`;
+  const resultadoBasicPuro = await validarTokenJwt(basicPuro, clienteMock);
+  assertEquals(resultadoBasicPuro?.idUsuario, "user-123");
+
+  // Testa string vazia ou base64 invalido
+  const resultadoVazio = await validarTokenJwt("", clienteMock);
+  assertEquals(resultadoVazio, null);
+
   const resultadoInvalido = await validarTokenJwt("token-invalido", clienteMock);
   assertEquals(resultadoInvalido, null);
 });
