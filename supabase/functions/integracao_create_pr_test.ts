@@ -112,3 +112,53 @@ Deno.test({
     assertEquals(corpo.url_pr, "https://github.com/aresta-climb/aresta_db/pull/42");
   },
 });
+
+Deno.test({
+  name: "Integracao Create PR: Cria Pull Request repassando token de usuario quando presente",
+  async fn() {
+    let tokenUsuarioRecebido: string | undefined;
+
+    const requisicao = new Request("http://localhost/create-pr", {
+      method: "POST",
+      headers: {
+        "Authorization": "Bearer token-jwt-valido-teste",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        branch: "edicao-lapinha-123",
+        title: "Edição com Token do Usuário",
+        description: "Enviado diretamente",
+        token_usuario_github: "gho_token_usuario_123",
+      }),
+    });
+
+    const contextoTeste = {
+      validarJwt: async (_token: string) => ({
+        idUsuario: "user-123",
+        email: "escalador@teste.com",
+        nomeCompleto: "Escalador Teste",
+      }),
+      obterArquivosModificadosBranch: async (_branch: string) => [
+        "database/lapinha/croqui.yaml",
+      ],
+      criarPullRequestGithub: async (
+        dados: any,
+        _octokit?: any,
+        _dono?: string,
+        _repo?: string,
+        tokenUsuario?: string,
+      ) => {
+        tokenUsuarioRecebido = tokenUsuario;
+        return {
+          numeroPr: 50,
+          urlPr: "https://github.com/aresta-climb/aresta_db/pull/50",
+        };
+      },
+      salvarMetadadosPr: async (_branch: string, _numeroPr: number, _urlPr: string) => {},
+    };
+
+    const resposta = await processarRequisicaoCreatePr(requisicao, contextoTeste);
+    assertEquals(resposta.status, 200);
+    assertEquals(tokenUsuarioRecebido, "gho_token_usuario_123");
+  },
+});

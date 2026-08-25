@@ -301,3 +301,87 @@ Deno.test("create-pr: retorna dados do PR existente sem criar duplicata se branc
   assertEquals(corpo.pr_url, "https://github.com/aresta-climb/aresta_db/pull/105");
   assertEquals(corpo.atualizado, true);
 });
+
+Deno.test("create-pr: extrai token_usuario_github e repassa para funcao de criacao de PR", async () => {
+  let tokenUsuarioRecebido: string | undefined;
+
+  const requisicao = new Request("http://localhost/create-pr", {
+    method: "POST",
+    headers: {
+      "Authorization": "Bearer token-valido",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      branch: "edicao-teste-usuario-123",
+      title: "Edição com Token",
+      token_usuario_github: "gho_token_123",
+    }),
+  });
+
+  const contextoMock = {
+    validarJwt: async () => ({
+      idUsuario: "user-123",
+      email: "autor@teste.com",
+      nomeCompleto: "Autor",
+    }),
+    obterArquivosModificadosBranch: async () => ["database/croqui/croqui.yaml"],
+    obterRegistroBranch: async () => null,
+    criarPullRequestGithub: async (
+      _dados: any,
+      _octokit?: any,
+      _dono?: string,
+      _repo?: string,
+      tokenUsuario?: string,
+    ) => {
+      tokenUsuarioRecebido = tokenUsuario;
+      return { numeroPr: 106, urlPr: "https://github.com/aresta-climb/aresta_db/pull/106" };
+    },
+    salvarMetadadosPr: async () => {},
+  };
+
+  const resposta = await processarRequisicaoCreatePr(requisicao, contextoMock);
+  assertEquals(resposta.status, 200);
+  assertEquals(tokenUsuarioRecebido, "gho_token_123");
+});
+
+Deno.test("create-pr: aceita alias github_user_token e repassa para funcao de criacao de PR", async () => {
+  let tokenUsuarioRecebido: string | undefined;
+
+  const requisicao = new Request("http://localhost/create-pr", {
+    method: "POST",
+    headers: {
+      "Authorization": "Bearer token-valido",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      branch: "edicao-teste-usuario-456",
+      title: "Edição com Alias de Token",
+      github_user_token: "gho_token_alias_456",
+    }),
+  });
+
+  const contextoMock = {
+    validarJwt: async () => ({
+      idUsuario: "user-123",
+      email: "autor@teste.com",
+      nomeCompleto: "Autor",
+    }),
+    obterArquivosModificadosBranch: async () => ["database/croqui/croqui.yaml"],
+    obterRegistroBranch: async () => null,
+    criarPullRequestGithub: async (
+      _dados: any,
+      _octokit?: any,
+      _dono?: string,
+      _repo?: string,
+      tokenUsuario?: string,
+    ) => {
+      tokenUsuarioRecebido = tokenUsuario;
+      return { numeroPr: 107, urlPr: "https://github.com/aresta-climb/aresta_db/pull/107" };
+    },
+    salvarMetadadosPr: async () => {},
+  };
+
+  const resposta = await processarRequisicaoCreatePr(requisicao, contextoMock);
+  assertEquals(resposta.status, 200);
+  assertEquals(tokenUsuarioRecebido, "gho_token_alias_456");
+});

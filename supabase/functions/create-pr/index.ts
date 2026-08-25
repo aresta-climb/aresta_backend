@@ -21,13 +21,19 @@ export interface ContextoCreatePr {
   obterArquivosModificadosBranch?: (branch: string) => Promise<string[]>;
   excluirBranchRemota?: (branch: string) => Promise<boolean>;
   obterRegistroBranch?: (branch: string) => Promise<RegistroBranchSugestao | null>;
-  criarPullRequestGithub?: (dados: {
-    branch: string;
-    titulo: string;
-    descricao: string;
-    nomeAutor: string;
-    emailAutor: string;
-  }) => Promise<{ numeroPr: number; urlPr: string }>;
+  criarPullRequestGithub?: (
+    dados: {
+      branch: string;
+      titulo: string;
+      descricao: string;
+      nomeAutor: string;
+      emailAutor: string;
+    },
+    octokitPersonalizado?: any,
+    dono?: string,
+    repositorio?: string,
+    tokenUsuarioGithub?: string,
+  ) => Promise<{ numeroPr: number; urlPr: string }>;
   atualizarMetadadosPr?: (
     branch: string,
     dadosPr: { prNumber: number; prUrl: string },
@@ -104,7 +110,9 @@ export async function processarRequisicaoCreatePr(
     );
   }
 
-  const { branch, title, description } = corpoJson || {};
+  const { branch, title, description, token_usuario_github, github_user_token } = corpoJson || {};
+  const tokenUsuarioFinal = token_usuario_github || github_user_token;
+
   if (!branch || !title) {
     return new Response(
       JSON.stringify({
@@ -199,13 +207,19 @@ export async function processarRequisicaoCreatePr(
       return await atualizarMetadadosPr(b, d);
     });
 
-  const resultadoPr = await funcaoCriarPr({
-    branch: nomeSimplesBranch,
-    titulo: title,
-    descricao: description || "",
-    nomeAutor: usuario.nomeCompleto,
-    emailAutor: usuario.email,
-  });
+  const resultadoPr = await funcaoCriarPr(
+    {
+      branch: nomeSimplesBranch,
+      titulo: title,
+      descricao: description || "",
+      nomeAutor: usuario.nomeCompleto,
+      emailAutor: usuario.email,
+    },
+    undefined,
+    undefined,
+    undefined,
+    tokenUsuarioFinal,
+  );
 
   await funcaoAtualizarMetadados(nomeSimplesBranch, {
     prNumber: resultadoPr.numeroPr,

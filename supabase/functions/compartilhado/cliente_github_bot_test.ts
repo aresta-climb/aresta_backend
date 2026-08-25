@@ -169,6 +169,102 @@ Deno.test("cliente_github_bot: criarPullRequestGithub faz fallback para PR exist
   assertEquals(resultado.urlPr, "https://github.com/aresta-climb/aresta_db/pull/99");
 });
 
+Deno.test("cliente_github_bot: criarPullRequestGithub utiliza Octokit com tokenUsuarioGithub quando informado", async () => {
+  let octokitUtilizado: any = null;
+  const fabriqueOctokitMock = (token: string) => {
+    return {
+      rest: {
+        pulls: {
+          create: async (payload: any) => {
+            octokitUtilizado = token;
+            return {
+              status: 201,
+              data: {
+                number: 101,
+                html_url: "https://github.com/aresta-climb/aresta_db/pull/101",
+              },
+            };
+          },
+        },
+      },
+    };
+  };
+
+  const resultado = await criarPullRequestGithub(
+    {
+      branch: "edicao-teste-123",
+      titulo: "Edição do Usuário",
+      descricao: "Detalhes",
+      nomeAutor: "Escalador",
+      emailAutor: "escalador@teste.com",
+    },
+    undefined,
+    undefined,
+    undefined,
+    "gho_token_usuario_oauth_abc",
+    fabriqueOctokitMock as any,
+  );
+
+  assertEquals(resultado.numeroPr, 101);
+  assertEquals(resultado.urlPr, "https://github.com/aresta-climb/aresta_db/pull/101");
+  assertEquals(octokitUtilizado, "gho_token_usuario_oauth_abc");
+});
+
+Deno.test("cliente_github_bot: criarPullRequestGithub faz fallback para bot se tokenUsuarioGithub falhar", async () => {
+  let fallbackChamado = false;
+  const fabriqueOctokitMock = (token?: string) => {
+    if (token === "gho_token_invalido") {
+      return {
+        rest: {
+          pulls: {
+            create: async () => {
+              const erro: any = new Error("Bad credentials");
+              erro.status = 401;
+              throw erro;
+            },
+          },
+        },
+      };
+    }
+    // Bot fallback
+    return {
+      rest: {
+        pulls: {
+          create: async () => {
+            fallbackChamado = true;
+            return {
+              status: 201,
+              data: {
+                number: 102,
+                html_url: "https://github.com/aresta-climb/aresta_db/pull/102",
+              },
+            };
+          },
+        },
+      },
+    };
+  };
+
+  const resultado = await criarPullRequestGithub(
+    {
+      branch: "edicao-teste-123",
+      titulo: "Edição com Fallback",
+      descricao: "Detalhes",
+      nomeAutor: "Escalador",
+      emailAutor: "escalador@teste.com",
+    },
+    undefined,
+    undefined,
+    undefined,
+    "gho_token_invalido",
+    fabriqueOctokitMock as any,
+  );
+
+  assertEquals(resultado.numeroPr, 102);
+  assertEquals(resultado.urlPr, "https://github.com/aresta-climb/aresta_db/pull/102");
+  assertEquals(fallbackChamado, true);
+});
+
 
 Deno.test("cliente_github_bot: obterInstanciaOctokit instancia cliente com token do ambiente", async () => {
   Deno.env.set("GITHUB_BOT_TOKEN", "token-bot-teste");

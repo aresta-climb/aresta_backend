@@ -125,8 +125,22 @@ export async function criarPullRequestGithub(
   octokitPersonalizado?: any,
   dono = DONO_REPOSITORIO_PADRAO,
   repositorio = NOME_REPOSITORIO_PADRAO,
+  tokenUsuarioGithub?: string,
+  fabricaOctokit?: (token?: string) => any,
 ): Promise<{ numeroPr: number; urlPr: string }> {
-  const octokit = octokitPersonalizado || (await obterInstanciaOctokit());
+  let octokit: any;
+  if (octokitPersonalizado) {
+    octokit = octokitPersonalizado;
+  } else if (tokenUsuarioGithub) {
+    try {
+      octokit = fabricaOctokit ? fabricaOctokit(tokenUsuarioGithub) : new Octokit({ auth: tokenUsuarioGithub });
+    } catch {
+      octokit = fabricaOctokit ? fabricaOctokit() : await obterInstanciaOctokit();
+    }
+  } else {
+    octokit = fabricaOctokit ? fabricaOctokit() : await obterInstanciaOctokit();
+  }
+
   const branchLimpa = dados.branch.replace(/^refs\/heads\//, "");
 
   const corpoFormatado = [
@@ -141,8 +155,8 @@ export async function criarPullRequestGithub(
     `Signed-off-by: ${dados.nomeAutor} <${dados.emailAutor}>`,
   ].join("\n");
 
-  try {
-    const resposta = await octokit.rest.pulls.create({
+  const executarCriacao = async (cliente: any) => {
+    return await cliente.rest.pulls.create({
       owner: dono,
       repo: repositorio,
       title: dados.titulo,
@@ -150,14 +164,33 @@ export async function criarPullRequestGithub(
       base: "main",
       body: corpoFormatado,
     });
+  };
 
+  try {
+    const resposta = await executarCriacao(octokit);
     return {
       numeroPr: resposta.data.number,
       urlPr: resposta.data.html_url,
     };
   } catch (erro: any) {
+    // Se foi usado token do usuário e falhou (401, 403, etc), tenta fallback para o Bot
+    if (tokenUsuarioGithub && !octokitPersonalizado) {
+      try {
+        console.warn(`[AVISO] Tentativa com token de usuário falhou (${erro.message}). Realizando fallback para o Bot.`);
+        const clienteBot = fabricaOctokit ? fabricaOctokit() : await obterInstanciaOctokit();
+        const respostaBot = await executarCriacao(clienteBot);
+        return {
+          numeroPr: respostaBot.data.number,
+          urlPr: respostaBot.data.html_url,
+        };
+      } catch (erroBot: any) {
+        erro = erroBot;
+      }
+    }
+
     try {
-      const pulls = await octokit.rest.pulls.list({
+      const clienteBusca = octokitPersonalizado || (fabricaOctokit ? fabricaOctokit() : await obterInstanciaOctokit());
+      const pulls = await clienteBusca.rest.pulls.list({
         owner: dono,
         repo: repositorio,
         head: `${dono}:${branchLimpa}`,
