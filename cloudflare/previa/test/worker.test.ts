@@ -349,35 +349,64 @@ Deno.test("Worker HTTP - POST /sessoes deve criar sessão gerando código no ser
   expect(sessaoMemoria!.ipOrigem).toBe("179.180.200.5");
 });
 
-Deno.test("Worker HTTP - deve aceitar WebSocket no endpoint /ws e vincular à sessão", async () => {
-  const jwt = criarJwtMock({
-    sub: "usr_editor_123",
-    email: "escalador@arestaclimb.com",
+Deno.test("Worker HTTP - GET /ws deve validar posse de sessão e rejeitar usuário não autorizado", async () => {
+  const jwtDono = criarJwtMock({
+    sub: "usr_dono_123",
+    email: "dono@arestaclimb.com",
+    exp: Math.floor(Date.now() / 1000) + 3600,
+  });
+
+  const jwtInvasor = criarJwtMock({
+    sub: "usr_invasor_999",
+    email: "invasor@outro.com",
     exp: Math.floor(Date.now() / 1000) + 3600,
   });
 
   const mockEnv = {
     validarJwt: async (t: string | null) => {
       if (!t || t.includes("invalido")) return null;
-      return { idUsuario: "usr_editor_123", email: "escalador@arestaclimb.com" };
+      if (t === jwtDono) return { idUsuario: "usr_dono_123", email: "dono@arestaclimb.com" };
+      if (t === jwtInvasor) return { idUsuario: "usr_invasor_999", email: "invasor@outro.com" };
+      return null;
     },
   };
 
-  // 1. Cria a sessão via POST
+  // 1. Criar sessão para usr_dono_123
   const reqPost = new Request("https://previa.arestaclimb.com/sessoes", {
     method: "POST",
-    headers: { Authorization: `Bearer ${jwt}` },
+    headers: { Authorization: `Bearer ${jwtDono}` },
   });
   const resPost = await worker.fetch(reqPost, mockEnv);
   const jsonPost = (await resPost.json()) as any;
   const codigo = jsonPost.codigo;
 
-  // 2. Conecta via WebSocket
-  const reqWs = new Request(`https://previa.arestaclimb.com/ws?sessao=${codigo}&token=${jwt}`, {
+  // 2. Tentar conectar /ws para código inexistente -> 404
+  const reqInexistente = new Request(`https://previa.arestaclimb.com/ws?sessao=inexiste9&token=${jwtDono}`, {
     headers: { Upgrade: "websocket" },
   });
-  const resWs = await worker.fetch(reqWs, mockEnv);
-  expect(resWs.status).toBe(101);
+  const resInexistente = await worker.fetch(reqInexistente, mockEnv);
+  expect(resInexistente.status).toBe(404);
+
+  // 3. Tentar conectar /ws sem token JWT -> 401
+  const reqSemToken = new Request(`https://previa.arestaclimb.com/ws?sessao=${codigo}`, {
+    headers: { Upgrade: "websocket" },
+  });
+  const resSemToken = await worker.fetch(reqSemToken, mockEnv);
+  expect(resSemToken.status).toBe(401);
+
+  // 4. Tentar conectar /ws com token de OUTRO usuário -> 403 Forbidden
+  const reqInvasor = new Request(`https://previa.arestaclimb.com/ws?sessao=${codigo}&token=${jwtInvasor}`, {
+    headers: { Upgrade: "websocket" },
+  });
+  const resInvasor = await worker.fetch(reqInvasor, mockEnv);
+  expect(resInvasor.status).toBe(403);
+
+  // 5. Conectar com o token do DONO -> 101 Switching Protocols
+  const reqDono = new Request(`https://previa.arestaclimb.com/ws?sessao=${codigo}&token=${jwtDono}`, {
+    headers: { Upgrade: "websocket" },
+  });
+  const resDono = await worker.fetch(reqDono, mockEnv);
+  expect(resDono.status).toBe(101);
 
   const sessao = gerenciador.obterSessao(codigo);
   expect(sessao).toBeDefined();

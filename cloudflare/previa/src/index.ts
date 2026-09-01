@@ -204,24 +204,43 @@ export default {
       });
     }
 
-    // 5. Conexão WebSocket do Editor Desktop: /ws?sessao=k9x2p83a
+    // 5. Conexão WebSocket do Editor Desktop: /ws?sessao=k9x2p83a&token=<jwt>
     if (pathname === "/ws") {
       const sessaoId = url.searchParams.get("sessao") || url.searchParams.get("session");
       if (!sessaoId) {
         return criarRespostaJson({ erro: "Parâmetro 'sessao' obrigatório." }, 400);
       }
 
-      // Validação de autenticação para o túnel do editor
+      const codigoNormalizado = gerenciadorAtivo.normalizarCodigo(sessaoId);
+      const sessaoExistente = gerenciadorAtivo.obterSessao(codigoNormalizado);
+      if (!sessaoExistente) {
+        return criarRespostaJson(
+          { erro: "Sessão não encontrada ou expirada. Crie a sessão previamente via POST /sessoes." },
+          404,
+        );
+      }
+
+      // Validação de autenticação obrigatória para o túnel do editor
       const token =
         extrairJwtDeCabecalho(request.headers.get("Authorization")) ||
         url.searchParams.get("token");
 
-      if (token) {
-        const funcaoValidarJwt = env?.validarJwt || validarTokenJwt;
-        const usuario = await funcaoValidarJwt(token, env);
-        if (!usuario) {
-          return criarRespostaJson({ erro: "Não autorizado: token inválido." }, 401);
-        }
+      if (!token) {
+        return criarRespostaJson({ erro: "Não autorizado: token JWT obrigatório." }, 401);
+      }
+
+      const funcaoValidarJwt = env?.validarJwt || validarTokenJwt;
+      const usuario = await funcaoValidarJwt(token, env);
+      if (!usuario) {
+        return criarRespostaJson({ erro: "Não autorizado: token inválido ou expirado." }, 401);
+      }
+
+      // Valida posse da sessão: impede que um usuário tente controlar a sessão de outro
+      if (sessaoExistente.usuarioId && sessaoExistente.usuarioId !== usuario.idUsuario) {
+        return criarRespostaJson(
+          { erro: "Acesso negado: a sessão informada pertence a outro usuário." },
+          403,
+        );
       }
 
       const upgradeHeader = request.headers.get("Upgrade");
@@ -235,7 +254,7 @@ export default {
         (serverSocket as any).accept();
       }
 
-      const sessao = gerenciadorAtivo.registrarSessao(sessaoId, serverSocket);
+      const sessao = gerenciadorAtivo.registrarSessao(codigoNormalizado, serverSocket);
 
       serverSocket.addEventListener("message", (event: any) => {
         try {
