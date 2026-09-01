@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: MPL-2.0
 // Copyright (C) 2026 Aresta Contributors
 
 import { validarNomeBranch } from "../compartilhado/validador_regras_branch.ts";

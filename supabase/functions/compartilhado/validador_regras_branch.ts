@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: MPL-2.0
 // Copyright (C) 2026 Aresta Contributors
 
 const REGEX_BRANCH_EDICAO = /^(?:refs\/heads\/)?((?:edicao|sugestao)[-_][a-zA-Z0-9_-]+)$/;

@@ -1,0 +1,30 @@
+{
+  "name": "aresta-previa-relay",
+  "version": "1.0.0",
+  "description": "Retransmissor leve de streaming e descoberta em memória para prévia e live reload de croquis",
+  "main": "src/index.ts",
+  "scripts": {
+    "setup": "node scripts/setup.mjs",
+    "login": "wrangler login",
+    "whoami": "wrangler whoami",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test": "deno test -A test/worker.test.ts"
+  },
+  "keywords": [
+    "aresta",
+    "climbing",
+    "relay",
+    "websocket",
+    "live-reload"
+  ],
+  "author": "Aresta Contributors",
+  "license": "MPL-2.0",
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.5.0",
+    "@cloudflare/workers-types": "^4.20240806.0",
+    "typescript": "^5.5.4",
+    "vitest": "^2.0.5",
+    "wrangler": "^3.72.0"
+  }
+}

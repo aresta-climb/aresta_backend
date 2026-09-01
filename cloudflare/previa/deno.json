@@ -1,0 +1,11 @@
+{
+  "tasks": {
+    "test": "deno test -A --coverage=cov_profile"
+  },
+  "imports": {
+    "vitest": "npm:vitest@^2.0.5"
+  },
+  "compilerOptions": {
+    "lib": ["deno.window", "dom"]
+  }
+}
