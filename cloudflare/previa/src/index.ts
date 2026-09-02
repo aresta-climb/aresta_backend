@@ -337,7 +337,7 @@ export async function tratarRequisicao(
       return criarRespostaJson({ erro: "Rota não encontrada" }, 404);
     }
 
-    const codigoSessao = partes[0];
+    const codigoSessao = gerenciadorAtivo.normalizarCodigo(partes[0]);
     const subcaminho = partes.slice(1).join("/");
 
     // 6. Conexão WebSocket para Ouvintes (Live Reload): /<codigo>/events
