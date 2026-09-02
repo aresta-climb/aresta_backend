@@ -250,15 +250,6 @@ export async function tratarRequisicao(
         return criarRespostaJson({ erro: "Parâmetro 'sessao' obrigatório." }, 400);
       }
 
-      const codigoNormalizado = gerenciadorAtivo.normalizarCodigo(sessaoId);
-      const sessaoExistente = gerenciadorAtivo.obterSessao(codigoNormalizado);
-      if (!sessaoExistente) {
-        return criarRespostaJson(
-          { erro: "Sessão não encontrada ou expirada. Crie a sessão previamente via POST /sessoes." },
-          404,
-        );
-      }
-
       // Validação de autenticação obrigatória para o túnel do editor
       const token =
         extrairJwtDeCabecalho(request.headers.get("Authorization")) ||
@@ -274,8 +265,28 @@ export async function tratarRequisicao(
         return criarRespostaJson({ erro: "Não autorizado: token inválido ou expirado." }, 401);
       }
 
-      // Valida posse da sessão: impede que um usuário tente controlar a sessão de outro
-      if (sessaoExistente.usuarioId && sessaoExistente.usuarioId !== usuario.idUsuario) {
+      const codigoNormalizado = gerenciadorAtivo.normalizarCodigo(sessaoId);
+      let sessaoExistente = gerenciadorAtivo.obterSessao(codigoNormalizado);
+
+      if (!sessaoExistente) {
+        // Auto-restauração / Auto-criação da sessão para usuário autenticado (tolerância a cold starts)
+        const ipOrigem =
+          request.headers.get("CF-Connecting-IP") ||
+          request.headers.get("x-forwarded-for") ||
+          undefined;
+        const userAgent = request.headers.get("user-agent") || undefined;
+
+        sessaoExistente = gerenciadorAtivo.criarSessao(
+          usuario.idUsuario,
+          usuario.email,
+          {},
+          ipOrigem,
+          userAgent,
+          undefined,
+          codigoNormalizado,
+        );
+      } else if (sessaoExistente.usuarioId && sessaoExistente.usuarioId !== usuario.idUsuario) {
+        // Valida posse da sessão: impede que um usuário tente controlar a sessão de outro
         return criarRespostaJson(
           { erro: "Acesso negado: a sessão informada pertence a outro usuário." },
           403,
@@ -635,6 +646,11 @@ export class SessaoDurableObject {
         motivoEncerramento: motivo,
       });
 
+      // Remove os metadados do storage do Durable Object
+      if (this.state?.storage?.delete) {
+        this.state.storage.delete(`sessao_meta:${sessao.codigo}`).catch(() => {});
+      }
+
       // Notifica o registro global sobre o encerramento da sessão
       if (this.env?.SESSAO_DO) {
         try {
@@ -705,7 +721,62 @@ export class SessaoDurableObject {
       }
     }
 
-    return tratarRequisicao(request, this.env, this.gerenciador);
+    // Extrai o código da sessão para verificação e restauração de storage
+    let codigoSessao: string | null = null;
+    if (pathname === "/sessoes" || pathname === "/sessions") {
+      codigoSessao = url.searchParams.get("codigo_reservado");
+    } else if (pathname === "/ws") {
+      codigoSessao = url.searchParams.get("sessao") || url.searchParams.get("session");
+    } else {
+      const partes = pathname.split("/").filter(Boolean);
+      if (partes.length > 0) {
+        codigoSessao = partes[0];
+      }
+    }
+
+    if (codigoSessao) {
+      const normalizado = this.gerenciador.normalizarCodigo(codigoSessao);
+      if (!this.gerenciador.obterSessao(normalizado) && this.state?.storage?.get) {
+        try {
+          const dadosStorage = await this.state.storage.get(`sessao_meta:${normalizado}`);
+          if (dadosStorage) {
+            this.gerenciador.criarSessao(
+              dadosStorage.usuarioId,
+              dadosStorage.usuarioEmail,
+              dadosStorage.metadados || {},
+              dadosStorage.ipOrigem,
+              dadosStorage.userAgent,
+              dadosStorage.idAuditoria,
+              normalizado,
+            );
+          }
+        } catch {}
+      }
+    }
+
+    const resposta = await tratarRequisicao(request, this.env, this.gerenciador);
+
+    // Se a sessão existe no gerenciador após o tratamento da requisição, persiste no storage
+    if (codigoSessao && this.state?.storage?.put) {
+      const normalizado = this.gerenciador.normalizarCodigo(codigoSessao);
+      const sessaoAtiva = this.gerenciador.obterSessao(normalizado);
+      if (sessaoAtiva) {
+        try {
+          await this.state.storage.put(`sessao_meta:${normalizado}`, {
+            codigo: sessaoAtiva.codigo,
+            usuarioId: sessaoAtiva.usuarioId,
+            usuarioEmail: sessaoAtiva.usuarioEmail,
+            metadados: sessaoAtiva.metadados,
+            ipOrigem: sessaoAtiva.ipOrigem,
+            userAgent: sessaoAtiva.userAgent,
+            idAuditoria: sessaoAtiva.idAuditoria,
+            criadoEm: sessaoAtiva.criadoEm,
+          });
+        } catch {}
+      }
+    }
+
+    return resposta;
   }
 }
 

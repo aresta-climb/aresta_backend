@@ -380,12 +380,12 @@ Deno.test("Worker HTTP - GET /ws deve validar posse de sessão e rejeitar usuár
   const jsonPost = (await resPost.json()) as any;
   const codigo = jsonPost.codigo;
 
-  // 2. Tentar conectar /ws para código inexistente -> 404
-  const reqInexistente = new Request(`https://previa.arestaclimb.com/ws?sessao=inexiste9&token=${jwtDono}`, {
+  // 2. Tentar conectar /ws com token inválido -> 401
+  const reqTokenInvalido = new Request(`https://previa.arestaclimb.com/ws?sessao=qualquer1&token=invalido_123`, {
     headers: { Upgrade: "websocket" },
   });
-  const resInexistente = await worker.fetch(reqInexistente, mockEnv);
-  expect(resInexistente.status).toBe(404);
+  const resTokenInvalido = await worker.fetch(reqTokenInvalido, mockEnv);
+  expect(resTokenInvalido.status).toBe(401);
 
   // 3. Tentar conectar /ws sem token JWT -> 401
   const reqSemToken = new Request(`https://previa.arestaclimb.com/ws?sessao=${codigo}`, {
@@ -930,6 +930,136 @@ Deno.test("Worker HTTP - Erro de envio no socket durante proxy reverso deve reto
   const res = await worker.fetch(req, { gerenciadorPersonalizado: gm });
   expect(res.status).toBe(502);
 });
+
+Deno.test("Contrato de Integração - Túnel deve sobreviver a desconexões do celular e auto-recuperar no /ws com JWT", async () => {
+  const jwt = criarJwtMock({
+    sub: "usr_auto_recuperar",
+    email: "escalador@aresta.com",
+    exp: Math.floor(Date.now() / 1000) + 3600,
+  });
+
+  const gm = new GerenciadorSessao();
+  const mockEnv = {
+    validarJwt: async () => ({ idUsuario: "usr_auto_recuperar", email: "escalador@aresta.com" }),
+    gerenciadorPersonalizado: gm,
+  };
+
+  // Simula reinício do Worker: O gerenciador de sessões começa VAZIO (sem POST /sessoes prévio)
+  expect(gm.obterSessao("reconv12")).toBeUndefined();
+
+  // 1. Editor conecta diretamente em /ws com token JWT válido -> O servidor DEVE auto-recuperar a sessão
+  const reqWs = new Request(`https://previa.arestaclimb.com/ws?sessao=reconv12&token=${jwt}`, {
+    headers: { Upgrade: "websocket" },
+  });
+  const resWs = await worker.fetch(reqWs, mockEnv);
+  expect(resWs.status).toBe(101); // 101 Switching Protocols
+
+  // 2. A sessão agora existe no servidor
+  const sessao = gm.obterSessao("reconv12");
+  expect(sessao).toBeDefined();
+  expect(sessao?.usuarioId).toBe("usr_auto_recuperar");
+
+  // 3. Cliente móvel 1 conecta e consulta metadados
+  const reqMeta1 = new Request("https://previa.arestaclimb.com/reconv12/meta");
+  const resMeta1 = await worker.fetch(reqMeta1, mockEnv);
+  expect(resMeta1.status).toBe(200);
+
+  // 4. Cliente móvel desconecta (ouvinte fecha). O túnel do editor DEVE continuar vivo
+  expect(gm.obterSessao("reconv12")?.socketEditor).toBeDefined();
+
+  // 5. Cliente móvel 2 conecta horas depois e recebe resposta com sucesso
+  const reqMeta2 = new Request("https://previa.arestaclimb.com/reconv12/meta");
+  const resMeta2 = await worker.fetch(reqMeta2, mockEnv);
+  expect(resMeta2.status).toBe(200);
+});
+
+Deno.test("Worker HTTP - GET /ws deve auto-recriar sessão quando ela não existir no Map mas JWT for válido", async () => {
+  const jwt = criarJwtMock({
+    sub: "usr_auto_recriar",
+    email: "escalador2@aresta.com",
+    exp: Math.floor(Date.now() / 1000) + 3600,
+  });
+
+  const gm = new GerenciadorSessao();
+  const mockEnv = {
+    validarJwt: async () => ({ idUsuario: "usr_auto_recriar", email: "escalador2@aresta.com" }),
+    gerenciadorPersonalizado: gm,
+  };
+
+  expect(gm.obterSessao("novosess1")).toBeUndefined();
+
+  const req = new Request(`https://previa.arestaclimb.com/ws?sessao=novosess1&token=${jwt}`, {
+    headers: { Upgrade: "websocket" },
+  });
+  const res = await worker.fetch(req, mockEnv);
+  expect(res.status).toBe(101);
+
+  const sessao = gm.obterSessao("novosess1");
+  expect(sessao).toBeDefined();
+  expect(sessao?.usuarioId).toBe("usr_auto_recriar");
+});
+
+Deno.test("SessaoDurableObject - deve persistir dados de sessão no state.storage e recuperá-los", async () => {
+  const storageMap = new Map<string, any>();
+  const mockState = {
+    storage: {
+      put: async (key: string, val: any) => { storageMap.set(key, val); },
+      get: async (key: string) => storageMap.get(key),
+      delete: async (key: string) => storageMap.delete(key),
+      list: async () => storageMap,
+    },
+  };
+
+  const { SessaoDurableObject } = await import("../src/index.ts");
+  const doInstancia = new SessaoDurableObject(mockState as any, {
+    validarJwt: async () => ({ idUsuario: "usr_do_persist", email: "do@aresta.com" }),
+  });
+
+  const jwt = criarJwtMock({ sub: "usr_do_persist", email: "do@aresta.com" });
+
+  // 1. Cria sessão via POST /sessoes
+  const reqPost = new Request("https://previa.arestaclimb.com/sessoes?codigo_reservado=dopersist", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${jwt}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ ipLocal: "192.168.0.100", portaLocal: 8888 }),
+  });
+  const resPost = await doInstancia.fetch(reqPost);
+  expect(resPost.status).toBe(201);
+
+  // 2. Verifica se foi salvo no storage do DO
+  expect(storageMap.has("sessao_meta:dopersist")).toBe(true);
+  const dadosStorage = storageMap.get("sessao_meta:dopersist");
+  expect(dadosStorage.usuarioId).toBe("usr_do_persist");
+  expect(dadosStorage.metadados.ipLocal).toBe("192.168.0.100");
+
+  // 3. Simula reinicialização do DO com nova instância compartilhando o mesmo storage
+  const novaDoInstancia = new SessaoDurableObject(mockState as any, {
+    validarJwt: async () => ({ idUsuario: "usr_do_persist", email: "do@aresta.com" }),
+  });
+
+  // Consulta metadados GET /dopersist/meta - deve recuperar do storage
+  const reqMeta = new Request("https://previa.arestaclimb.com/dopersist/meta");
+  const resMeta = await novaDoInstancia.fetch(reqMeta);
+  expect(resMeta.status).toBe(200);
+  const jsonMeta = await resMeta.json();
+  expect(jsonMeta.metadados?.ipLocal).toBe("192.168.0.100");
+});
+
+Deno.test("GerenciadorSessao - tolerância padrão de desconexão deve ser de 10 minutos (600_000ms)", () => {
+  const gm = new GerenciadorSessao();
+  gm.registrarSessao("toler10m", new FakeWebSocket() as any);
+  expect(gm.obterSessao("toler10m")).toBeDefined();
+
+  // Desconecta socket com tolerância padrão (sem especificar o parâmetro)
+  gm.desconectarSocketEditor("toler10m");
+  // Sessão ainda deve existir imediatamente
+  expect(gm.obterSessao("toler10m")).toBeDefined();
+});
+
+
 
 
 

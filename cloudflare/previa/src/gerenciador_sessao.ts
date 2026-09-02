@@ -128,7 +128,7 @@ export class GerenciadorSessao {
     return sessao;
   }
 
-  public desconectarSocketEditor(codigo: string, toleranciaMs = 60000): void {
+  public desconectarSocketEditor(codigo: string, toleranciaMs = 600000): void {
     const normalizado = this.normalizarCodigo(codigo);
     const sessao = this.sessoes.get(normalizado);
     if (!sessao) return;
