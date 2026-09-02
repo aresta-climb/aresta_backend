@@ -4,7 +4,7 @@
 import { GerenciadorSessao } from "./gerenciador_sessao.ts";
 import { MensagemEvento, RequisicaoProxy, RespostaProxy, MetadadosEditor } from "./tipos.ts";
 import { validarTokenJwt, extrairJwtDeCabecalho } from "./validador_jwt.ts";
-import { registrarInicioSessao, registrarFimSessao } from "./cliente_auditoria_supabase.ts";
+import { registrarInicioSessao, registrarFimSessao, obterQuantidadeSessoesAtivasBanco } from "./cliente_auditoria_supabase.ts";
 
 export const gerenciador = new GerenciadorSessao();
 
@@ -21,6 +21,7 @@ export interface ContextoWorker {
   SUPABASE_URL?: string;
   SUPABASE_PUBLISHABLE_KEY?: string;
   SUPABASE_SERVICE_ROLE_KEY?: string;
+  SESSAO_DO?: any;
   validarJwt?: typeof validarTokenJwt;
   gerenciadorPersonalizado?: GerenciadorSessao;
 }
@@ -31,6 +32,8 @@ export function criarRespostaJson(dados: any, status = 200, cabecalhosAdicionais
     headers: {
       "content-type": "application/json; charset=utf-8",
       "access-control-allow-origin": "*",
+      "access-control-allow-methods": "GET, HEAD, POST, OPTIONS",
+      "access-control-allow-headers": "Authorization, Content-Type, Accept, Upgrade",
       ...cabecalhosAdicionais,
     },
   });
@@ -60,11 +63,15 @@ function obterParWebSocket(): { clientSocket: WebSocket; serverSocket: WebSocket
   return { clientSocket: client, serverSocket: server };
 }
 
-export default {
-  async fetch(request: Request, env?: ContextoWorker): Promise<Response> {
-    const url = new URL(request.url);
-    const gerenciadorAtivo = env?.gerenciadorPersonalizado || gerenciador;
+export async function tratarRequisicao(
+  request: Request,
+  env?: ContextoWorker,
+  gerenciadorInstancia?: GerenciadorSessao,
+): Promise<Response> {
+  const gerenciadorAtivo = gerenciadorInstancia || gerenciador;
+  const url = new URL(request.url);
 
+  try {
     // Tratamento de CORS Preflight
     if (request.method === "OPTIONS") {
       return new Response(null, {
@@ -90,10 +97,30 @@ export default {
         return Response.redirect("https://arestaclimb.com/editor", 302);
       }
 
+      let sessoesAtivas = gerenciadorAtivo.quantidadeSessoesAtivas();
+
+      if (env?.SESSAO_DO) {
+        try {
+          const regStub = env.SESSAO_DO.get(env.SESSAO_DO.idFromName("__registro_global__"));
+          const respReg = await regStub.fetch("https://previa.arestaclimb.com/__registro__/total");
+          if (respReg.ok) {
+            const dataReg = (await respReg.json()) as any;
+            if (typeof dataReg?.total === "number") {
+              sessoesAtivas = dataReg.total;
+            }
+          }
+        } catch {}
+      } else if (sessoesAtivas === 0) {
+        const totalSupabase = await obterQuantidadeSessoesAtivasBanco(env);
+        if (totalSupabase !== null) {
+          sessoesAtivas = totalSupabase;
+        }
+      }
+
       return criarRespostaJson({
         servico: "Aresta Previa Relay",
         status: "operacional",
-        sessoesAtivas: gerenciadorAtivo.quantidadeSessoesAtivas(),
+        sessoesAtivas,
       });
     }
 
@@ -131,7 +158,8 @@ export default {
         undefined;
       const userAgent = request.headers.get("user-agent") || undefined;
 
-      const codigoGerado = gerenciadorAtivo.gerarCodigoUnico();
+      const codigoReservado = url.searchParams.get("codigo_reservado");
+      const codigoGerado = codigoReservado || gerenciadorAtivo.gerarCodigoUnico();
       const codigoFormatado = gerenciadorAtivo.formatarCodigo(codigoGerado);
       const urlPrevia = `https://previa.arestaclimb.com/${codigoFormatado}`;
 
@@ -160,6 +188,17 @@ export default {
         idAuditoria || undefined,
         codigoGerado,
       );
+
+      // Registra no registry global do Durable Object
+      if (env?.SESSAO_DO) {
+        try {
+          const regStub = env.SESSAO_DO.get(env.SESSAO_DO.idFromName("__registro_global__"));
+          await regStub.fetch(
+            `https://previa.arestaclimb.com/__registro__/adicionar?codigo=${codigoGerado}&usuario=${encodeURIComponent(usuario.idUsuario)}`,
+            { method: "POST" },
+          );
+        } catch {}
+      }
 
       return criarRespostaJson(
         {
@@ -258,6 +297,7 @@ export default {
 
       serverSocket.addEventListener("message", (event: any) => {
         try {
+          sessao.ultimoAcessoEm = Date.now();
           const rawData = typeof event.data === "string" ? event.data : new TextDecoder().decode(event.data);
           const dados: MensagemEvento = JSON.parse(rawData);
 
@@ -265,21 +305,24 @@ export default {
             sessao.metadados = { ...sessao.metadados, ...dados.dados };
             serverSocket.send(JSON.stringify({ tipo: "confirmacao_registro", status: "ok" }));
           } else if (dados.tipo === "evento") {
-            gerenciadorAtivo.emitirEventoParaOuvintes(sessaoId, dados.dados || dados);
+            console.log(`[DO ${codigoNormalizado}] ⚡ Evento recebido do editor desktop:`, JSON.stringify(dados));
+            gerenciadorAtivo.emitirEventoParaOuvintes(codigoNormalizado, dados.dados || dados);
           } else if (dados.tipo === "resposta_proxy" && dados.dados) {
-            gerenciadorAtivo.registrarRespostaProxy(sessaoId, dados.dados as RespostaProxy);
+            gerenciadorAtivo.registrarRespostaProxy(codigoNormalizado, dados.dados as RespostaProxy);
           } else if (dados.tipo === "ping") {
             serverSocket.send(JSON.stringify({ tipo: "pong", timestamp: Date.now() }));
+          } else if (dados.tipo === "pong") {
+            sessao.ultimoAcessoEm = Date.now();
           }
         } catch {}
       });
 
       serverSocket.addEventListener("close", () => {
-        gerenciadorAtivo.removerSessao(sessaoId, 1000, "desconexao_editor");
+        gerenciadorAtivo.desconectarSocketEditor(sessaoId);
       });
 
       serverSocket.addEventListener("error", () => {
-        gerenciadorAtivo.removerSessao(sessaoId, 1006, "erro_socket_editor");
+        gerenciadorAtivo.desconectarSocketEditor(sessaoId);
       });
 
       const responseInit: any = { status: 101 };
@@ -416,16 +459,27 @@ export default {
     .btn-abrir:hover {
       opacity: 0.9;
     }
+    .btn-copiar {
+      margin-top: 10px;
+      background: transparent;
+      border: 1px solid #334155;
+      color: #94a3b8;
+      padding: 8px 16px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 600;
+    }
+    .btn-copiar:hover {
+      background: #334155;
+      color: #fff;
+    }
     .rodape {
       margin-top: 20px;
       font-size: 12px;
       color: var(--cor-subtexto);
     }
   </style>
-  <script>
-    // Tenta abrir diretamente o aplicativo móvel via Custom Scheme
-    window.location.href = "aresta://previa/${codigoFormatado}";
-  </script>
 </head>
 <body>
   <div class="card">
@@ -435,15 +489,33 @@ export default {
     
     <div class="codigo-box">
       <div class="codigo-label">Código de Pareamento</div>
-      <div class="codigo-valor">${codigoFormatado}</div>
+      <div class="codigo-valor" id="codigo-val">${codigoFormatado}</div>
     </div>
 
     <a href="aresta://previa/${codigoFormatado}" class="btn-abrir">Abrir no Aplicativo Aresta</a>
+    <button class="btn-copiar" id="btn-copiar" onclick="copiarCodigo()">Copiar Código</button>
 
     <div class="rodape">
       Abra o aplicativo Aresta Climb no seu celular ou escaneie o QR Code no seu computador.
     </div>
   </div>
+
+  <script>
+    function copiarCodigo() {
+      navigator.clipboard.writeText("${codigoFormatado}").then(() => {
+        const btn = document.getElementById("btn-copiar");
+        btn.innerText = "Código Copiado!";
+        setTimeout(() => { btn.innerText = "Copiar Código"; }, 2000);
+      });
+    }
+
+    // Apenas em navegadores móveis (Android / iOS) tenta disparar o app link suavemente
+    if (/android|iphone|ipad|ipod/i.test(navigator.userAgent)) {
+      setTimeout(() => {
+        window.location.href = "aresta://previa/${codigoFormatado}";
+      }, 300);
+    }
+  </script>
 </body>
 </html>`;
 
@@ -487,7 +559,7 @@ export default {
     });
 
     const mensagemProxy: MensagemEvento = {
-      tipo: "resposta_proxy",
+      tipo: "requisicao_proxy",
       dados: {
         id: idRequisicao,
         metodo: request.method,
@@ -530,12 +602,170 @@ export default {
       });
 
       try {
-        sessao.socketEditor?.send(JSON.stringify(mensagemProxy));
-      } catch (err) {
-        sessao.requisicoesPendentes.delete(idRequisicao);
+        sessao.socketEditor!.send(JSON.stringify(mensagemProxy));
+      } catch {
         clearTimeout(timerTimeout);
-        resolve(criarRespostaJson({ erro: "Falha na comunicação com o editor desktop." }, 502));
+        sessao.requisicoesPendentes.delete(idRequisicao);
+        resolve(criarRespostaJson({ erro: "Falha ao enviar requisição ao editor desktop." }, 502));
       }
     });
+  } catch (erro) {
+    console.error(`[Worker] Erro inesperado ao processar requisição: ${erro}`);
+    return criarRespostaJson({ erro: "Erro interno do servidor." }, 500);
+  }
+}
+
+/**
+ * Durable Object para gerenciamento de sessão unificado e globalmente sincronizado.
+ */
+export class SessaoDurableObject {
+  public gerenciador: GerenciadorSessao;
+  private env?: ContextoWorker;
+  private state: any;
+  private sessoesRegistradas = new Map<string, { timestamp: number; usuarioId?: string }>();
+
+  constructor(state: any, env: any) {
+    this.state = state;
+    this.env = env;
+    this.gerenciador = new GerenciadorSessao();
+    this.gerenciador.aoEncerrarSessao = (sessao, motivo, duracaoSegundos) => {
+      registrarFimSessao(sessao.idAuditoria || sessao.codigo, {
+        encerradoEm: new Date().toISOString(),
+        duracaoSegundos,
+        motivoEncerramento: motivo,
+      });
+
+      // Notifica o registro global sobre o encerramento da sessão
+      if (this.env?.SESSAO_DO) {
+        try {
+          const regStub = this.env.SESSAO_DO.get(this.env.SESSAO_DO.idFromName("__registro_global__"));
+          regStub
+            .fetch(
+              `https://previa.arestaclimb.com/__registro__/remover?codigo=${sessao.codigo}`,
+              { method: "POST" },
+            )
+            .catch(() => {});
+        } catch {}
+      }
+    };
+  }
+
+  async fetch(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+    const pathname = url.pathname.replace(/\/+/g, "/");
+
+    // Endpoints internos de agregação global de métricas / sessões ativas
+    if (pathname.startsWith("/__registro__/")) {
+      const agora = Date.now();
+
+      if (pathname === "/__registro__/adicionar") {
+        const cod = url.searchParams.get("codigo");
+        const usr = url.searchParams.get("usuario") || undefined;
+        if (cod) {
+          this.sessoesRegistradas.set(cod, { timestamp: agora, usuarioId: usr });
+          if (this.state?.storage?.put) {
+            await this.state.storage.put(`sessao:${cod}`, { timestamp: agora, usuarioId: usr });
+          }
+        }
+        return criarRespostaJson({ ok: true });
+      }
+
+      if (pathname === "/__registro__/remover") {
+        const cod = url.searchParams.get("codigo");
+        if (cod) {
+          this.sessoesRegistradas.delete(cod);
+          if (this.state?.storage?.delete) {
+            await this.state.storage.delete(`sessao:${cod}`);
+          }
+        }
+        return criarRespostaJson({ ok: true });
+      }
+
+      if (pathname === "/__registro__/total") {
+        let total = 0;
+        if (this.state?.storage?.list) {
+          const map = await this.state.storage.list({ prefix: "sessao:" });
+          for (const [key, val] of map.entries()) {
+            if (agora - ((val as any)?.timestamp || 0) > 30 * 60 * 1000) {
+              await this.state.storage.delete(key);
+            } else {
+              total++;
+            }
+          }
+        } else {
+          for (const [cod, item] of Array.from(this.sessoesRegistradas.entries())) {
+            if (agora - item.timestamp > 30 * 60 * 1000) {
+              this.sessoesRegistradas.delete(cod);
+            } else {
+              total++;
+            }
+          }
+        }
+        return criarRespostaJson({ total });
+      }
+    }
+
+    return tratarRequisicao(request, this.env, this.gerenciador);
+  }
+}
+
+export default {
+  async fetch(request: Request, env?: ContextoWorker): Promise<Response> {
+    const url = new URL(request.url);
+    const pathname = url.pathname.replace(/\/+/g, "/");
+
+    // Preflight CORS
+    if (request.method === "OPTIONS") {
+      return new Response(null, {
+        status: 204,
+        headers: {
+          "access-control-allow-origin": "*",
+          "access-control-allow-methods": "GET, HEAD, POST, OPTIONS",
+          "access-control-allow-headers": "Authorization, Content-Type, Accept, Upgrade",
+        },
+      });
+    }
+
+    // Rotas globais / health / well-known
+    if (
+      pathname === "/" ||
+      pathname === "/health" ||
+      pathname.startsWith("/.well-known/")
+    ) {
+      return tratarRequisicao(request, env, env?.gerenciadorPersonalizado || gerenciador);
+    }
+
+    // Encaminha requisições com código de sessão para o Durable Object correspondente
+    if (env?.SESSAO_DO) {
+      let codigoSessao: string | null = null;
+
+      if (pathname === "/sessoes" || pathname === "/sessions") {
+        const codigo = (env?.gerenciadorPersonalizado || gerenciador).gerarCodigoUnico();
+        const urlModificada = new URL(request.url);
+        urlModificada.searchParams.set("codigo_reservado", codigo);
+        const id = env.SESSAO_DO.idFromName(codigo);
+        const stub = env.SESSAO_DO.get(id);
+        const novaReq = new Request(urlModificada.toString(), request);
+        return stub.fetch(novaReq);
+      }
+
+      if (pathname === "/ws") {
+        codigoSessao = url.searchParams.get("sessao") || url.searchParams.get("session");
+      } else {
+        const partes = pathname.split("/").filter(Boolean);
+        if (partes.length > 0) {
+          codigoSessao = partes[0];
+        }
+      }
+
+      if (codigoSessao) {
+        const codigoNormalizado = (env?.gerenciadorPersonalizado || gerenciador).normalizarCodigo(codigoSessao);
+        const id = env.SESSAO_DO.idFromName(codigoNormalizado);
+        const stub = env.SESSAO_DO.get(id);
+        return stub.fetch(request);
+      }
+    }
+
+    return tratarRequisicao(request, env, env?.gerenciadorPersonalizado || gerenciador);
   },
 };

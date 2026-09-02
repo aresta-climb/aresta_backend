@@ -3,6 +3,20 @@
   "name": "aresta-previa-relay",
   "main": "src/index.ts",
   "compatibility_date": "2026-08-01",
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "SESSAO_DO",
+        "class_name": "SessaoDurableObject"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["SessaoDurableObject"]
+    }
+  ],
   "routes": [
     {
       "pattern": "previa.arestaclimb.com",

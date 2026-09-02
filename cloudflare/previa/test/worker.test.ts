@@ -4,8 +4,8 @@
 import { expect } from "jsr:@std/expect";
 import { GerenciadorSessao } from "../src/gerenciador_sessao.ts";
 import worker, { gerenciador } from "../src/index.ts";
+import { registrarInicioSessao, registrarFimSessao, obterQuantidadeSessoesAtivasBanco } from "../src/cliente_auditoria_supabase.ts";
 import { validarTokenJwt, decodificarPayloadJwt, extrairJwtDeCabecalho } from "../src/validador_jwt.ts";
-import { registrarInicioSessao, registrarFimSessao } from "../src/cliente_auditoria_supabase.ts";
 
 class FakeWebSocket {
   public sent: string[] = [];
@@ -462,7 +462,7 @@ Deno.test("Worker HTTP - deve encaminhar requisição via proxy e resolver respo
 
   expect(socket.sent.length).toBe(1);
   const payload = JSON.parse(socket.sent[0]);
-  expect(payload.tipo).toBe("resposta_proxy");
+  expect(payload.tipo).toBe("requisicao_proxy");
   expect(payload.dados.caminho).toBe("/indice.binarypb");
 
   gerenciador.registrarRespostaProxy("k9x2p83a", {
@@ -485,3 +485,451 @@ Deno.test("Worker HTTP - deve responder verificação de Android App Links e iOS
   const resIos = await worker.fetch(new Request("https://previa.arestaclimb.com/.well-known/apple-app-site-association"));
   expect(resIos.status).toBe(200);
 });
+
+// -----------------------------------------------------------------------------
+// Testes de SessaoDurableObject e Roteamento Global
+// -----------------------------------------------------------------------------
+
+Deno.test("SessaoDurableObject - deve instanciar e processar requisições em sua própria instância", async () => {
+  const { SessaoDurableObject } = await import("../src/index.ts");
+  const doInstance = new SessaoDurableObject({}, {});
+
+  expect(doInstance.gerenciador).toBeDefined();
+
+  // Teste fetch no DO
+  const req = new Request("https://previa.arestaclimb.com/health");
+  const res = await doInstance.fetch(req);
+  expect(res.status).toBe(200);
+
+  // Testes de endpoints de registro global no DO
+  const resAdd = await doInstance.fetch(new Request("https://previa.arestaclimb.com/__registro__/adicionar?codigo=abc12345&usuario=usr_1", { method: "POST" }));
+  expect(resAdd.status).toBe(200);
+
+  const resTotal1 = await doInstance.fetch(new Request("https://previa.arestaclimb.com/__registro__/total"));
+  const dataTotal1 = await resTotal1.json();
+  expect(dataTotal1.total).toBe(1);
+
+  const resRem = await doInstance.fetch(new Request("https://previa.arestaclimb.com/__registro__/remover?codigo=abc12345", { method: "POST" }));
+  expect(resRem.status).toBe(200);
+
+  const resTotal2 = await doInstance.fetch(new Request("https://previa.arestaclimb.com/__registro__/total"));
+  const dataTotal2 = await resTotal2.json();
+  expect(dataTotal2.total).toBe(0);
+});
+
+Deno.test("Worker HTTP - deve rotear requisições via env.SESSAO_DO quando configurado", async () => {
+  const jwt = criarJwtMock({
+    sub: "usr_do_test",
+    email: "do@aresta.com",
+    exp: Math.floor(Date.now() / 1000) + 3600,
+  });
+
+  const chamadasStub: string[] = [];
+  const fakeStub = {
+    fetch: async (r: Request) => {
+      chamadasStub.push(r.url);
+      return new Response(JSON.stringify({ stub: "ok" }), { status: 200 });
+    },
+  };
+
+  const mockEnv = {
+    SESSAO_DO: {
+      idFromName: (nome: string) => `id_${nome}`,
+      get: (id: string) => fakeStub,
+    },
+  };
+
+  // 1. POST /sessoes
+  const reqPost = new Request("https://previa.arestaclimb.com/sessoes", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${jwt}` },
+  });
+  const resPost = await worker.fetch(reqPost, mockEnv);
+  expect(resPost.status).toBe(200);
+  expect(chamadasStub.length).toBe(1);
+  expect(chamadasStub[0]).toContain("codigo_reservado=");
+
+  // 2. GET /ws?sessao=k9x2p83a
+  const reqWs = new Request(`https://previa.arestaclimb.com/ws?sessao=k9x2p83a&token=${jwt}`, {
+    headers: { Upgrade: "websocket" },
+  });
+  const resWs = await worker.fetch(reqWs, mockEnv);
+  expect(resWs.status).toBe(200);
+  expect(chamadasStub.length).toBe(2);
+
+  // 3. GET /k9x2p83a/indice.binarypb
+  const reqProxy = new Request("https://previa.arestaclimb.com/k9x2p83a/indice.binarypb");
+  const resProxy = await worker.fetch(reqProxy, mockEnv);
+  expect(resProxy.status).toBe(200);
+  expect(chamadasStub.length).toBe(3);
+});
+
+// -----------------------------------------------------------------------------
+// Testes Adicionais de GerenciadorSessao (Expiração, Limpeza e Ouvintes)
+// -----------------------------------------------------------------------------
+
+Deno.test("GerenciadorSessao - deve expirar sessão por inatividade (> 30 minutos)", () => {
+  const gm = new GerenciadorSessao();
+  const socket = new FakeWebSocket();
+  const sessao = gm.registrarSessao("temp1234", socket as any);
+
+  expect(gm.obterSessao("temp1234")).toBeDefined();
+
+  // Simula inatividade de 31 minutos
+  sessao.ultimoAcessoEm = Date.now() - (31 * 60 * 1000);
+
+  expect(gm.obterSessao("temp1234")).toBeUndefined();
+  expect(socket.closed).toBe(true);
+});
+
+Deno.test("GerenciadorSessao - deve encerrar sessão anterior do mesmo usuário", () => {
+  const gm = new GerenciadorSessao();
+  const s1 = gm.criarSessao("usr_unico", "usr@aresta.com", {}, undefined, undefined, undefined, "cod_antigo");
+  expect(gm.quantidadeSessoesAtivas()).toBe(1);
+
+  const s2 = gm.criarSessao("usr_unico", "usr@aresta.com", {}, undefined, undefined, undefined, "cod_novo");
+  expect(gm.quantidadeSessoesAtivas()).toBe(1);
+  expect(gm.obterSessao("cod_antigo")).toBeUndefined();
+  expect(gm.obterSessao("cod_novo")).toBeDefined();
+});
+
+Deno.test("GerenciadorSessao - removerOuvinte e falha no envio de evento devem remover ouvinte", () => {
+  const gm = new GerenciadorSessao();
+  const socketEditor = new FakeWebSocket();
+  gm.registrarSessao("setor123", socketEditor as any);
+
+  const ouvinteBom = new FakeWebSocket();
+  const ouvinteQuebrado = new FakeWebSocket();
+  ouvinteQuebrado.send = () => { throw new Error("Erro de rede"); };
+
+  gm.adicionarOuvinte("setor123", ouvinteBom as any);
+  gm.adicionarOuvinte("setor123", ouvinteQuebrado as any);
+
+  const sessao = gm.obterSessao("setor123")!;
+  expect(sessao.ouvintes.size).toBe(2);
+
+  // Ao emitir evento, o ouvinteQuebrado deve falhar e ser removido
+  gm.emitirEventoParaOuvintes("setor123", { recarregar: "setor1" });
+  expect(ouvinteBom.sent.length).toBe(1);
+  expect(sessao.ouvintes.size).toBe(1);
+
+  // Remover ouvinte explicitamente
+  gm.removerOuvinte("setor123", ouvinteBom as any);
+  expect(sessao.ouvintes.size).toBe(0);
+});
+
+Deno.test("GerenciadorSessao - registrarRespostaProxy com id desconhecido deve retornar false", () => {
+  const gm = new GerenciadorSessao();
+  gm.registrarSessao("sess_proxy", new FakeWebSocket() as any);
+
+  const ok = gm.registrarRespostaProxy("sess_proxy", {
+    id: "id_inexistente",
+    status: 200,
+    cabecalhos: {},
+  });
+  expect(ok).toBe(false);
+
+  expect(gm.registrarRespostaProxy("sessao_inexistente", {
+    id: "qualquer",
+    status: 200,
+    cabecalhos: {},
+  })).toBe(false);
+});
+
+// -----------------------------------------------------------------------------
+// Testes Adicionais do Validador JWT
+// -----------------------------------------------------------------------------
+
+Deno.test("Validador JWT - deve rejeitar tokens malformados e expirados", async () => {
+  expect(decodificarPayloadJwt("invalido")).toBeNull();
+  expect(decodificarPayloadJwt("a.b")).toBeNull();
+  expect(extrairJwtDeCabecalho(null)).toBe("");
+  expect(extrairJwtDeCabecalho("")).toBe("");
+
+  const jwtExpirado = criarJwtMock({
+    sub: "usr_exp",
+    email: "exp@aresta.com",
+    exp: Math.floor(Date.now() / 1000) - 100,
+  });
+
+  const resExp = await validarTokenJwt(jwtExpirado);
+  expect(resExp).toBeNull();
+
+  // Com validador personalizado
+  const resPers = await validarTokenJwt("qualquer", undefined, async () => {
+    return { idUsuario: "custom_id", email: "custom@aresta.com" };
+  });
+  expect(resPers?.idUsuario).toBe("custom_id");
+});
+
+Deno.test("Validador JWT - deve tratar erros de rede ou retorno inválido do Supabase Auth", async () => {
+  const jwtValido = criarJwtMock({
+    sub: "usr_net",
+    email: "net@aresta.com",
+    exp: Math.floor(Date.now() / 1000) + 3600,
+  });
+
+  const mockAmbienteErro = {
+    SUPABASE_URL: "https://mock.supabase.co",
+    SUPABASE_PUBLISHABLE_KEY: "mock_pub_key",
+    executarFetch: async () => { throw new Error("Falha de rede"); },
+  };
+
+  const resErro = await validarTokenJwt(jwtValido, mockAmbienteErro as any);
+  expect(resErro).toBeNull();
+
+  const mockAmbienteCorpoInvalido = {
+    SUPABASE_URL: "https://mock.supabase.co",
+    SUPABASE_PUBLISHABLE_KEY: "mock_pub_key",
+    executarFetch: async () => new Response(JSON.stringify({}), { status: 200 }),
+  };
+
+  const resInvalido = await validarTokenJwt(jwtValido, mockAmbienteCorpoInvalido as any);
+  expect(resInvalido).toBeNull();
+});
+
+// -----------------------------------------------------------------------------
+// Testes Adicionais de Auditoria Supabase
+// -----------------------------------------------------------------------------
+
+Deno.test("Cliente Auditoria Supabase - cenários de erro e encerramento", async () => {
+  // Sem credenciais
+  const semCredInicio = await registrarInicioSessao({} as any, {});
+  expect(semCredInicio).toBeNull();
+
+  const semCredFim = await registrarFimSessao("id_123", {} as any, {});
+  expect(semCredFim).toBe(false);
+
+  // Com erro de fetch no início
+  const erroFetchInicio = await registrarInicioSessao({
+    usuarioId: "u1",
+    usuarioEmail: "u1@aresta.com",
+    codigo: "cod1",
+    urlPrevia: "https://previa.arestaclimb.com/cod1",
+  }, {
+    SUPABASE_URL: "https://mock.supabase.co",
+    SUPABASE_SERVICE_ROLE_KEY: "key",
+    executarFetch: async () => { throw new Error("Erro"); },
+  });
+  expect(erroFetchInicio).toBeNull();
+
+  // Com retorno 500 no encerramento por código
+  const fim500 = await registrarFimSessao("cod1", {
+    encerradoEm: new Date().toISOString(),
+    duracaoSegundos: 10,
+    motivoEncerramento: "normal",
+  }, {
+    SUPABASE_URL: "https://mock.supabase.co",
+    SUPABASE_SERVICE_ROLE_KEY: "key",
+    executarFetch: async () => new Response("Erro interno", { status: 500 }),
+  });
+  expect(fim500).toBe(false);
+
+  // Consulta de quantidade de sessões ativas no banco
+  const contagemNula = await obterQuantidadeSessoesAtivasBanco({});
+  expect(contagemNula).toBeNull();
+
+  const contagemHead = await obterQuantidadeSessoesAtivasBanco({
+    SUPABASE_URL: "https://mock.supabase.co",
+    SUPABASE_SERVICE_ROLE_KEY: "key",
+    executarFetch: async () => new Response(null, {
+      status: 200,
+      headers: { "content-range": "0-2/3" },
+    }),
+  });
+  expect(contagemHead).toBe(3);
+
+  const contagemGet = await obterQuantidadeSessoesAtivasBanco({
+    SUPABASE_URL: "https://mock.supabase.co",
+    SUPABASE_SERVICE_ROLE_KEY: "key",
+    executarFetch: async () => new Response(JSON.stringify([{ id: 1 }, { id: 2 }]), {
+      status: 200,
+    }),
+  });
+  expect(contagemGet).toBe(2);
+});
+
+Deno.test("Worker HTTP - /health deve consultar Supabase quando memória do isolate estiver vazia", async () => {
+  const gmVazio = new GerenciadorSessao();
+  const req = new Request("https://previa.arestaclimb.com/health");
+  const res = await worker.fetch(req, {
+    gerenciadorPersonalizado: gmVazio,
+    SUPABASE_URL: "https://mock.supabase.co",
+    SUPABASE_SERVICE_ROLE_KEY: "key",
+    executarFetch: async () => new Response(null, {
+      status: 200,
+      headers: { "content-range": "*/4" },
+    }),
+  } as any);
+
+  expect(res.status).toBe(200);
+  const json = await res.json();
+  expect(json.status).toBe("operacional");
+  expect(json.sessoesAtivas).toBe(4);
+});
+
+// -----------------------------------------------------------------------------
+// Testes de Edge Cases de Proxy e WebSocket no Worker
+// -----------------------------------------------------------------------------
+
+Deno.test("Worker HTTP - Proxy retorna 503 quando editor desktop não estiver conectado", async () => {
+  const gm = new GerenciadorSessao();
+  gm.criarSessao("usr_no_editor", "no_editor@aresta.com", {}, undefined, undefined, undefined, "noeditor");
+
+  const req = new Request("https://previa.arestaclimb.com/noeditor/arquivo.png");
+  const res = await worker.fetch(req, { gerenciadorPersonalizado: gm });
+  expect(res.status).toBe(503);
+});
+
+Deno.test("Worker HTTP - /events exige upgrade de websocket e retorna 426 se for HTTP comum", async () => {
+  const gm = new GerenciadorSessao();
+  gm.registrarSessao("eventsess", new FakeWebSocket() as any);
+
+  // Sem header upgrade
+  const reqSemUpgrade = new Request("https://previa.arestaclimb.com/eventsess/events");
+  const resSemUpgrade = await worker.fetch(reqSemUpgrade, { gerenciadorPersonalizado: gm });
+  expect(resSemUpgrade.status).toBe(426);
+
+  // Com sessão inexistente
+  const reqInexistente = new Request("https://previa.arestaclimb.com/inexistente/events", {
+    headers: { Upgrade: "websocket" },
+  });
+  const resInexistente = await worker.fetch(reqInexistente, { gerenciadorPersonalizado: gm });
+  expect(resInexistente.status).toBe(404);
+
+  // Com upgrade válido e sessão existente
+  const reqValido = new Request("https://previa.arestaclimb.com/eventsess/events", {
+    headers: { Upgrade: "websocket" },
+  });
+  const resValido = await worker.fetch(reqValido, { gerenciadorPersonalizado: gm });
+  expect(resValido.status).toBe(101);
+
+  // Com rota em português /eventos
+  const reqEventos = new Request("https://previa.arestaclimb.com/eventsess/eventos", {
+    headers: { Upgrade: "websocket" },
+  });
+  const resEventos = await worker.fetch(reqEventos, { gerenciadorPersonalizado: gm });
+  expect(resEventos.status).toBe(101);
+});
+
+Deno.test("Worker HTTP - Tratamento completo de mensagens e eventos no túnel /ws", async () => {
+  const jwt = criarJwtMock({
+    sub: "usr_msg_test",
+    email: "msg@aresta.com",
+    exp: Math.floor(Date.now() / 1000) + 3600,
+  });
+
+  const gm = new GerenciadorSessao();
+  gm.criarSessao("usr_msg_test", "msg@aresta.com", {}, undefined, undefined, undefined, "msg12345");
+
+  const mockEnv = {
+    validarJwt: async () => ({ idUsuario: "usr_msg_test", email: "msg@aresta.com" }),
+    gerenciadorPersonalizado: gm,
+  };
+
+  const req = new Request(`https://previa.arestaclimb.com/ws?sessao=msg12345&token=${jwt}`, {
+    headers: { Upgrade: "websocket" },
+  });
+  const res = await worker.fetch(req, mockEnv);
+  expect(res.status).toBe(101);
+
+  const sessao = gm.obterSessao("msg12345")!;
+  const socketEditor = sessao.socketEditor as any;
+
+  // 1. Mensagem de ping -> pong
+  socketEditor.dispatchEvent(new MessageEvent("message", {
+    data: JSON.stringify({ tipo: "ping" }),
+  }));
+
+  // 2. Mensagem de registro
+  socketEditor.dispatchEvent(new MessageEvent("message", {
+    data: JSON.stringify({ tipo: "registro", dados: { ipLocal: "10.0.0.5", portaLocal: 9000 } }),
+  }));
+  expect(sessao.metadados.ipLocal).toBe("10.0.0.5");
+
+  // 3. Mensagem de evento para ouvintes
+  const ouvinte = new FakeWebSocket();
+  gm.adicionarOuvinte("msg12345", ouvinte as any);
+  socketEditor.dispatchEvent(new MessageEvent("message", {
+    data: JSON.stringify({ tipo: "evento", dados: { recarregar: "setor_xyz" } }),
+  }));
+  expect(ouvinte.sent.length).toBe(1);
+
+  // 4. Mensagem de resposta_proxy
+  let respostaRecebida = false;
+  sessao.requisicoesPendentes.set("req_teste_1", () => { respostaRecebida = true; });
+  socketEditor.dispatchEvent(new MessageEvent("message", {
+    data: JSON.stringify({ tipo: "resposta_proxy", dados: { id: "req_teste_1", status: 200, cabecalhos: {} } }),
+  }));
+  expect(respostaRecebida).toBe(true);
+
+  // 5. Mensagem de pong de volta do editor
+  socketEditor.dispatchEvent(new MessageEvent("message", {
+    data: JSON.stringify({ tipo: "pong" }),
+  }));
+  expect(sessao.ultimoAcessoEm).toBeGreaterThan(0);
+
+  // 6. Fechamento no socket desvincula editor sem destruir imediatamente
+  socketEditor.dispatchEvent(new CloseEvent("close"));
+  expect(sessao.socketEditor).toBeUndefined();
+  expect(gm.obterSessao("msg12345")).toBeDefined();
+});
+
+Deno.test("GerenciadorSessao - desconectarSocketEditor remove sessão após período de tolerância", async () => {
+  const gm = new GerenciadorSessao();
+  gm.registrarSessao("tolerancia1", new FakeWebSocket() as any);
+
+  expect(gm.obterSessao("tolerancia1")).toBeDefined();
+  gm.desconectarSocketEditor("tolerancia1", 50);
+
+  // Antes de 50ms, a sessão ainda existe
+  expect(gm.obterSessao("tolerancia1")).toBeDefined();
+
+  // Aguarda expirar a tolerância
+  await new Promise((r) => setTimeout(r, 80));
+  expect(gm.obterSessao("tolerancia1")).toBeUndefined();
+});
+
+Deno.test("Worker HTTP - Aliases /sessions e /meta", async () => {
+  const jwt = criarJwtMock({
+    sub: "usr_alias",
+    email: "alias@aresta.com",
+    exp: Math.floor(Date.now() / 1000) + 3600,
+  });
+
+  const gm = new GerenciadorSessao();
+  const mockEnv = {
+    validarJwt: async () => ({ idUsuario: "usr_alias", email: "alias@aresta.com" }),
+    gerenciadorPersonalizado: gm,
+  };
+
+  // POST /sessions
+  const reqPost = new Request("https://previa.arestaclimb.com/sessions", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${jwt}` },
+  });
+  const resPost = await worker.fetch(reqPost, mockEnv);
+  expect(resPost.status).toBe(201);
+  const jsonPost = await resPost.json();
+
+  // GET /<codigo>/meta
+  const reqMeta = new Request(`https://previa.arestaclimb.com/${jsonPost.codigo}/meta`);
+  const resMeta = await worker.fetch(reqMeta, mockEnv);
+  expect(resMeta.status).toBe(200);
+});
+
+Deno.test("Worker HTTP - Erro de envio no socket durante proxy reverso deve retornar 502", async () => {
+  const gm = new GerenciadorSessao();
+  const socketQuebrado = {
+    send: () => { throw new Error("Falha no socket"); },
+    close: () => {},
+  };
+  gm.registrarSessao("quebrado1", socketQuebrado as any);
+
+  const req = new Request("https://previa.arestaclimb.com/quebrado1/teste.bin");
+  const res = await worker.fetch(req, { gerenciadorPersonalizado: gm });
+  expect(res.status).toBe(502);
+});
+
+
+

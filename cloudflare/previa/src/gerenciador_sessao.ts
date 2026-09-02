@@ -55,6 +55,15 @@ export class GerenciadorSessao {
     const codigo = codigoCustom ? this.normalizarCodigo(codigoCustom) : this.gerarCodigoUnico();
     const agora = Date.now();
 
+    // Se o mesmo usuário já possui uma sessão ativa, encerra a anterior
+    if (usuarioId) {
+      for (const [cod, s] of Array.from(this.sessoes.entries())) {
+        if (s.usuarioId === usuarioId) {
+          this.removerSessao(cod, 1000, "Nova sessão iniciada pelo mesmo usuário");
+        }
+      }
+    }
+
     if (this.sessoes.has(codigo)) {
       this.removerSessao(codigo, 1000, "Nova sessão sobrepôs a anterior");
     }
@@ -117,6 +126,23 @@ export class GerenciadorSessao {
 
     sessao.ultimoAcessoEm = Date.now();
     return sessao;
+  }
+
+  public desconectarSocketEditor(codigo: string, toleranciaMs = 60000): void {
+    const normalizado = this.normalizarCodigo(codigo);
+    const sessao = this.sessoes.get(normalizado);
+    if (!sessao) return;
+
+    sessao.socketEditor = undefined;
+    sessao.ultimoAcessoEm = Date.now();
+
+    // Se não houver reconexão durante o período de tolerância, remove a sessão
+    setTimeout(() => {
+      const s = this.sessoes.get(normalizado);
+      if (s && !s.socketEditor) {
+        this.removerSessao(normalizado, 1000, "Editor não reconectou no tempo limite");
+      }
+    }, toleranciaMs);
   }
 
   public adicionarOuvinte(codigo: string, socketOuvinte: WebSocket): boolean {

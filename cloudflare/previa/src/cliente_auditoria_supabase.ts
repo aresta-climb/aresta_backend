@@ -119,3 +119,64 @@ export async function registrarFimSessao(
     return false;
   }
 }
+
+/**
+ * Consulta a quantidade global de sessões ativas na tabela de auditoria do Supabase.
+ */
+export async function obterQuantidadeSessoesAtivasBanco(
+  contexto?: ContextoAuditoria,
+): Promise<number | null> {
+  const supabaseUrl =
+    contexto?.SUPABASE_URL ||
+    (typeof Deno !== "undefined" ? Deno.env.get("SUPABASE_URL") : undefined);
+  const serviceKey =
+    contexto?.SUPABASE_SERVICE_ROLE_KEY ||
+    (typeof Deno !== "undefined" ? Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") : undefined);
+  const fetchFn = contexto?.executarFetch || fetch;
+
+  if (!supabaseUrl || !serviceKey) {
+    return null;
+  }
+
+  const endpoint = `${supabaseUrl.replace(/\/$/, "")}/rest/v1/auditoria_sessoes_previa?encerrado_em=is.null&select=id`;
+
+  try {
+    const resposta = await fetchFn(endpoint, {
+      method: "HEAD",
+      headers: {
+        apikey: serviceKey,
+        Authorization: `Bearer ${serviceKey}`,
+        Prefer: "count=exact",
+      },
+    });
+
+    if (resposta.ok) {
+      const contentRange = resposta.headers.get("content-range");
+      if (contentRange) {
+        const partes = contentRange.split("/");
+        if (partes.length === 2) {
+          const total = parseInt(partes[1], 10);
+          if (!isNaN(total)) return total;
+        }
+      }
+    }
+
+    const respGet = await fetchFn(endpoint, {
+      headers: {
+        apikey: serviceKey,
+        Authorization: `Bearer ${serviceKey}`,
+      },
+    });
+    if (respGet.ok) {
+      const array = await respGet.json();
+      if (Array.isArray(array)) {
+        return array.length;
+      }
+    }
+  } catch (erro) {
+    console.warn(`[Auditoria] Erro ao consultar sessões ativas no Supabase: ${erro}`);
+  }
+
+  return null;
+}
+

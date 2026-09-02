@@ -61,6 +61,6 @@ export interface RespostaProxy {
 }
 
 export interface MensagemEvento {
-  tipo: "evento" | "registro" | "resposta_proxy" | "ping" | "pong";
+  tipo: "evento" | "registro" | "requisicao_proxy" | "resposta_proxy" | "ping" | "pong";
   dados?: any;
 }
