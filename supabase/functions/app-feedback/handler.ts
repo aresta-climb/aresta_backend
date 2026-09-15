@@ -171,6 +171,8 @@ export const handleRequest = async (req: Request): Promise<Response> => {
     const description = formData.get('description')?.toString() || "Sem descrição informada";
     const metadataStr = formData.get('metadata')?.toString() || "{}";
     const screenshot = formData.get('screenshot') as File | null;
+    const indiceFile = formData.get('indice_file') as File | null;
+    const croquiFile = formData.get('croqui_file') as File | null;
 
     let metadataObj: Record<string, any> = {};
     try {
@@ -212,6 +214,16 @@ export const handleRequest = async (req: Request): Promise<Response> => {
     ];
 
     if (metadataObj) {
+      if (metadataObj.croqui_status || metadataObj.thumbnail_status) {
+        embedFields.push({
+          name: "Auditoria Criptográfica de Sincronização",
+          value: `• **Croqui (${metadataObj.croqui_id || 'N/A'}):** ${metadataObj.croqui_status || 'DESCONHECIDO'}\n` +
+                 `• **Miniatura:** ${metadataObj.thumbnail_status || 'DESCONHECIDO'}\n` +
+                 `• **Hash Índice:** \`${metadataObj.indice_sha256 || 'N/A'}\``,
+          inline: false,
+        });
+      }
+
       embedFields.push({
         name: "Metadados de Debug",
         value: "```json\n" + JSON.stringify(metadataObj, null, 2).substring(0, 1000) + "\n```",
@@ -251,8 +263,23 @@ export const handleRequest = async (req: Request): Promise<Response> => {
 
     discordFormData.append('payload_json', JSON.stringify(payloadJson));
 
+    const arquivosParaAnexar: { file: File; nome: string }[] = [];
     if (screenshot) {
+      arquivosParaAnexar.push({ file: screenshot, nome: 'screenshot.png' });
+    }
+    if (indiceFile) {
+      arquivosParaAnexar.push({ file: indiceFile, nome: indiceFile.name || 'indice.binarypb' });
+    }
+    if (croquiFile) {
+      arquivosParaAnexar.push({ file: croquiFile, nome: croquiFile.name || 'compilado.binarypb' });
+    }
+
+    if (arquivosParaAnexar.length === 1 && screenshot) {
       discordFormData.append('file', screenshot, 'screenshot.png');
+    } else {
+      arquivosParaAnexar.forEach((item, index) => {
+        discordFormData.append(`files[${index}]`, item.file, item.nome);
+      });
     }
 
     // 7. Envio para o Discord com tratamento de Retry para Rate Limit (429)

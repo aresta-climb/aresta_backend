@@ -236,3 +236,69 @@ Deno.test("app-feedback: retorna 503 se o Discord falhar e remove trava de idemp
   Deno.env.delete("SUPABASE_URL");
   Deno.env.delete("SUPABASE_SECRET_KEYS");
 });
+
+Deno.test("app-feedback: repassa screenshot, indice_file e croqui_file para o discordFormData", async () => {
+  resetRateLimits();
+  Deno.env.set("SKIP_APP_CHECK_VERIFICATION", "true");
+  Deno.env.set("DISCORD_WEBHOOK_URL", "http://test-webhook");
+
+  const originalFetch = globalThis.fetch;
+  let capturedBody: FormData | null = null;
+
+  globalThis.fetch = async (url: string | URL | Request, options?: RequestInit) => {
+    const urlStr = url.toString();
+    if (urlStr.includes("test-webhook")) {
+      capturedBody = options?.body as FormData;
+      return new Response("ok", { status: 200 });
+    }
+    return new Response(JSON.stringify([{}]), { status: 200, headers: { "Content-Type": "application/json" } });
+  };
+
+  const formData = new FormData();
+  formData.append("description", "Teste com múltiplos binários");
+  formData.append(
+    "metadata",
+    JSON.stringify({
+      feedbackId: "anexos-uuid",
+      croqui_id: "pico_1",
+      croqui_status: "INTEGRO",
+      thumbnail_status: "INTEGRO",
+      indice_sha256: "hash_indice_123",
+    })
+  );
+
+  const screenshotFile = new File([new Uint8Array([1, 2, 3])], "screenshot.png", { type: "image/png" });
+  const indiceFile = new File([new Uint8Array([4, 5, 6])], "indice.binarypb", { type: "application/octet-stream" });
+  const croquiFile = new File([new Uint8Array([7, 8, 9])], "compilado.binarypb", { type: "application/octet-stream" });
+
+  formData.append("screenshot", screenshotFile);
+  formData.append("indice_file", indiceFile);
+  formData.append("croqui_file", croquiFile);
+
+  const req = new Request("http://localhost", { method: "POST", body: formData });
+  const res = await handleRequest(req);
+
+  assertEquals(res.status, 200);
+  assertEquals(capturedBody !== null, true);
+
+  if (capturedBody) {
+    const body = capturedBody as FormData;
+    assertEquals(body.has("payload_json"), true);
+
+    // Deve conter os 3 arquivos anexados
+    const arquivos: string[] = [];
+    for (const [key, value] of body.entries()) {
+      if (value instanceof File) {
+        arquivos.push(value.name);
+      }
+    }
+    assertEquals(arquivos.includes("screenshot.png"), true);
+    assertEquals(arquivos.includes("indice.binarypb"), true);
+    assertEquals(arquivos.includes("compilado.binarypb"), true);
+  }
+
+  globalThis.fetch = originalFetch;
+  Deno.env.delete("SKIP_APP_CHECK_VERIFICATION");
+  Deno.env.delete("DISCORD_WEBHOOK_URL");
+});
+
