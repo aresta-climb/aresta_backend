@@ -6,10 +6,19 @@ on:
       - main
     paths:
       - 'supabase/functions/**'
+  workflow_dispatch:
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        function:
+          - discord-feedback
+          - app-feedback
+          - git-proxy
+          - create-pr
 
     env:
       SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
@@ -23,5 +32,6 @@ jobs:
         with:
           version: latest
 
-      - name: Deploy discord-feedback function
-        run: supabase functions deploy discord-feedback --project-ref $PROJECT_ID
+      - name: Deploy ${{ matrix.function }} function
+        run: supabase functions deploy ${{ matrix.function }} --project-ref $PROJECT_ID
+
