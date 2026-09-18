@@ -219,9 +219,11 @@ export async function tratarRequisicao(
           relation: ["delegate_permission/common.handle_all_urls"],
           target: {
             namespace: "android_app",
-            package_name: "com.arestaclimb.app",
+            package_name: "app.escalada.croquis",
             sha256_cert_fingerprints: [
-              "FA:C6:17:45:DC:09:03:78:6F:B9:ED:E6:2A:96:2B:39:9F:73:48:F0:BB:6F:89:9B:83:32:66:75:91:03:3B:9C",
+              "53:47:51:33:74:B1:E2:6E:57:9A:A8:7D:8C:0C:61:48:33:D5:06:36:52:1D:1D:9D:34:63:03:B3:65:FF:CC:F8",
+              "F1:93:B5:26:33:3C:35:F7:EA:72:2D:CD:AD:90:E7:74:32:97:10:6F:FF:B7:FA:DF:EB:B5:E9:E0:7E:F9:C3:D5",
+              "36:74:5F:C0:4B:CF:5E:4B:E7:45:7F:D9:32:A3:4B:19:62:0C:C3:6F:8A:F9:CB:11:22:0C:B8:2C:F0:1C:47:9B",
             ],
           },
         },
@@ -235,7 +237,13 @@ export async function tratarRequisicao(
           apps: [],
           details: [
             {
-              appID: "TEAMID1234.com.arestaclimb.app",
+              appIDs: ["Z74K7R3WU7.app.escalada.croquis"],
+              components: [
+                {
+                  "/": "/*",
+                },
+              ],
+              appID: "Z74K7R3WU7.app.escalada.croquis",
               paths: ["/*"],
             },
           ],
