@@ -120,6 +120,7 @@ Deno.test("app-feedback: despacha issue para a API do GitHub com labels e títul
       feedbackId: "croqui-uuid-123",
       tipo_feedback: "croqui",
       croqui_id: "br_mg_igarape_pedra_grande",
+      modo_acesso_croqui: "online",
       os: "android",
       appVersion: "1.2.0",
       deviceModel: "Samsung Galaxy S22",
@@ -141,6 +142,10 @@ Deno.test("app-feedback: despacha issue para a API do GitHub com labels e títul
   assertEquals(githubPayload.labels.includes("feedback:croqui"), true);
   assertEquals(githubPayload.labels.includes("so:android"), true);
   assertEquals(githubPayload.labels.includes("pico:br_mg_igarape_pedra_grande"), true);
+  assertEquals(githubPayload.labels.includes("modo:online"), true);
+
+  // Validação do corpo da issue informando o modo de acesso com clareza
+  assertEquals(githubPayload.body.includes("- **Modo de Acesso:** 🌐 Online (Sob Demanda)"), true);
 
   // Validação de privacidade: dados sensíveis NÃO devem constar no corpo da issue do GitHub
   assertEquals(githubPayload.body.includes("firebase-secret-id"), false);
@@ -159,6 +164,7 @@ Deno.test("app-feedback: despacha issue para a API do GitHub com labels e títul
   assertEquals(supabaseDiagnosticosPayload.id, "croqui-uuid-123");
   assertEquals(supabaseDiagnosticosPayload.tipo_feedback, "croqui");
   assertEquals(supabaseDiagnosticosPayload.croqui_id, "br_mg_igarape_pedra_grande");
+  assertEquals(supabaseDiagnosticosPayload.modo_acesso_croqui, "online");
   assertEquals(supabaseDiagnosticosPayload.app_instance_id, "firebase-secret-id");
 
   globalThis.fetch = originalFetch;

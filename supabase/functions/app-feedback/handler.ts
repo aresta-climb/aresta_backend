@@ -342,8 +342,12 @@ export const handleRequest = async (req: Request): Promise<Response> => {
     if (metadataObj?.os) {
       labels.push(`so:${String(metadataObj.os).toLowerCase()}`);
     }
+    const modoCroqui = metadataObj?.modo_acesso_croqui || metadataObj?.modoAcessoCroqui;
     if (tipoFeedback === 'croqui' && metadataObj?.croqui_id) {
       labels.push(`pico:${metadataObj.croqui_id}`);
+    }
+    if (tipoFeedback === 'croqui' && modoCroqui) {
+      labels.push(`modo:${String(modoCroqui).toLowerCase()}`);
     }
 
     // Configuração de URLs canônicas via Gateway próprio ou fallback direto do Supabase
@@ -378,6 +382,13 @@ export const handleRequest = async (req: Request): Promise<Response> => {
     body += `- **Categoria:** ${tipoFeedback === 'croqui' ? 'Sobre o Croqui' : 'Sobre o Aplicativo'}\n`;
     if (metadataObj?.croqui_id) {
       body += `- **Pico / Croqui:** \`${metadataObj.croqui_id}\`\n`;
+      if (modoCroqui) {
+        const modoStr = String(modoCroqui).toLowerCase();
+        const modoFormatado = modoStr === 'online'
+          ? '🌐 Online (Sob Demanda)'
+          : (modoStr === 'offline' ? '💾 Offline (Baixado)' : modoCroqui);
+        body += `- **Modo de Acesso:** ${modoFormatado}\n`;
+      }
     }
     body += `- **Versão do App:** \`${metadataObj?.appVersion || 'Desconhecida'}\`\n`;
     if (metadataObj?.os) {
@@ -496,11 +507,13 @@ export const handleRequest = async (req: Request): Promise<Response> => {
         screenshot_url: screenshotUrlPublico || screenshotUrl || null,
         indice_url: indiceUrlPublico || indiceUrl || null,
         croqui_url: croquiUrlPublico || croquiUrl || null,
+        modo_acesso_croqui: modoCroqui || null,
         payload_completo: {
           ...metadataObj,
           screenshot_url: screenshotUrlPublico || screenshotUrl || null,
           indice_url: indiceUrlPublico || indiceUrl || null,
           croqui_url: croquiUrlPublico || croquiUrl || null,
+          modo_acesso_croqui: modoCroqui || null,
           storage_raw_screenshot_url: screenshotUrl || null,
         },
       };
@@ -514,6 +527,7 @@ export const handleRequest = async (req: Request): Promise<Response> => {
         delete diagnosticoPayload.screenshot_url;
         delete diagnosticoPayload.indice_url;
         delete diagnosticoPayload.croqui_url;
+        delete diagnosticoPayload.modo_acesso_croqui;
         const resRetry = await supabase
           .from('feedback_diagnosticos')
           .insert(diagnosticoPayload);
