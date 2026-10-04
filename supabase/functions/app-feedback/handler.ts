@@ -209,6 +209,9 @@ export const handleRequest = async (req: Request): Promise<Response> => {
     const formData = await req.formData();
     const description = formData.get('description')?.toString() || "Sem descrição informada";
     const metadataStr = formData.get('metadata')?.toString() || "{}";
+    const screenshot = formData.get('screenshot') as File | null;
+    const indiceFile = formData.get('indice_file') as File | null;
+    const croquiFile = formData.get('croqui_file') as File | null;
 
     let metadataObj: Record<string, any> = {};
     try {
@@ -245,7 +248,85 @@ export const handleRequest = async (req: Request): Promise<Response> => {
       }
     }
 
-    // 6. Construção do Título, Labels e Corpo da Issue do GitHub
+    // 6. Upload de arquivos anexos no Supabase Storage (se disponível)
+    let screenshotUrl: string | null = null;
+    let indiceUrl: string | null = null;
+    let croquiUrl: string | null = null;
+
+    if (supabase) {
+      const BUCKET_NAME = 'feedback_anexos';
+
+      const uploadArquivoStorage = async (
+        file: File,
+        caminho: string,
+        contentTypePadrao: string
+      ): Promise<string | null> => {
+        try {
+          const buffer = new Uint8Array(await file.arrayBuffer());
+          const { error } = await supabase.storage
+            .from(BUCKET_NAME)
+            .upload(caminho, buffer, {
+              contentType: file.type || contentTypePadrao,
+              upsert: true,
+            });
+
+          if (error) {
+            console.error(`Erro ao fazer upload de ${caminho} no storage:`, error);
+            if (
+              error.message?.includes('Bucket not found') ||
+              (error as any).statusCode === '404' ||
+              (error as any).status === 404
+            ) {
+              await supabase.storage.createBucket(BUCKET_NAME, { public: true }).catch(() => {});
+              const retryRes = await supabase.storage
+                .from(BUCKET_NAME)
+                .upload(caminho, buffer, {
+                  contentType: file.type || contentTypePadrao,
+                  upsert: true,
+                });
+              if (retryRes.error) {
+                console.error(`Falha na retentativa de upload de ${caminho}:`, retryRes.error);
+                return null;
+              }
+            } else {
+              return null;
+            }
+          }
+
+          const { data } = supabase.storage.from(BUCKET_NAME).getPublicUrl(caminho);
+          return data?.publicUrl || null;
+        } catch (e) {
+          console.error(`Exceção ao fazer upload de ${caminho}:`, e);
+          return null;
+        }
+      };
+
+      if (screenshot && screenshot.size > 0) {
+        screenshotUrl = await uploadArquivoStorage(
+          screenshot,
+          `${feedbackId}/screenshot.png`,
+          'image/png'
+        );
+      }
+
+      if (indiceFile && indiceFile.size > 0) {
+        indiceUrl = await uploadArquivoStorage(
+          indiceFile,
+          `${feedbackId}/indice.binarypb`,
+          'application/octet-stream'
+        );
+      }
+
+      if (croquiFile && croquiFile.size > 0) {
+        croquiUrl = await uploadArquivoStorage(
+          croquiFile,
+          `${feedbackId}/compilado.binarypb`,
+          'application/octet-stream'
+        );
+      }
+    }
+
+    // 7. Construção do Título, Labels e Corpo da Issue do GitHub
     let msgPreview = "<Sem Mensagem>";
     if (description && description.trim() !== "" && description !== "Sem descrição informada") {
       msgPreview = description.substring(0, 50).replace(/\n/g, ' ');
@@ -268,6 +349,11 @@ export const handleRequest = async (req: Request): Promise<Response> => {
     const linkSupabase = `https://supabase.com/dashboard/project/${projectRef}/editor/feedback_diagnosticos?filter=id%3Deq%3D${feedbackId}`;
 
     let body = `## Descrição\n${description}\n\n`;
+
+    if (screenshotUrl) {
+      body += `### Captura de Tela\n[![Captura de Tela do Feedback](${screenshotUrl})](${screenshotUrl})\n\n`;
+    }
+
     body += `## Informações Gerais\n`;
     body += `- **Categoria:** ${tipoFeedback === 'croqui' ? 'Sobre o Croqui' : 'Sobre o Aplicativo'}\n`;
     if (metadataObj?.croqui_id) {
@@ -283,6 +369,16 @@ export const handleRequest = async (req: Request): Promise<Response> => {
       body += `• **Status do Croqui:** \`${metadataObj.croqui_status || 'N/A'}\`\n`;
       body += `• **Status da Miniatura:** \`${metadataObj.thumbnail_status || 'N/A'}\`\n`;
       body += `• **Hash do Índice (SHA256):** \`${metadataObj.indice_sha256 || 'N/A'}\`\n`;
+    }
+
+    if (indiceUrl || croquiUrl) {
+      body += `\n### Arquivos de Auditoria (Download Direto)\n`;
+      if (indiceUrl) {
+        body += `- [📥 Baixar indice.binarypb](${indiceUrl})\n`;
+      }
+      if (croquiUrl) {
+        body += `- [📥 Baixar compilado.binarypb](${croquiUrl})\n`;
+      }
     }
 
     body += `\n---\n`;
@@ -356,7 +452,7 @@ export const handleRequest = async (req: Request): Promise<Response> => {
 
     // 8. Persistência dos Diagnósticos Técnicos Restritos no Supabase Postgres
     if (supabase) {
-      const diagnosticoPayload = {
+      const diagnosticoPayload: Record<string, any> = {
         id: feedbackId,
         tipo_feedback: tipoFeedback,
         croqui_id: metadataObj?.croqui_id || null,
@@ -377,12 +473,31 @@ export const handleRequest = async (req: Request): Promise<Response> => {
         croqui_status: metadataObj?.croqui_status || null,
         thumbnail_status: metadataObj?.thumbnail_status || null,
         github_issue_url: issueUrl || null,
-        payload_completo: metadataObj,
+        screenshot_url: screenshotUrl || null,
+        indice_url: indiceUrl || null,
+        croqui_url: croquiUrl || null,
+        payload_completo: {
+          ...metadataObj,
+          screenshot_url: screenshotUrl || null,
+          indice_url: indiceUrl || null,
+          croqui_url: croquiUrl || null,
+        },
       };
 
-      const { error: diagError } = await supabase
+      let { error: diagError } = await supabase
         .from('feedback_diagnosticos')
         .insert(diagnosticoPayload);
+
+      // Se a coluna ainda não existir no Postgres caso a migration não tenha rodado, faz fallback gracioso
+      if (diagError && diagError.message?.includes('column')) {
+        delete diagnosticoPayload.screenshot_url;
+        delete diagnosticoPayload.indice_url;
+        delete diagnosticoPayload.croqui_url;
+        const resRetry = await supabase
+          .from('feedback_diagnosticos')
+          .insert(diagnosticoPayload);
+        diagError = resRetry.error;
+      }
 
       if (diagError) {
         console.error('Erro ao salvar diagnóstico restrito no Supabase:', diagError);

@@ -290,3 +290,126 @@ Deno.test("app-feedback: retorna 503 se o GitHub falhar e remove trava de idempo
   Deno.env.delete("SUPABASE_URL");
   Deno.env.delete("SUPABASE_SECRET_KEYS");
 });
+
+Deno.test("app-feedback: faz upload de screenshot, indice_file e croqui_file para Supabase Storage e anexa links no corpo da issue e diagnosticos", async () => {
+  resetRateLimits();
+  setCustomTokenProvider(() => Promise.resolve("gh-secret-token"));
+  Deno.env.set("SUPABASE_URL", "https://aresta-prod-xyz.supabase.co");
+  Deno.env.set("SUPABASE_SECRET_KEYS", JSON.stringify({ service_role: "test-key" }));
+  Deno.env.set("SKIP_APP_CHECK_VERIFICATION", "true");
+
+  const originalFetch = globalThis.fetch;
+  let githubPayload: any = null;
+  let supabaseDiagnosticosPayload: any = null;
+  const storageUploads: string[] = [];
+
+  globalThis.fetch = async (url: string | URL | Request, options?: RequestInit) => {
+    const urlStr = url.toString();
+    if (urlStr.includes("api.github.com/repos/aresta-climb/aresta_db/issues")) {
+      githubPayload = JSON.parse(options?.body as string);
+      return new Response(
+        JSON.stringify({ html_url: "https://github.com/aresta-climb/aresta_db/issues/45" }),
+        { status: 201, headers: { "Content-Type": "application/json" } }
+      );
+    }
+    if (urlStr.includes("/storage/v1/object/feedback_anexos/")) {
+      storageUploads.push(urlStr);
+      return new Response(JSON.stringify({ Key: "feedback_anexos/uploaded" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    if (urlStr.includes("feedback_diagnosticos")) {
+      supabaseDiagnosticosPayload = JSON.parse(options?.body as string);
+      return new Response(JSON.stringify([{}]), { status: 201, headers: { "Content-Type": "application/json" } });
+    }
+    return new Response(JSON.stringify([{}]), { status: 200, headers: { "Content-Type": "application/json" } });
+  };
+
+  const formData = new FormData();
+  formData.append("description", "Croqui com agarras marcadas incorretamente");
+  formData.append(
+    "metadata",
+    JSON.stringify({
+      feedbackId: "anexos-uuid-777",
+      tipo_feedback: "croqui",
+      croqui_id: "br_mg_sabara_pedra_rachada",
+      os: "android",
+      appVersion: "0.5.2-dev",
+      croqui_status: "INTEGRO",
+      thumbnail_status: "INTEGRO",
+      indice_sha256: "hash-8e7ec9",
+    })
+  );
+
+  const screenshotFile = new File([new Uint8Array([137, 80, 78, 71])], "screenshot.png", { type: "image/png" });
+  const indiceFile = new File([new Uint8Array([1, 2, 3])], "indice.binarypb", { type: "application/octet-stream" });
+  const croquiFile = new File([new Uint8Array([4, 5, 6])], "compilado.binarypb", { type: "application/octet-stream" });
+
+  formData.append("screenshot", screenshotFile);
+  formData.append("indice_file", indiceFile);
+  formData.append("croqui_file", croquiFile);
+
+  const req = new Request("http://localhost", { method: "POST", body: formData });
+  const res = await handleRequest(req);
+
+  assertEquals(res.status, 200);
+  const resJson = await res.json();
+  assertEquals(resJson.success, true);
+  assertEquals(resJson.issue_url, "https://github.com/aresta-climb/aresta_db/issues/45");
+
+  // Verifica que os 3 uploads foram realizados para o Supabase Storage
+  assertEquals(storageUploads.length, 3);
+  assertEquals(storageUploads.some((u) => u.includes("anexos-uuid-777/screenshot.png")), true);
+  assertEquals(storageUploads.some((u) => u.includes("anexos-uuid-777/indice.binarypb")), true);
+  assertEquals(storageUploads.some((u) => u.includes("anexos-uuid-777/compilado.binarypb")), true);
+
+  // Valida que o corpo da issue no GitHub contém o preview da imagem e os links diretos para download
+  assertEquals(githubPayload !== null, true);
+  assertEquals(githubPayload.body.includes("### Captura de Tela"), true);
+  assertEquals(
+    githubPayload.body.includes(
+      "https://aresta-prod-xyz.supabase.co/storage/v1/object/public/feedback_anexos/anexos-uuid-777/screenshot.png"
+    ),
+    true
+  );
+  assertEquals(githubPayload.body.includes("### Arquivos de Auditoria (Download Direto)"), true);
+  assertEquals(
+    githubPayload.body.includes(
+      "[📥 Baixar indice.binarypb](https://aresta-prod-xyz.supabase.co/storage/v1/object/public/feedback_anexos/anexos-uuid-777/indice.binarypb)"
+    ),
+    true
+  );
+  assertEquals(
+    githubPayload.body.includes(
+      "[📥 Baixar compilado.binarypb](https://aresta-prod-xyz.supabase.co/storage/v1/object/public/feedback_anexos/anexos-uuid-777/compilado.binarypb)"
+    ),
+    true
+  );
+
+  // Valida que o payload de diagnóstico no Supabase salvou as URLs
+  assertEquals(supabaseDiagnosticosPayload !== null, true);
+  assertEquals(
+    supabaseDiagnosticosPayload.screenshot_url,
+    "https://aresta-prod-xyz.supabase.co/storage/v1/object/public/feedback_anexos/anexos-uuid-777/screenshot.png"
+  );
+  assertEquals(
+    supabaseDiagnosticosPayload.indice_url,
+    "https://aresta-prod-xyz.supabase.co/storage/v1/object/public/feedback_anexos/anexos-uuid-777/indice.binarypb"
+  );
+  assertEquals(
+    supabaseDiagnosticosPayload.croqui_url,
+    "https://aresta-prod-xyz.supabase.co/storage/v1/object/public/feedback_anexos/anexos-uuid-777/compilado.binarypb"
+  );
+  assertEquals(
+    supabaseDiagnosticosPayload.payload_completo.screenshot_url,
+    "https://aresta-prod-xyz.supabase.co/storage/v1/object/public/feedback_anexos/anexos-uuid-777/screenshot.png"
+  );
+
+  globalThis.fetch = originalFetch;
+  setCustomTokenProvider(null);
+  Deno.env.delete("SUPABASE_URL");
+  Deno.env.delete("SUPABASE_SECRET_KEYS");
+  Deno.env.delete("SKIP_APP_CHECK_VERIFICATION");
+});
+
