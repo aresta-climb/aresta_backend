@@ -1,0 +1,14 @@
+{
+  "name": "aresta-feedback-gateway",
+  "version": "1.0.0",
+  "description": "Gateway e proxy reverso para anexos e diagnósticos de feedback do Aresta Climb",
+  "main": "src/index.ts",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test": "deno test -A"
+  },
+  "devDependencies": {
+    "wrangler": "^3.114.17"
+  }
+}

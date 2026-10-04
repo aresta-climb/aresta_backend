@@ -1,0 +1,19 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "aresta-feedback-gateway",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-01",
+  "vars": {
+    "SUPABASE_STORAGE_URL": "https://yzkhiaoqtxvvcyyuwmqg.supabase.co/storage/v1/object/public/feedback_anexos",
+    "SUPABASE_DASHBOARD_URL": "https://supabase.com/dashboard/project/yzkhiaoqtxvvcyyuwmqg/editor/42715"
+  },
+  "routes": [
+    {
+      "pattern": "feedback.arestaclimb.com",
+      "custom_domain": true
+    }
+  ],
+  "observability": {
+    "enabled": true
+  }
+}

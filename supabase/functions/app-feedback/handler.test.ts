@@ -146,10 +146,10 @@ Deno.test("app-feedback: despacha issue para a API do GitHub com labels e títul
   assertEquals(githubPayload.body.includes("firebase-secret-id"), false);
   assertEquals(githubPayload.body.includes("Samsung Galaxy S22"), false);
 
-  // Link restrito para o Supabase Dashboard deve constar no corpo usando o ref extraído de SUPABASE_URL e :eq:
+  // Link restrito para o Supabase Dashboard deve constar no corpo usando o gateway canônico
   assertEquals(
     githubPayload.body.includes(
-      "https://supabase.com/dashboard/project/aresta-prod-xyz/editor/feedback_diagnosticos?filter=id%3Aeq%3Acroqui-uuid-123"
+      "https://feedback.arestaclimb.com/diagnostico/croqui-uuid-123"
     ),
     true
   );
@@ -364,25 +364,25 @@ Deno.test("app-feedback: faz upload de screenshot, indice_file e croqui_file par
   assertEquals(storageUploads.some((u) => u.includes("anexos-uuid-777/indice.binarypb")), true);
   assertEquals(storageUploads.some((u) => u.includes("anexos-uuid-777/compilado.binarypb")), true);
 
-  // Valida que o corpo da issue no GitHub contém o preview da imagem e os links diretos para download
+  // Valida que o corpo da issue no GitHub contém o preview da imagem e os links diretos para download via gateway canônico
   assertEquals(githubPayload !== null, true);
   assertEquals(githubPayload.body.includes("### Captura de Tela"), true);
   assertEquals(
     githubPayload.body.includes(
-      "https://aresta-prod-xyz.supabase.co/storage/v1/object/public/feedback_anexos/anexos-uuid-777/screenshot.png"
+      "https://feedback.arestaclimb.com/anexos/anexos-uuid-777/screenshot.png"
     ),
     true
   );
   assertEquals(githubPayload.body.includes("### Arquivos de Auditoria (Download Direto)"), true);
   assertEquals(
     githubPayload.body.includes(
-      "[📥 Baixar indice.binarypb](https://aresta-prod-xyz.supabase.co/storage/v1/object/public/feedback_anexos/anexos-uuid-777/indice.binarypb)"
+      "[📥 Baixar indice.binarypb](https://feedback.arestaclimb.com/anexos/anexos-uuid-777/indice.binarypb)"
     ),
     true
   );
   assertEquals(
     githubPayload.body.includes(
-      "[📥 Baixar compilado.binarypb](https://aresta-prod-xyz.supabase.co/storage/v1/object/public/feedback_anexos/anexos-uuid-777/compilado.binarypb)"
+      "[📥 Baixar compilado.binarypb](https://feedback.arestaclimb.com/anexos/anexos-uuid-777/compilado.binarypb)"
     ),
     true
   );
@@ -391,19 +391,15 @@ Deno.test("app-feedback: faz upload de screenshot, indice_file e croqui_file par
   assertEquals(supabaseDiagnosticosPayload !== null, true);
   assertEquals(
     supabaseDiagnosticosPayload.screenshot_url,
-    "https://aresta-prod-xyz.supabase.co/storage/v1/object/public/feedback_anexos/anexos-uuid-777/screenshot.png"
+    "https://feedback.arestaclimb.com/anexos/anexos-uuid-777/screenshot.png"
   );
   assertEquals(
     supabaseDiagnosticosPayload.indice_url,
-    "https://aresta-prod-xyz.supabase.co/storage/v1/object/public/feedback_anexos/anexos-uuid-777/indice.binarypb"
+    "https://feedback.arestaclimb.com/anexos/anexos-uuid-777/indice.binarypb"
   );
   assertEquals(
     supabaseDiagnosticosPayload.croqui_url,
-    "https://aresta-prod-xyz.supabase.co/storage/v1/object/public/feedback_anexos/anexos-uuid-777/compilado.binarypb"
-  );
-  assertEquals(
-    supabaseDiagnosticosPayload.payload_completo.screenshot_url,
-    "https://aresta-prod-xyz.supabase.co/storage/v1/object/public/feedback_anexos/anexos-uuid-777/screenshot.png"
+    "https://feedback.arestaclimb.com/anexos/anexos-uuid-777/compilado.binarypb"
   );
 
   globalThis.fetch = originalFetch;
@@ -413,12 +409,13 @@ Deno.test("app-feedback: faz upload de screenshot, indice_file e croqui_file par
   Deno.env.delete("SKIP_APP_CHECK_VERIFICATION");
 });
 
-Deno.test("app-feedback: em produção (yzkhiaoqtxvvcyyuwmqg), utiliza o ID da tabela 42715 no link do dashboard", async () => {
+Deno.test("app-feedback: em produção (yzkhiaoqtxvvcyyuwmqg), utiliza fallback direto para 42715 quando FEEDBACK_PUBLIC_BASE_URL for vazio", async () => {
   resetRateLimits();
   setCustomTokenProvider(() => Promise.resolve("gh-secret-token"));
   Deno.env.set("SUPABASE_URL", "https://yzkhiaoqtxvvcyyuwmqg.supabase.co");
   Deno.env.set("SUPABASE_SECRET_KEYS", JSON.stringify({ service_role: "test-key" }));
   Deno.env.set("SKIP_APP_CHECK_VERIFICATION", "true");
+  Deno.env.set("FEEDBACK_PUBLIC_BASE_URL", "");
 
   const originalFetch = globalThis.fetch;
   let githubPayload: any = null;
@@ -436,7 +433,7 @@ Deno.test("app-feedback: em produção (yzkhiaoqtxvvcyyuwmqg), utiliza o ID da t
   };
 
   const formData = new FormData();
-  formData.append("description", "Teste em produção");
+  formData.append("description", "Teste em produção com fallback direto");
   formData.append("metadata", JSON.stringify({ feedbackId: "prod-uuid-123" }));
 
   const req = new Request("http://localhost", { method: "POST", body: formData });
@@ -456,5 +453,6 @@ Deno.test("app-feedback: em produção (yzkhiaoqtxvvcyyuwmqg), utiliza o ID da t
   Deno.env.delete("SUPABASE_URL");
   Deno.env.delete("SUPABASE_SECRET_KEYS");
   Deno.env.delete("SKIP_APP_CHECK_VERIFICATION");
+  Deno.env.delete("FEEDBACK_PUBLIC_BASE_URL");
 });
 

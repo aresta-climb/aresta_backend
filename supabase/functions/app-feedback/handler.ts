@@ -346,14 +346,32 @@ export const handleRequest = async (req: Request): Promise<Response> => {
       labels.push(`pico:${metadataObj.croqui_id}`);
     }
 
-    const tableIdentifier = Deno.env.get('SUPABASE_FEEDBACK_TABLE_ID') ||
-      (projectRef === 'yzkhiaoqtxvvcyyuwmqg' ? '42715' : 'feedback_diagnosticos');
-    const linkSupabase = `https://supabase.com/dashboard/project/${projectRef}/editor/${tableIdentifier}?filter=id%3Aeq%3A${feedbackId}`;
+    // Configuração de URLs canônicas via Gateway próprio ou fallback direto do Supabase
+    const feedbackBaseUrl = Deno.env.get('FEEDBACK_PUBLIC_BASE_URL') ?? 'https://feedback.arestaclimb.com';
+
+    let screenshotUrlPublico: string | null = null;
+    let indiceUrlPublico: string | null = null;
+    let croquiUrlPublico: string | null = null;
+    let linkSupabase: string;
+
+    if (feedbackBaseUrl && feedbackBaseUrl.trim() !== "") {
+      if (screenshotUrl) screenshotUrlPublico = `${feedbackBaseUrl}/anexos/${feedbackId}/screenshot.png`;
+      if (indiceUrl) indiceUrlPublico = `${feedbackBaseUrl}/anexos/${feedbackId}/indice.binarypb`;
+      if (croquiUrl) croquiUrlPublico = `${feedbackBaseUrl}/anexos/${feedbackId}/compilado.binarypb`;
+      linkSupabase = `${feedbackBaseUrl}/diagnostico/${feedbackId}`;
+    } else {
+      screenshotUrlPublico = screenshotUrl;
+      indiceUrlPublico = indiceUrl;
+      croquiUrlPublico = croquiUrl;
+      const tableIdentifier = Deno.env.get('SUPABASE_FEEDBACK_TABLE_ID') ||
+        (projectRef === 'yzkhiaoqtxvvcyyuwmqg' ? '42715' : 'feedback_diagnosticos');
+      linkSupabase = `https://supabase.com/dashboard/project/${projectRef}/editor/${tableIdentifier}?filter=id%3Aeq%3A${feedbackId}`;
+    }
 
     let body = `## Descrição\n${description}\n\n`;
 
-    if (screenshotUrl) {
-      body += `### Captura de Tela\n[![Captura de Tela do Feedback](${screenshotUrl})](${screenshotUrl})\n\n`;
+    if (screenshotUrlPublico) {
+      body += `### Captura de Tela\n[![Captura de Tela do Feedback](${screenshotUrlPublico})](${screenshotUrlPublico})\n\n`;
     }
 
     body += `## Informações Gerais\n`;
@@ -373,13 +391,13 @@ export const handleRequest = async (req: Request): Promise<Response> => {
       body += `• **Hash do Índice (SHA256):** \`${metadataObj.indice_sha256 || 'N/A'}\`\n`;
     }
 
-    if (indiceUrl || croquiUrl) {
+    if (indiceUrlPublico || croquiUrlPublico) {
       body += `\n### Arquivos de Auditoria (Download Direto)\n`;
-      if (indiceUrl) {
-        body += `- [📥 Baixar indice.binarypb](${indiceUrl})\n`;
+      if (indiceUrlPublico) {
+        body += `- [📥 Baixar indice.binarypb](${indiceUrlPublico})\n`;
       }
-      if (croquiUrl) {
-        body += `- [📥 Baixar compilado.binarypb](${croquiUrl})\n`;
+      if (croquiUrlPublico) {
+        body += `- [📥 Baixar compilado.binarypb](${croquiUrlPublico})\n`;
       }
     }
 
@@ -475,14 +493,15 @@ export const handleRequest = async (req: Request): Promise<Response> => {
         croqui_status: metadataObj?.croqui_status || null,
         thumbnail_status: metadataObj?.thumbnail_status || null,
         github_issue_url: issueUrl || null,
-        screenshot_url: screenshotUrl || null,
-        indice_url: indiceUrl || null,
-        croqui_url: croquiUrl || null,
+        screenshot_url: screenshotUrlPublico || screenshotUrl || null,
+        indice_url: indiceUrlPublico || indiceUrl || null,
+        croqui_url: croquiUrlPublico || croquiUrl || null,
         payload_completo: {
           ...metadataObj,
-          screenshot_url: screenshotUrl || null,
-          indice_url: indiceUrl || null,
-          croqui_url: croquiUrl || null,
+          screenshot_url: screenshotUrlPublico || screenshotUrl || null,
+          indice_url: indiceUrlPublico || indiceUrl || null,
+          croqui_url: croquiUrlPublico || croquiUrl || null,
+          storage_raw_screenshot_url: screenshotUrl || null,
         },
       };
 
