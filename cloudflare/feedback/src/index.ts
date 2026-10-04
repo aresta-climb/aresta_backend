@@ -9,10 +9,22 @@ export interface AmbienteFeedback {
   SUPABASE_DASHBOARD_URL?: string;
 }
 
+/**
+ * Interface mínima do contexto de execução do Cloudflare Workers para waitUntil.
+ */
+export interface ContextoExecucao {
+  waitUntil(promessa: Promise<unknown>): void;
+}
+
 const URL_STORAGE_PADRAO =
   "https://yzkhiaoqtxvvcyyuwmqg.supabase.co/storage/v1/object/public/feedback_anexos";
 const URL_DASHBOARD_PADRAO =
   "https://supabase.com/dashboard/project/yzkhiaoqtxvvcyyuwmqg/editor/42715";
+
+/**
+ * 1 ano em segundos (365 dias). Padrão da RFC 7234 para cache "infinito" / imutável.
+ */
+const TTL_CACHE_SEGUNDOS = 31536000;
 
 /**
  * Cabeçalhos CORS padrão para permitir visualização de imagens em qualquer contexto.
@@ -24,6 +36,15 @@ export const cabecalhosCors = {
 };
 
 /**
+ * Cabeçalho de cache "infinito" para anexos imutáveis associados ao UUID do feedback.
+ * - public: permite cache em qualquer intermediário (CDN, proxy, browser).
+ * - max-age=31536000: 1 ano no cache local do navegador.
+ * - s-maxage=31536000: 1 ano no cache do Cloudflare CDN (Edge).
+ * - immutable: diz ao navegador para nunca emitir requisições de revalidação (304).
+ */
+export const CABECALHO_CACHE_IMUTAVEL = `public, max-age=${TTL_CACHE_SEGUNDOS}, s-maxage=${TTL_CACHE_SEGUNDOS}, immutable`;
+
+/**
  * Roteador principal do Worker de Feedback.
  *
  * Responsável por:
@@ -33,7 +54,8 @@ export const cabecalhosCors = {
  */
 export async function processarRequisicao(
   req: Request,
-  env: AmbienteFeedback = {}
+  env: AmbienteFeedback = {},
+  ctx?: ContextoExecucao
 ): Promise<Response> {
   const url = new URL(req.url);
   const caminho = url.pathname;
@@ -83,7 +105,25 @@ export async function processarRequisicao(
     const baseUrlStorage = env.SUPABASE_STORAGE_URL || URL_STORAGE_PADRAO;
     const urlOrigem = `${baseUrlStorage}/${caminhoAnexo}`;
 
+    // Tenta obter do cache nativo do Cloudflare Edge (se disponível no ambiente)
+    const cache =
+      typeof (globalThis as any).caches !== "undefined"
+        ? (globalThis as any).caches.default
+        : null;
+
+    if (cache && req.method === "GET") {
+      try {
+        const respostaCache = await cache.match(req);
+        if (respostaCache) {
+          return respostaCache;
+        }
+      } catch (_e) {
+        // Falha silenciosa no cache local e segue para busca de origem
+      }
+    }
+
     try {
+      // Subrequest com instrução explícita para o Cloudflare Edge Cache
       const respostaOrigem = await fetch(urlOrigem, {
         method: req.method,
         headers: {
@@ -91,20 +131,31 @@ export async function processarRequisicao(
             ? { "if-none-match": req.headers.get("if-none-match")! }
             : {}),
         },
+        // Parâmetros especiais suportados pelo fetch do Cloudflare Workers
+        ...({
+          cf: {
+            cacheTtl: TTL_CACHE_SEGUNDOS,
+            cacheEverything: true,
+          },
+        } as any),
       });
 
       const cabecalhosResposta = new Headers(respostaOrigem.headers);
       cabecalhosResposta.set("Access-Control-Allow-Origin", "*");
-      // Como os anexos são indexados pelo UUID imutável do feedback, aplicamos cache agressivo
-      cabecalhosResposta.set(
-        "Cache-Control",
-        "public, max-age=31536000, immutable"
-      );
+      // Como os anexos são indexados pelo UUID imutável do feedback, aplicamos cache agressivo infinito
+      cabecalhosResposta.set("Cache-Control", CABECALHO_CACHE_IMUTAVEL);
 
-      return new Response(respostaOrigem.body, {
+      const respostaFinal = new Response(respostaOrigem.body, {
         status: respostaOrigem.status,
         headers: cabecalhosResposta,
       });
+
+      // Grava no Cloudflare Edge Cache para futuras requisições se for 200 OK
+      if (cache && req.method === "GET" && respostaOrigem.status === 200) {
+        ctx?.waitUntil?.(cache.put(req, respostaFinal.clone()));
+      }
+
+      return respostaFinal;
     } catch (e: any) {
       return new Response(
         `Erro ao buscar anexo no storage de origem: ${e?.message || e}`,
@@ -123,7 +174,11 @@ export async function processarRequisicao(
 }
 
 export default {
-  fetch(req: Request, env: AmbienteFeedback): Promise<Response> {
-    return processarRequisicao(req, env);
+  fetch(
+    req: Request,
+    env: AmbienteFeedback,
+    ctx: ContextoExecucao
+  ): Promise<Response> {
+    return processarRequisicao(req, env, ctx);
   },
 };

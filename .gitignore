@@ -21,6 +21,9 @@ supabase/.branches/
 # Deno vendor folders para as Edge Functions)
 node_modules/
 
+# Cloudflare Wrangler
+.wrangler/
+
 # Deno
 # https://deno.com/
 

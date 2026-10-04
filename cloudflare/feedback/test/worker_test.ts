@@ -100,13 +100,105 @@ Deno.test("feedback-gateway: repassa anexo com streaming, CORS e cache imutavel"
   );
   assertEquals(headerIfNoneMatchEnviado, '"hash-12345"');
   assertEquals(res.headers.get("Access-Control-Allow-Origin"), "*");
-  assertEquals(res.headers.get("Cache-Control"), "public, max-age=31536000, immutable");
+  assertEquals(
+    res.headers.get("Cache-Control"),
+    "public, max-age=31536000, s-maxage=31536000, immutable"
+  );
   assertEquals(res.headers.get("Content-Type"), "image/png");
 
   const bytes = new Uint8Array(await res.arrayBuffer());
   assertEquals(bytes[0], 137);
 
   globalThis.fetch = originalFetch;
+});
+
+Deno.test("feedback-gateway: retorna resposta direto da Cache API sem consultar a origem (Cache HIT)", async () => {
+  let fetchChamado = false;
+  const originalFetch = globalThis.fetch;
+  const descOriginal = Object.getOwnPropertyDescriptor(globalThis, "caches")!;
+
+  globalThis.fetch = (): Promise<Response> => {
+    fetchChamado = true;
+    return Promise.resolve(new Response("Nao deveria chamar"));
+  };
+
+  const respostaEmCache = new Response("conteudo-em-cache", {
+    status: 200,
+    headers: { "Content-Type": "text/plain", "CF-Cache-Status": "HIT" },
+  });
+
+  const cacheFake = {
+    match: (_request: Request) => Promise.resolve(respostaEmCache),
+    put: (_request: Request, _response: Response) => Promise.resolve(),
+  };
+
+  Object.defineProperty(globalThis, "caches", {
+    value: { default: cacheFake },
+    configurable: true,
+  });
+
+  try {
+    const req = new Request("https://feedback.arestaclimb.com/anexos/uuid-hit/arquivo.txt");
+    const res = await processarRequisicao(req);
+
+    assertEquals(res.status, 200);
+    assertEquals(res.headers.get("CF-Cache-Status"), "HIT");
+    assertEquals(await res.text(), "conteudo-em-cache");
+    assertEquals(fetchChamado, false);
+  } finally {
+    Object.defineProperty(globalThis, "caches", descOriginal);
+    globalThis.fetch = originalFetch;
+  }
+});
+
+Deno.test("feedback-gateway: grava no Edge Cache via ctx.waitUntil se nao estiver em cache (Cache MISS)", async () => {
+  const originalFetch = globalThis.fetch;
+  const descOriginal = Object.getOwnPropertyDescriptor(globalThis, "caches")!;
+
+  globalThis.fetch = (): Promise<Response> => {
+    return Promise.resolve(
+      new Response("dados-novos-da-origem", {
+        status: 200,
+        headers: { "Content-Type": "text/plain" },
+      })
+    );
+  };
+
+  let cachePutChamado = false;
+  let waitUntilChamado = false;
+
+  const cacheFake = {
+    match: (_request: Request) => Promise.resolve(null),
+    put: (_request: Request, _response: Response) => {
+      cachePutChamado = true;
+      return Promise.resolve();
+    },
+  };
+
+  Object.defineProperty(globalThis, "caches", {
+    value: { default: cacheFake },
+    configurable: true,
+  });
+
+  const ctxFake = {
+    waitUntil: (promessa: Promise<unknown>) => {
+      waitUntilChamado = true;
+      promessa.catch(() => {});
+    },
+  };
+
+  try {
+    const req = new Request("https://feedback.arestaclimb.com/anexos/uuid-miss/arquivo.txt");
+    const res = await processarRequisicao(req, {}, ctxFake);
+
+    assertEquals(res.status, 200);
+    assertEquals(await res.text(), "dados-novos-da-origem");
+    assertEquals(waitUntilChamado, true);
+    assertEquals(cachePutChamado, true);
+  } finally {
+    Object.defineProperty(globalThis, "caches", descOriginal);
+    globalThis.fetch = originalFetch;
+  }
 });
 
 Deno.test("feedback-gateway: retorna 502 se o fetch para o storage de origem falhar", async () => {
