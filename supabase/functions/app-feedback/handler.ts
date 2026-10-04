@@ -347,7 +347,7 @@ export const handleRequest = async (req: Request): Promise<Response> => {
     }
 
     // Configuração de URLs canônicas via Gateway próprio ou fallback direto do Supabase
-    const feedbackBaseUrl = Deno.env.get('FEEDBACK_PUBLIC_BASE_URL') ?? 'https://feedback.arestaclimb.com';
+    const feedbackBaseUrl = (Deno.env.get('FEEDBACK_PUBLIC_BASE_URL') ?? 'https://feedback.arestaclimb.com').trim().replace(/\/+$/, '');
 
     let screenshotUrlPublico: string | null = null;
     let indiceUrlPublico: string | null = null;
