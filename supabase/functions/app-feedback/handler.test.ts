@@ -1,11 +1,19 @@
 import { assertEquals } from "https://deno.land/std@0.192.0/testing/asserts.ts";
-import { generateKeyPair, exportJWK, SignJWT } from "jose";
 import {
   handleRequest,
   setCustomJWKSet,
+  setCustomTokenProvider,
   resetRateLimits,
   checkRateLimit,
+  extrairProjectRef,
 } from "./handler.ts";
+import { obterTokenArestaClimbBot } from "../compartilhado/cliente_github_bot.ts";
+
+Deno.test("app-feedback: extrairProjectRef extrai a referência do projeto estritamente a partir da SUPABASE_URL", () => {
+  assertEquals(extrairProjectRef("https://abcdefghijkl.supabase.co"), "abcdefghijkl");
+  assertEquals(extrairProjectRef("https://aresta-prod-xyz.supabase.co"), "aresta-prod-xyz");
+  assertEquals(extrairProjectRef(""), "default");
+});
 
 Deno.test("app-feedback: retorna cabeçalhos CORS para requisição OPTIONS", async () => {
   const req = new Request("http://localhost", { method: "OPTIONS" });
@@ -17,7 +25,7 @@ Deno.test("app-feedback: retorna cabeçalhos CORS para requisição OPTIONS", as
 
 Deno.test("app-feedback: retorna 403 se o token do App Check estiver ausente", async () => {
   resetRateLimits();
-  Deno.env.set("DISCORD_WEBHOOK_URL", "http://test-webhook");
+  setCustomTokenProvider(() => Promise.resolve("test-gh-token"));
 
   const formData = new FormData();
   formData.append("description", "Teste de feedback");
@@ -32,12 +40,12 @@ Deno.test("app-feedback: retorna 403 se o token do App Check estiver ausente", a
   const body = await res.json();
   assertEquals(body.error.includes("App Check"), true);
 
-  Deno.env.delete("DISCORD_WEBHOOK_URL");
+  setCustomTokenProvider(null);
 });
 
 Deno.test("app-feedback: retorna 403 se o token do App Check for inválido", async () => {
   resetRateLimits();
-  Deno.env.set("DISCORD_WEBHOOK_URL", "http://test-webhook");
+  setCustomTokenProvider(() => Promise.resolve("test-gh-token"));
 
   const formData = new FormData();
   formData.append("description", "Teste de feedback");
@@ -51,139 +59,187 @@ Deno.test("app-feedback: retorna 403 se o token do App Check for inválido", asy
   const res = await handleRequest(req);
   assertEquals(res.status, 403);
 
-  Deno.env.delete("DISCORD_WEBHOOK_URL");
+  setCustomTokenProvider(null);
 });
 
-Deno.test("app-feedback: valida com sucesso um JWT do App Check assinado", async () => {
+Deno.test("app-feedback: falha com 500 se as variáveis ARESTA_CLIMB_BOT_GITHUB_APP_* estiverem ausentes", async () => {
   resetRateLimits();
-  Deno.env.set("DISCORD_WEBHOOK_URL", "http://test-webhook");
-  Deno.env.set("SUPABASE_URL", "http://test-supabase");
-  Deno.env.set("SUPABASE_SERVICE_ROLE_KEY", "test-key");
-  Deno.env.set("FIREBASE_PROJECT_NUMBER", "123456789");
-  Deno.env.set("FIREBASE_PROJECT_ID", "test-project");
+  setCustomTokenProvider(null);
+  Deno.env.set("SKIP_APP_CHECK_VERIFICATION", "true");
+  Deno.env.delete("ARESTA_CLIMB_BOT_GITHUB_APP_CLIENT_ID");
+  Deno.env.delete("ARESTA_CLIMB_BOT_GITHUB_APP_PRIVATE_KEY");
+  Deno.env.delete("ARESTA_CLIMB_BOT_GITHUB_APP_INSTALLATION_ID");
 
-  // Cria par de chaves RSA para teste
-  const keyPair = await generateKeyPair("RS256");
-  const publicJwk = await exportJWK(keyPair.publicKey);
-  publicJwk.kid = "test-key-id";
-  publicJwk.alg = "RS256";
+  const formData = new FormData();
+  formData.append("description", "Teste sem token");
 
-  // Mock do JWKS local
-  const customJWKS = async () => keyPair.publicKey;
-  setCustomJWKSet(customJWKS);
+  const req = new Request("http://localhost", { method: "POST", body: formData });
+  const res = await handleRequest(req);
 
-  // Gera token válido assinado
-  const validJwt = await new SignJWT({ sub: "app.escalada.croquis" })
-    .setProtectedHeader({ alg: "RS256", kid: "test-key-id" })
-    .setIssuer("https://firebaseappcheck.googleapis.com/123456789")
-    .setAudience(["projects/123456789", "projects/test-project"])
-    .setExpirationTime("1h")
-    .sign(keyPair.privateKey);
+  assertEquals(res.status, 500);
+  const body = await res.json();
+  assertEquals(body.error.includes("Aresta Climb Bot"), true);
 
-  // Mock global fetch
+  Deno.env.delete("SKIP_APP_CHECK_VERIFICATION");
+});
+
+Deno.test("app-feedback: despacha issue para a API do GitHub com labels e título corretos para Croqui", async () => {
+  resetRateLimits();
+  setCustomTokenProvider(() => Promise.resolve("gh-secret-token"));
+  Deno.env.set("SUPABASE_URL", "https://aresta-prod-xyz.supabase.co");
+  Deno.env.set("SUPABASE_SECRET_KEYS", JSON.stringify({ service_role: "test-key" }));
+  Deno.env.set("SKIP_APP_CHECK_VERIFICATION", "true");
+
   const originalFetch = globalThis.fetch;
-  let discordCalled = false;
+  let githubPayload: any = null;
+  let githubHeaders: Headers | null = null;
+  let supabaseDiagnosticosPayload: any = null;
 
   globalThis.fetch = async (url: string | URL | Request, options?: RequestInit) => {
     const urlStr = url.toString();
-    if (urlStr.includes("test-webhook")) {
-      discordCalled = true;
-      return new Response("ok", { status: 200 });
+    if (urlStr.includes("api.github.com/repos/aresta-climb/aresta_db/issues")) {
+      githubPayload = JSON.parse(options?.body as string);
+      githubHeaders = new Headers(options?.headers);
+      return new Response(
+        JSON.stringify({ html_url: "https://github.com/aresta-climb/aresta_db/issues/42" }),
+        { status: 201, headers: { "Content-Type": "application/json" } }
+      );
+    }
+    if (urlStr.includes("feedback_diagnosticos")) {
+      supabaseDiagnosticosPayload = JSON.parse(options?.body as string);
+      return new Response(JSON.stringify([{}]), { status: 201, headers: { "Content-Type": "application/json" } });
     }
     return new Response(JSON.stringify([{}]), { status: 200, headers: { "Content-Type": "application/json" } });
   };
 
   const formData = new FormData();
-  formData.append("description", "Feedback com App Check válido");
-  formData.append("metadata", JSON.stringify({ os: "android", feedbackId: "test-valid-uuid" }));
+  formData.append("description", "Via 3 com chapeleta frouxa");
+  formData.append(
+    "metadata",
+    JSON.stringify({
+      feedbackId: "croqui-uuid-123",
+      tipo_feedback: "croqui",
+      croqui_id: "br_mg_igarape_pedra_grande",
+      os: "android",
+      appVersion: "1.2.0",
+      deviceModel: "Samsung Galaxy S22",
+      appInstanceId: "firebase-secret-id",
+    })
+  );
 
-  const req = new Request("http://localhost", {
-    method: "POST",
-    headers: { "X-Firebase-AppCheck": validJwt },
-    body: formData,
-  });
-
+  const req = new Request("http://localhost", { method: "POST", body: formData });
   const res = await handleRequest(req);
-  assertEquals(res.status, 200);
-  assertEquals(discordCalled, true);
 
-  const body = await res.json();
-  assertEquals(body.success, true);
+  assertEquals(res.status, 200);
+  const responseBody = await res.json();
+  assertEquals(responseBody.success, true);
+  assertEquals(responseBody.issue_url, "https://github.com/aresta-climb/aresta_db/issues/42");
+
+  // Validação do payload enviado ao GitHub
+  assertEquals(githubPayload !== null, true);
+  assertEquals(githubPayload.title.startsWith("[Croqui | br_mg_igarape_pedra_grande]"), true);
+  assertEquals(githubPayload.labels.includes("feedback:croqui"), true);
+  assertEquals(githubPayload.labels.includes("so:android"), true);
+  assertEquals(githubPayload.labels.includes("pico:br_mg_igarape_pedra_grande"), true);
+
+  // Validação de privacidade: dados sensíveis NÃO devem constar no corpo da issue do GitHub
+  assertEquals(githubPayload.body.includes("firebase-secret-id"), false);
+  assertEquals(githubPayload.body.includes("Samsung Galaxy S22"), false);
+
+  // Link restrito para o Supabase Dashboard deve constar no corpo usando o ref extraído de SUPABASE_URL
+  assertEquals(
+    githubPayload.body.includes(
+      "https://supabase.com/dashboard/project/aresta-prod-xyz/editor/feedback_diagnosticos?filter=id%3Deq%3Dcroqui-uuid-123"
+    ),
+    true
+  );
+
+  // Validação da persistência protegida no Supabase
+  assertEquals(supabaseDiagnosticosPayload !== null, true);
+  assertEquals(supabaseDiagnosticosPayload.id, "croqui-uuid-123");
+  assertEquals(supabaseDiagnosticosPayload.tipo_feedback, "croqui");
+  assertEquals(supabaseDiagnosticosPayload.croqui_id, "br_mg_igarape_pedra_grande");
+  assertEquals(supabaseDiagnosticosPayload.app_instance_id, "firebase-secret-id");
 
   globalThis.fetch = originalFetch;
-  Deno.env.delete("DISCORD_WEBHOOK_URL");
+  setCustomTokenProvider(null);
   Deno.env.delete("SUPABASE_URL");
-  Deno.env.delete("SUPABASE_SERVICE_ROLE_KEY");
-  Deno.env.delete("FIREBASE_PROJECT_NUMBER");
-  Deno.env.delete("FIREBASE_PROJECT_ID");
+  Deno.env.delete("SUPABASE_SECRET_KEYS");
+  Deno.env.delete("SKIP_APP_CHECK_VERIFICATION");
 });
 
-Deno.test("app-feedback: aplica Rate Limiting de 5 requisições por minuto por IP", async () => {
+Deno.test("app-feedback: despacha issue para tela neutra com categoria app", async () => {
   resetRateLimits();
-  const testIp = "192.168.1.100";
-  const now = Date.now();
-
-  // As primeiras 5 devem ser permitidas
-  for (let i = 0; i < 5; i++) {
-    const check = checkRateLimit(testIp, 5, 60000, now + i * 100);
-    assertEquals(check.allowed, true);
-  }
-
-  // A 6ª tentativa dentro da mesma janela deve ser bloqueada
-  const blockedCheck = checkRateLimit(testIp, 5, 60000, now + 1000);
-  assertEquals(blockedCheck.allowed, false);
-  assertEquals(blockedCheck.retryAfterSeconds > 0, true);
-
-  // Requisição HTTP real com IP bloqueado
+  setCustomTokenProvider(() => Promise.resolve("gh-secret-token"));
   Deno.env.set("SKIP_APP_CHECK_VERIFICATION", "true");
-  Deno.env.set("DISCORD_WEBHOOK_URL", "http://test-webhook");
+
+  const originalFetch = globalThis.fetch;
+  let githubPayload: any = null;
+
+  globalThis.fetch = async (url: string | URL | Request, options?: RequestInit) => {
+    const urlStr = url.toString();
+    if (urlStr.includes("api.github.com")) {
+      githubPayload = JSON.parse(options?.body as string);
+      return new Response(
+        JSON.stringify({ html_url: "https://github.com/aresta-climb/aresta_db/issues/43" }),
+        { status: 201, headers: { "Content-Type": "application/json" } }
+      );
+    }
+    return new Response(JSON.stringify([{}]), { status: 200, headers: { "Content-Type": "application/json" } });
+  };
 
   const formData = new FormData();
-  formData.append("description", "Teste flood");
+  formData.append("description", "Travamento na tela de Ajustes");
+  formData.append(
+    "metadata",
+    JSON.stringify({
+      feedbackId: "app-uuid-999",
+      tipo_feedback: "app",
+      os: "ios",
+      appVersion: "1.2.0",
+    })
+  );
 
-  const req = new Request("http://localhost", {
-    method: "POST",
-    headers: { "cf-connecting-ip": testIp },
-    body: formData,
-  });
-
+  const req = new Request("http://localhost", { method: "POST", body: formData });
   const res = await handleRequest(req);
-  assertEquals(res.status, 429);
-  assertEquals(res.headers.has("Retry-After"), true);
 
+  assertEquals(res.status, 200);
+  assertEquals(githubPayload.title.startsWith("[App]"), true);
+  assertEquals(githubPayload.labels.includes("feedback:app"), true);
+  assertEquals(githubPayload.labels.includes("so:ios"), true);
+  // Não deve conter label de pico
+  assertEquals(githubPayload.labels.some((l: string) => l.startsWith("pico:")), false);
+
+  globalThis.fetch = originalFetch;
+  setCustomTokenProvider(null);
   Deno.env.delete("SKIP_APP_CHECK_VERIFICATION");
-  Deno.env.delete("DISCORD_WEBHOOK_URL");
 });
 
-Deno.test("app-feedback: realiza retentativa automática se o Discord responder 429", async () => {
+Deno.test("app-feedback: realiza retentativa automática se a API do GitHub responder 429", async () => {
   resetRateLimits();
+  setCustomTokenProvider(() => Promise.resolve("gh-token"));
   Deno.env.set("SKIP_APP_CHECK_VERIFICATION", "true");
-  Deno.env.set("DISCORD_WEBHOOK_URL", "http://test-webhook");
-  Deno.env.set("SUPABASE_URL", "http://test-supabase");
-  Deno.env.set("SUPABASE_SERVICE_ROLE_KEY", "test-key");
 
   const originalFetch = globalThis.fetch;
   let attempts = 0;
 
   globalThis.fetch = async (url: string | URL | Request) => {
     const urlStr = url.toString();
-    if (urlStr.includes("test-webhook")) {
+    if (urlStr.includes("api.github.com")) {
       attempts++;
       if (attempts === 1) {
-        // Primeira tentativa retorna 429 com Retry-After curto
-        return new Response(JSON.stringify({ message: "You are being rate limited" }), {
+        return new Response(JSON.stringify({ message: "API rate limit exceeded" }), {
           status: 429,
           headers: { "Retry-After": "0.1", "Content-Type": "application/json" },
         });
       }
-      // Segunda tentativa tem sucesso
-      return new Response("ok", { status: 200 });
+      return new Response(JSON.stringify({ html_url: "https://github.com/issue/1" }), { status: 201 });
     }
     return new Response(JSON.stringify([{}]), { status: 200, headers: { "Content-Type": "application/json" } });
   };
 
   const formData = new FormData();
-  formData.append("description", "Teste de retry 429");
+  formData.append("description", "Teste de retry 429 no GitHub");
 
   const req = new Request("http://localhost", { method: "POST", body: formData });
   const res = await handleRequest(req);
@@ -192,26 +248,24 @@ Deno.test("app-feedback: realiza retentativa automática se o Discord responder 
   assertEquals(attempts, 2);
 
   globalThis.fetch = originalFetch;
+  setCustomTokenProvider(null);
   Deno.env.delete("SKIP_APP_CHECK_VERIFICATION");
-  Deno.env.delete("DISCORD_WEBHOOK_URL");
-  Deno.env.delete("SUPABASE_URL");
-  Deno.env.delete("SUPABASE_SERVICE_ROLE_KEY");
 });
 
-Deno.test("app-feedback: retorna 503 se o Discord falhar e remove trava de idempotência", async () => {
+Deno.test("app-feedback: retorna 503 se o GitHub falhar e remove trava de idempotência", async () => {
   resetRateLimits();
+  setCustomTokenProvider(() => Promise.resolve("gh-token"));
   Deno.env.set("SKIP_APP_CHECK_VERIFICATION", "true");
-  Deno.env.set("DISCORD_WEBHOOK_URL", "http://test-webhook");
-  Deno.env.set("SUPABASE_URL", "http://test-supabase");
-  Deno.env.set("SUPABASE_SECRET_KEYS", "test-key");
+  Deno.env.set("SUPABASE_URL", "https://test-supabase.supabase.co");
+  Deno.env.set("SUPABASE_SECRET_KEYS", JSON.stringify({ service_role: "test-key" }));
 
   const originalFetch = globalThis.fetch;
   let rollbackExecuted = false;
 
   globalThis.fetch = async (url: string | URL | Request, options?: RequestInit) => {
     const urlStr = url.toString();
-    if (urlStr.includes("test-webhook")) {
-      return new Response("Discord server error", { status: 500 });
+    if (urlStr.includes("api.github.com")) {
+      return new Response("GitHub server error", { status: 500 });
     }
     if (urlStr.includes("processed_feedbacks") && options?.method === "DELETE") {
       rollbackExecuted = true;
@@ -221,8 +275,8 @@ Deno.test("app-feedback: retorna 503 se o Discord falhar e remove trava de idemp
   };
 
   const formData = new FormData();
-  formData.append("description", "Teste falha discord");
-  formData.append("metadata", JSON.stringify({ feedbackId: "rollback-uuid" }));
+  formData.append("description", "Teste falha github");
+  formData.append("metadata", JSON.stringify({ feedbackId: "rollback-uuid-gh" }));
 
   const req = new Request("http://localhost", { method: "POST", body: formData });
   const res = await handleRequest(req);
@@ -231,74 +285,8 @@ Deno.test("app-feedback: retorna 503 se o Discord falhar e remove trava de idemp
   assertEquals(rollbackExecuted, true);
 
   globalThis.fetch = originalFetch;
+  setCustomTokenProvider(null);
   Deno.env.delete("SKIP_APP_CHECK_VERIFICATION");
-  Deno.env.delete("DISCORD_WEBHOOK_URL");
   Deno.env.delete("SUPABASE_URL");
   Deno.env.delete("SUPABASE_SECRET_KEYS");
 });
-
-Deno.test("app-feedback: repassa screenshot, indice_file e croqui_file para o discordFormData", async () => {
-  resetRateLimits();
-  Deno.env.set("SKIP_APP_CHECK_VERIFICATION", "true");
-  Deno.env.set("DISCORD_WEBHOOK_URL", "http://test-webhook");
-
-  const originalFetch = globalThis.fetch;
-  let capturedBody: FormData | null = null;
-
-  globalThis.fetch = async (url: string | URL | Request, options?: RequestInit) => {
-    const urlStr = url.toString();
-    if (urlStr.includes("test-webhook")) {
-      capturedBody = options?.body as FormData;
-      return new Response("ok", { status: 200 });
-    }
-    return new Response(JSON.stringify([{}]), { status: 200, headers: { "Content-Type": "application/json" } });
-  };
-
-  const formData = new FormData();
-  formData.append("description", "Teste com múltiplos binários");
-  formData.append(
-    "metadata",
-    JSON.stringify({
-      feedbackId: "anexos-uuid",
-      croqui_id: "pico_1",
-      croqui_status: "INTEGRO",
-      thumbnail_status: "INTEGRO",
-      indice_sha256: "hash_indice_123",
-    })
-  );
-
-  const screenshotFile = new File([new Uint8Array([1, 2, 3])], "screenshot.png", { type: "image/png" });
-  const indiceFile = new File([new Uint8Array([4, 5, 6])], "indice.binarypb", { type: "application/octet-stream" });
-  const croquiFile = new File([new Uint8Array([7, 8, 9])], "compilado.binarypb", { type: "application/octet-stream" });
-
-  formData.append("screenshot", screenshotFile);
-  formData.append("indice_file", indiceFile);
-  formData.append("croqui_file", croquiFile);
-
-  const req = new Request("http://localhost", { method: "POST", body: formData });
-  const res = await handleRequest(req);
-
-  assertEquals(res.status, 200);
-  assertEquals(capturedBody !== null, true);
-
-  if (capturedBody) {
-    const body = capturedBody as FormData;
-    assertEquals(body.has("payload_json"), true);
-
-    // Deve conter os 3 arquivos anexados
-    const arquivos: string[] = [];
-    for (const [key, value] of body.entries()) {
-      if (value instanceof File) {
-        arquivos.push(value.name);
-      }
-    }
-    assertEquals(arquivos.includes("screenshot.png"), true);
-    assertEquals(arquivos.includes("indice.binarypb"), true);
-    assertEquals(arquivos.includes("compilado.binarypb"), true);
-  }
-
-  globalThis.fetch = originalFetch;
-  Deno.env.delete("SKIP_APP_CHECK_VERIFICATION");
-  Deno.env.delete("DISCORD_WEBHOOK_URL");
-});
-

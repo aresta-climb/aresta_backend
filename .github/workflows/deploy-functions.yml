@@ -1,4 +1,4 @@
-name: Deploy Supabase Edge Functions
+name: Deploy Supabase Functions & Migrations
 
 on:
   push:
@@ -6,10 +6,38 @@ on:
       - main
     paths:
       - 'supabase/functions/**'
+      - 'supabase/migrations/**'
   workflow_dispatch:
 
 jobs:
+  migrate-database:
+    name: Apply Database Migrations
+    runs-on: ubuntu-latest
+    env:
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      PROJECT_ID: ${{ secrets.SUPABASE_PROJECT_ID }}
+      SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Supabase CLI
+        uses: supabase/setup-cli@v3
+        with:
+          version: latest
+
+      - name: Push Database Migrations
+        run: |
+          if [ -z "$SUPABASE_DB_PASSWORD" ]; then
+            echo "::warning::Secret SUPABASE_DB_PASSWORD não configurado nos Secrets do GitHub. Pulei o 'supabase db push'. Configure o secret com a senha do banco Postgres para habilitar migrations automáticas."
+          else
+            supabase link --project-ref "$PROJECT_ID" --password "$SUPABASE_DB_PASSWORD"
+            supabase db push --password "$SUPABASE_DB_PASSWORD"
+          fi
+
   deploy:
+    name: Deploy ${{ matrix.function }}
+    needs: migrate-database
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -34,4 +62,3 @@ jobs:
 
       - name: Deploy ${{ matrix.function }} function
         run: supabase functions deploy ${{ matrix.function }} --project-ref $PROJECT_ID
-

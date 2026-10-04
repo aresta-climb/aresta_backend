@@ -1,9 +1,11 @@
 /**
- * Edge Function: App Feedback Segura (v1)
+ * Edge Function: App Feedback Segura (v2 - GitHub Issues & Supabase Diagnósticos)
  *
  * Propósito:
  * Recebe metadados e imagens (screenshots) enviados pelo App Flutter e os
- * repassa para o canal de destino (Discord Webhook) de forma segura, auditada e formatada.
+ * converte em GitHub Issues públicas no repositório comunitário (`aresta-climb/aresta_db`),
+ * salvando dados técnicos sensíveis (modelo de aparelho, identificador de instalação, etc.)
+ * de forma segregada na tabela restrita `feedback_diagnosticos` no Supabase Postgres protegida por RLS.
  *
  * Medidas de Segurança:
  * 1. Atestação de Integridade de Hardware (Firebase App Check):
@@ -12,19 +14,26 @@
  *    Limita a 5 requisições por minuto por IP de origem, respondendo com HTTP 429 e Retry-After.
  * 3. Idempotência Server-Side:
  *    Usa o `feedback_id` (UUIDv4) gravado em `processed_feedbacks` para evitar duplicatas por timeouts de rede.
- * 4. Resiliência do Webhook:
- *    Trata respostas HTTP 429 do Discord aguardando o tempo indicado no Retry-After antes de falhar.
- * 5. Manutenção Automática (TTL):
+ * 4. Resiliência da API do GitHub:
+ *    Trata respostas HTTP 429 do GitHub aguardando o tempo indicado no Retry-After antes de falhar.
+ * 5. Segregação de Privacidade:
+ *    Dados confidenciais nunca são impressos no corpo da issue pública; apenas um link restrito para
+ *    o Supabase Dashboard é gerado para uso exclusivo da equipe técnica autorizada.
+ * 6. Manutenção Automática (TTL):
  *    Remove registros de controle com mais de 30 dias.
  */
 import { createClient } from "@supabase/supabase-js";
 import { createRemoteJWKSet, jwtVerify } from "jose";
 import { extrairChaveSecretaSupabase } from "../compartilhado/cliente_supabase_controle.ts";
+import { obterTokenArestaClimbBot } from "../compartilhado/cliente_github_bot.ts";
 
 export const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-firebase-appcheck',
 };
+
+// Repositório fixo de destino para issues de feedback comunitário
+const REPOSITORIO_GITHUB = 'aresta-climb/aresta_db';
 
 // Cache do conjunto de chaves públicas JWKS do Firebase App Check
 const FIREBASE_JWKS_URL = new URL('https://firebaseappcheck.googleapis.com/v1/jwks');
@@ -35,6 +44,15 @@ let remoteJWKSet = createRemoteJWKSet(FIREBASE_JWKS_URL);
  */
 export function setCustomJWKSet(customJWKS: any) {
   remoteJWKSet = customJWKS;
+}
+
+let customTokenProvider: (() => Promise<string>) | null = null;
+
+/**
+ * Permite injetar um provedor de token customizado para testes unitários.
+ */
+export function setCustomTokenProvider(provider: (() => Promise<string>) | null) {
+  customTokenProvider = provider;
 }
 
 // Estrutura em memória para controle de Rate Limit por IP (Janela deslizante de 60s)
@@ -57,7 +75,7 @@ export function checkRateLimit(
   now = Date.now()
 ): { allowed: boolean; retryAfterSeconds: number } {
   const timestamps = ipRequestTimestamps.get(clientIp) || [];
-  
+
   // Filtra apenas timestamps dentro da janela atual
   const validTimestamps = timestamps.filter((t) => now - t < windowMs);
 
@@ -93,6 +111,22 @@ export async function verifyAppCheckToken(
   } catch (err: any) {
     return { valid: false, error: err.message || 'Token do App Check inválido' };
   }
+}
+
+/**
+ * Extrai a referência do projeto Supabase a partir da URL padrão do gateway
+ * (ex: https://<project-ref>.supabase.co) ou de variáveis de ambiente.
+ */
+export function extrairProjectRef(supabaseUrl: string): string {
+  try {
+    const url = new URL(supabaseUrl);
+    const partes = url.hostname.split('.');
+    if (partes.length >= 2 && partes[0] && partes[0] !== 'localhost') {
+      return partes[0];
+    }
+  } catch (_) {}
+
+  return 'default';
 }
 
 /**
@@ -160,31 +194,35 @@ export const handleRequest = async (req: Request): Promise<Response> => {
       }
     }
 
-    // 3. Validação da variável de ambiente do Discord
-    const discordWebhookUrl = Deno.env.get('DISCORD_WEBHOOK_URL');
-    if (!discordWebhookUrl) {
-      throw new Error('Variável DISCORD_WEBHOOK_URL não configurada no Supabase Secrets.');
+    // 3. Obtenção do token do GitHub App do Aresta Climb Bot
+    const githubToken = customTokenProvider
+      ? await customTokenProvider()
+      : await obterTokenArestaClimbBot();
+
+    if (!githubToken) {
+      throw new Error(
+        'Credenciais do Aresta Climb Bot ausentes ou inválidas. Configure ARESTA_CLIMB_BOT_GITHUB_APP_CLIENT_ID, ARESTA_CLIMB_BOT_GITHUB_APP_PRIVATE_KEY e ARESTA_CLIMB_BOT_GITHUB_APP_INSTALLATION_ID nos Secrets do Supabase.'
+      );
     }
 
     // 4. Processamento do formulário multipart
     const formData = await req.formData();
     const description = formData.get('description')?.toString() || "Sem descrição informada";
     const metadataStr = formData.get('metadata')?.toString() || "{}";
-    const screenshot = formData.get('screenshot') as File | null;
-    const indiceFile = formData.get('indice_file') as File | null;
-    const croquiFile = formData.get('croqui_file') as File | null;
 
     let metadataObj: Record<string, any> = {};
     try {
       metadataObj = JSON.parse(metadataStr);
     } catch (_) {}
 
-    const feedbackId = metadataObj?.feedbackId;
+    const feedbackId = metadataObj?.feedbackId || crypto.randomUUID();
+    const tipoFeedback = metadataObj?.tipo_feedback === 'croqui' ? 'croqui' : 'app';
 
     // 5. Verificação de Idempotência no Supabase (se configurado)
     const supabaseUrl = Deno.env.get('SUPABASE_URL') ?? '';
     const supabaseKey = extrairChaveSecretaSupabase();
     const supabase = (supabaseUrl && supabaseKey) ? createClient(supabaseUrl, supabaseKey) : null;
+    const projectRef = extrairProjectRef(supabaseUrl);
 
     if (feedbackId && supabase) {
       const { error: insertError } = await supabase
@@ -207,90 +245,74 @@ export const handleRequest = async (req: Request): Promise<Response> => {
       }
     }
 
-    // 6. Construção do Payload do Discord
-    const discordFormData = new FormData();
-    const embedFields = [
-      { name: "Descrição", value: description, inline: false },
-    ];
-
-    if (metadataObj) {
-      if (metadataObj.croqui_status || metadataObj.thumbnail_status) {
-        embedFields.push({
-          name: "Auditoria Criptográfica de Sincronização",
-          value: `• **Croqui (${metadataObj.croqui_id || 'N/A'}):** ${metadataObj.croqui_status || 'DESCONHECIDO'}\n` +
-                 `• **Miniatura:** ${metadataObj.thumbnail_status || 'DESCONHECIDO'}\n` +
-                 `• **Hash Índice:** \`${metadataObj.indice_sha256 || 'N/A'}\``,
-          inline: false,
-        });
-      }
-
-      embedFields.push({
-        name: "Metadados de Debug",
-        value: "```json\n" + JSON.stringify(metadataObj, null, 2).substring(0, 1000) + "\n```",
-        inline: false,
-      });
-    }
-
+    // 6. Construção do Título, Labels e Corpo da Issue do GitHub
     let msgPreview = "<Sem Mensagem>";
     if (description && description.trim() !== "" && description !== "Sem descrição informada") {
-      msgPreview = description.substring(0, 40).replace(/\n/g, ' ');
-      if (description.length > 40) msgPreview += '...';
+      msgPreview = description.substring(0, 50).replace(/\n/g, ' ');
+      if (description.length > 50) msgPreview += '...';
     }
 
-    const appVersion = metadataObj?.appVersion || 'Desconhecida';
-    let timestampStr = "";
-    try {
-      timestampStr = new Intl.DateTimeFormat('pt-BR', {
-        timeZone: 'America/Sao_Paulo',
-        day: '2-digit', month: '2-digit', year: 'numeric',
-        hour: '2-digit', minute: '2-digit',
-      }).format(new Date());
-    } catch (_) {
-      timestampStr = new Date().toISOString();
+    const title = (tipoFeedback === 'croqui' && metadataObj?.croqui_id)
+      ? `[Croqui | ${metadataObj.croqui_id}] ${msgPreview}`
+      : (tipoFeedback === 'croqui' ? `[Croqui] ${msgPreview}` : `[App] ${msgPreview}`);
+
+    const labels: string[] = [];
+    labels.push(`feedback:${tipoFeedback}`);
+    if (metadataObj?.os) {
+      labels.push(`so:${String(metadataObj.os).toLowerCase()}`);
+    }
+    if (tipoFeedback === 'croqui' && metadataObj?.croqui_id) {
+      labels.push(`pico:${metadataObj.croqui_id}`);
     }
 
-    const threadName = `${timestampStr} - v${appVersion} - ${msgPreview}`;
+    const linkSupabase = `https://supabase.com/dashboard/project/${projectRef}/editor/feedback_diagnosticos?filter=id%3Deq%3D${feedbackId}`;
 
-    const payloadJson = {
-      thread_name: threadName,
-      content: "🚀 **Novo Feedback / Relato de Bug no App!**",
-      embeds: [{
-        color: 16711680,
-        fields: embedFields,
-        timestamp: new Date().toISOString(),
-      }],
+    let body = `## Descrição\n${description}\n\n`;
+    body += `## Informações Gerais\n`;
+    body += `- **Categoria:** ${tipoFeedback === 'croqui' ? 'Sobre o Croqui' : 'Sobre o Aplicativo'}\n`;
+    if (metadataObj?.croqui_id) {
+      body += `- **Pico / Croqui:** \`${metadataObj.croqui_id}\`\n`;
+    }
+    body += `- **Versão do App:** \`${metadataObj?.appVersion || 'Desconhecida'}\`\n`;
+    if (metadataObj?.os) {
+      body += `- **Plataforma:** \`${metadataObj.os}\`\n`;
+    }
+
+    if (metadataObj?.croqui_status || metadataObj?.thumbnail_status || metadataObj?.indice_sha256) {
+      body += `\n## Auditoria Criptográfica de Sincronização\n`;
+      body += `• **Status do Croqui:** \`${metadataObj.croqui_status || 'N/A'}\`\n`;
+      body += `• **Status da Miniatura:** \`${metadataObj.thumbnail_status || 'N/A'}\`\n`;
+      body += `• **Hash do Índice (SHA256):** \`${metadataObj.indice_sha256 || 'N/A'}\`\n`;
+    }
+
+    body += `\n---\n`;
+    body += `🔒 **Diagnóstico Completo (Acesso Restrito - Equipe Aresta):**\n`;
+    body += `[Ver diagnóstico completo do dispositivo no Supabase](${linkSupabase})\n`;
+
+    // 7. Envio para a API do GitHub com retentativa em caso de 429
+    const githubApiUrl = `https://api.github.com/repos/${REPOSITORIO_GITHUB}/issues`;
+    const githubHeaders = {
+      'Authorization': `Bearer ${githubToken}`,
+      'Accept': 'application/vnd.github+json',
+      'User-Agent': 'Aresta-Feedback-Edge-Function',
+      'Content-Type': 'application/json',
     };
 
-    discordFormData.append('payload_json', JSON.stringify(payloadJson));
+    const githubPayload = {
+      title,
+      body,
+      labels,
+    };
 
-    const arquivosParaAnexar: { file: File; nome: string }[] = [];
-    if (screenshot) {
-      arquivosParaAnexar.push({ file: screenshot, nome: 'screenshot.png' });
-    }
-    if (indiceFile) {
-      arquivosParaAnexar.push({ file: indiceFile, nome: indiceFile.name || 'indice.binarypb' });
-    }
-    if (croquiFile) {
-      arquivosParaAnexar.push({ file: croquiFile, nome: croquiFile.name || 'compilado.binarypb' });
-    }
-
-    if (arquivosParaAnexar.length === 1 && screenshot) {
-      discordFormData.append('file', screenshot, 'screenshot.png');
-    } else {
-      arquivosParaAnexar.forEach((item, index) => {
-        discordFormData.append(`files[${index}]`, item.file, item.nome);
-      });
-    }
-
-    // 7. Envio para o Discord com tratamento de Retry para Rate Limit (429)
-    let discordResponse = await fetch(discordWebhookUrl, {
+    let ghResponse = await fetch(githubApiUrl, {
       method: 'POST',
-      body: discordFormData,
+      headers: githubHeaders,
+      body: JSON.stringify(githubPayload),
     });
 
-    if (discordResponse.status === 429) {
-      console.warn('Rate limit detectado no Discord Webhook. Aguardando Retry-After...');
-      const retryAfterHeader = discordResponse.headers.get('Retry-After');
+    if (ghResponse.status === 429) {
+      console.warn('Rate limit detectado na API do GitHub. Aguardando Retry-After...');
+      const retryAfterHeader = ghResponse.headers.get('Retry-After');
       let retryDelayMs = 1500;
 
       if (retryAfterHeader) {
@@ -302,15 +324,16 @@ export const handleRequest = async (req: Request): Promise<Response> => {
 
       await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
 
-      discordResponse = await fetch(discordWebhookUrl, {
+      ghResponse = await fetch(githubApiUrl, {
         method: 'POST',
-        body: discordFormData,
+        headers: githubHeaders,
+        body: JSON.stringify(githubPayload),
       });
     }
 
-    if (!discordResponse.ok) {
-      const errorText = await discordResponse.text();
-      console.error('Erro na resposta do Discord:', errorText);
+    if (!ghResponse.ok) {
+      const errorText = await ghResponse.text();
+      console.error('Erro na resposta do GitHub:', errorText);
 
       // Remove a trava de idempotência para permitir reenvio pelo App
       if (feedbackId && supabase) {
@@ -319,7 +342,7 @@ export const handleRequest = async (req: Request): Promise<Response> => {
 
       return new Response(
         JSON.stringify({
-          error: `Falha ao entregar para o Discord (Status: ${discordResponse.status}).`,
+          error: `Falha ao entregar para o GitHub (Status: ${ghResponse.status}).`,
         }),
         {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
@@ -328,7 +351,45 @@ export const handleRequest = async (req: Request): Promise<Response> => {
       );
     }
 
-    // 8. Garbage Collection (TTL 30 dias)
+    const ghData = await ghResponse.json().catch(() => ({}));
+    const issueUrl = ghData.html_url || '';
+
+    // 8. Persistência dos Diagnósticos Técnicos Restritos no Supabase Postgres
+    if (supabase) {
+      const diagnosticoPayload = {
+        id: feedbackId,
+        tipo_feedback: tipoFeedback,
+        croqui_id: metadataObj?.croqui_id || null,
+        app_version: metadataObj?.appVersion || metadataObj?.app_version || null,
+        os: metadataObj?.os || null,
+        os_version: metadataObj?.osVersion || metadataObj?.os_version || null,
+        device_model: metadataObj?.deviceModel || metadataObj?.device_model || null,
+        screen_size: metadataObj?.screenSize || metadataObj?.screen_size || null,
+        device_orientation: metadataObj?.deviceOrientation || metadataObj?.device_orientation || null,
+        is_dark_mode: metadataObj?.isDarkMode !== undefined ? String(metadataObj.isDarkMode) : null,
+        connectivity: metadataObj?.connectivity || null,
+        app_instance_id: metadataObj?.appInstanceId || metadataObj?.app_instance_id || null,
+        navigation_tree: metadataObj?.navigationTree
+          ? (typeof metadataObj.navigationTree === 'string' ? metadataObj.navigationTree : JSON.stringify(metadataObj.navigationTree))
+          : null,
+        ip_origem: clientIp,
+        indice_sha256: metadataObj?.indice_sha256 || null,
+        croqui_status: metadataObj?.croqui_status || null,
+        thumbnail_status: metadataObj?.thumbnail_status || null,
+        github_issue_url: issueUrl || null,
+        payload_completo: metadataObj,
+      };
+
+      const { error: diagError } = await supabase
+        .from('feedback_diagnosticos')
+        .insert(diagnosticoPayload);
+
+      if (diagError) {
+        console.error('Erro ao salvar diagnóstico restrito no Supabase:', diagError);
+      }
+    }
+
+    // 9. Manutenção Automática (TTL 30 dias na tabela de idempotência)
     if (supabase) {
       try {
         const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
@@ -339,7 +400,11 @@ export const handleRequest = async (req: Request): Promise<Response> => {
     }
 
     return new Response(
-      JSON.stringify({ success: true, message: 'Feedback enviado com sucesso!' }),
+      JSON.stringify({
+        success: true,
+        message: 'Feedback enviado com sucesso!',
+        issue_url: issueUrl,
+      }),
       {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         status: 200,

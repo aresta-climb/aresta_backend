@@ -6,40 +6,77 @@ import { Octokit, App } from "octokit";
 const DONO_REPOSITORIO_PADRAO = "aresta-climb";
 const NOME_REPOSITORIO_PADRAO = "aresta_db";
 
-export async function obterTokenAutenticacaoGithub(tokenBot?: string): Promise<string> {
+/**
+ * Autenticação do Aresta Climb Bot (usado estritamente para In-App Feedback e GitHub Actions).
+ * Utiliza exclusivamente as credenciais ARESTA_CLIMB_BOT_GITHUB_APP_*.
+ */
+export async function obterTokenArestaClimbBot(): Promise<string> {
+  const clientId = Deno.env.get("ARESTA_CLIMB_BOT_GITHUB_APP_CLIENT_ID");
+  const privateKey = Deno.env.get("ARESTA_CLIMB_BOT_GITHUB_APP_PRIVATE_KEY");
+  const installationId = Deno.env.get("ARESTA_CLIMB_BOT_GITHUB_APP_INSTALLATION_ID");
+
+  if (!clientId || !privateKey || !installationId) {
+    return "";
+  }
+
+  try {
+    const app = new App({
+      appId: clientId,
+      privateKey: privateKey.replace(/\\n/g, "\n"),
+    });
+
+    const autenticacao = (await app.octokit.auth({
+      type: "installation",
+      installationId: parseInt(installationId, 10),
+    })) as any;
+
+    return autenticacao.token || "";
+  } catch (erro: any) {
+    console.error("Erro ao autenticar como Aresta Climb Bot:", erro?.message || erro);
+    return "";
+  }
+}
+
+/**
+ * Autenticação do Editor Aresta (usado estritamente para comunicação com o editor desktop via create-pr e git-proxy).
+ * Utiliza exclusivamente as credenciais EDITOR_ARESTA_GITHUB_APP_*.
+ */
+export async function obterTokenEditorAresta(tokenBot?: string): Promise<string> {
   if (tokenBot) return tokenBot;
   const tokenEnv = Deno.env.get("GITHUB_BOT_TOKEN");
   if (tokenEnv) return tokenEnv;
 
-  const idAppOuClient =
-    Deno.env.get("EDITOR_ARESTA_GITHUB_APP_CLIENT_ID") ||
-    Deno.env.get("GITHUB_CLIENT_ID") ||
-    Deno.env.get("GITHUB_APP_ID");
-  const privateKey =
-    Deno.env.get("EDITOR_ARESTA_GITHUB_APP_PRIVATE_KEY") ||
-    Deno.env.get("GITHUB_APP_PRIVATE_KEY");
-  const installationId =
-    Deno.env.get("EDITOR_ARESTA_GITHUB_APP_INSTALLATION_ID") ||
-    Deno.env.get("GITHUB_APP_INSTALLATION_ID");
+  const clientId = Deno.env.get("EDITOR_ARESTA_GITHUB_APP_CLIENT_ID");
+  const privateKey = Deno.env.get("EDITOR_ARESTA_GITHUB_APP_PRIVATE_KEY");
+  const installationId = Deno.env.get("EDITOR_ARESTA_GITHUB_APP_INSTALLATION_ID");
 
-  if (idAppOuClient && privateKey && installationId) {
-    try {
-      const app = new App({
-        appId: idAppOuClient,
-        privateKey: privateKey.replace(/\\n/g, "\n"),
-      });
-      const autenticacao = (await app.octokit.auth({
-        type: "installation",
-        installationId: parseInt(installationId, 10),
-      })) as any;
-      return autenticacao.token || "";
-    } catch (erro: any) {
-      console.error("Erro ao autenticar como GitHub App:", erro?.message || erro);
-      return "";
-    }
+  if (!clientId || !privateKey || !installationId) {
+    return "";
   }
 
-  return "";
+  try {
+    const app = new App({
+      appId: clientId,
+      privateKey: privateKey.replace(/\\n/g, "\n"),
+    });
+
+    const autenticacao = (await app.octokit.auth({
+      type: "installation",
+      installationId: parseInt(installationId, 10),
+    })) as any;
+
+    return autenticacao.token || "";
+  } catch (erro: any) {
+    console.error("Erro ao autenticar como Editor Aresta App:", erro?.message || erro);
+    return "";
+  }
+}
+
+/**
+ * Função mantida para retrocompatibilidade com create-pr e git-proxy (Editor Aresta).
+ */
+export async function obterTokenAutenticacaoGithub(tokenBot?: string): Promise<string> {
+  return await obterTokenEditorAresta(tokenBot);
 }
 
 export async function obterInstanciaOctokit(tokenBot?: string): Promise<Octokit> {

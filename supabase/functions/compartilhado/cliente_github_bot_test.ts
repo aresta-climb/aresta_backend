@@ -4,6 +4,8 @@
 import { assertEquals } from "@std/assert";
 import {
   obterTokenAutenticacaoGithub,
+  obterTokenEditorAresta,
+  obterTokenArestaClimbBot,
   obterInstanciaOctokit,
   verificarBranchExisteNoGithub,
   obterArquivosModificadosBranch,
@@ -280,29 +282,38 @@ Deno.test("cliente_github_bot: obterTokenAutenticacaoGithub retorna GITHUB_BOT_T
   Deno.env.delete("GITHUB_BOT_TOKEN");
 });
 
-Deno.test("cliente_github_bot: obterTokenAutenticacaoGithub retorna string vazia quando sem variaveis", async () => {
+Deno.test("cliente_github_bot: obterTokenEditorAresta retorna string vazia quando sem variaveis", async () => {
   Deno.env.delete("GITHUB_BOT_TOKEN");
   Deno.env.delete("EDITOR_ARESTA_GITHUB_APP_CLIENT_ID");
   Deno.env.delete("EDITOR_ARESTA_GITHUB_APP_PRIVATE_KEY");
   Deno.env.delete("EDITOR_ARESTA_GITHUB_APP_INSTALLATION_ID");
-  Deno.env.delete("GITHUB_CLIENT_ID");
-  Deno.env.delete("GITHUB_APP_ID");
-  Deno.env.delete("GITHUB_APP_PRIVATE_KEY");
-  Deno.env.delete("GITHUB_APP_INSTALLATION_ID");
-  const token = await obterTokenAutenticacaoGithub();
+  const token = await obterTokenEditorAresta();
   assertEquals(token, "");
 });
 
-Deno.test("cliente_github_bot: obterTokenAutenticacaoGithub captura erro gracefully com chave invalida", async () => {
+Deno.test("cliente_github_bot: obterTokenEditorAresta captura erro gracefully com chave invalida", async () => {
   Deno.env.delete("GITHUB_BOT_TOKEN");
   Deno.env.set("EDITOR_ARESTA_GITHUB_APP_CLIENT_ID", "Iv23fake");
   Deno.env.set("EDITOR_ARESTA_GITHUB_APP_PRIVATE_KEY", "chave_invalida");
   Deno.env.set("EDITOR_ARESTA_GITHUB_APP_INSTALLATION_ID", "12345");
 
-  const token = await obterTokenAutenticacaoGithub();
+  const token = await obterTokenEditorAresta();
   assertEquals(token, "");
 
   Deno.env.delete("EDITOR_ARESTA_GITHUB_APP_CLIENT_ID");
   Deno.env.delete("EDITOR_ARESTA_GITHUB_APP_PRIVATE_KEY");
   Deno.env.delete("EDITOR_ARESTA_GITHUB_APP_INSTALLATION_ID");
+});
+
+Deno.test("cliente_github_bot: obterTokenArestaClimbBot opera exclusivamente com ARESTA_CLIMB_BOT_GITHUB_APP_*", async () => {
+  Deno.env.set("ARESTA_CLIMB_BOT_GITHUB_APP_CLIENT_ID", "Iv23clienteAresta");
+  Deno.env.set("ARESTA_CLIMB_BOT_GITHUB_APP_PRIVATE_KEY", "chave_rsa_teste");
+  Deno.env.set("ARESTA_CLIMB_BOT_GITHUB_APP_INSTALLATION_ID", "88888");
+
+  const token = await obterTokenArestaClimbBot();
+  assertEquals(token, ""); // falha de parseamento de chave RSA de teste é capturada graciosamente
+
+  Deno.env.delete("ARESTA_CLIMB_BOT_GITHUB_APP_CLIENT_ID");
+  Deno.env.delete("ARESTA_CLIMB_BOT_GITHUB_APP_PRIVATE_KEY");
+  Deno.env.delete("ARESTA_CLIMB_BOT_GITHUB_APP_INSTALLATION_ID");
 });

@@ -3,6 +3,7 @@
     "@supabase/functions-js": "jsr:@supabase/functions-js@^2",
     "@supabase/server": "npm:@supabase/server@^1",
     "@supabase/supabase-js": "npm:@supabase/supabase-js@^2",
-    "jose": "npm:jose@^5.9.6"
+    "jose": "npm:jose@^5.9.6",
+    "octokit": "npm:octokit@^4.0.2"
   }
 }
