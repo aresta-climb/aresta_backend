@@ -146,10 +146,10 @@ Deno.test("app-feedback: despacha issue para a API do GitHub com labels e títul
   assertEquals(githubPayload.body.includes("firebase-secret-id"), false);
   assertEquals(githubPayload.body.includes("Samsung Galaxy S22"), false);
 
-  // Link restrito para o Supabase Dashboard deve constar no corpo usando o ref extraído de SUPABASE_URL
+  // Link restrito para o Supabase Dashboard deve constar no corpo usando o ref extraído de SUPABASE_URL e :eq:
   assertEquals(
     githubPayload.body.includes(
-      "https://supabase.com/dashboard/project/aresta-prod-xyz/editor/feedback_diagnosticos?filter=id%3Deq%3Dcroqui-uuid-123"
+      "https://supabase.com/dashboard/project/aresta-prod-xyz/editor/feedback_diagnosticos?filter=id%3Aeq%3Acroqui-uuid-123"
     ),
     true
   );
@@ -404,6 +404,51 @@ Deno.test("app-feedback: faz upload de screenshot, indice_file e croqui_file par
   assertEquals(
     supabaseDiagnosticosPayload.payload_completo.screenshot_url,
     "https://aresta-prod-xyz.supabase.co/storage/v1/object/public/feedback_anexos/anexos-uuid-777/screenshot.png"
+  );
+
+  globalThis.fetch = originalFetch;
+  setCustomTokenProvider(null);
+  Deno.env.delete("SUPABASE_URL");
+  Deno.env.delete("SUPABASE_SECRET_KEYS");
+  Deno.env.delete("SKIP_APP_CHECK_VERIFICATION");
+});
+
+Deno.test("app-feedback: em produção (yzkhiaoqtxvvcyyuwmqg), utiliza o ID da tabela 42715 no link do dashboard", async () => {
+  resetRateLimits();
+  setCustomTokenProvider(() => Promise.resolve("gh-secret-token"));
+  Deno.env.set("SUPABASE_URL", "https://yzkhiaoqtxvvcyyuwmqg.supabase.co");
+  Deno.env.set("SUPABASE_SECRET_KEYS", JSON.stringify({ service_role: "test-key" }));
+  Deno.env.set("SKIP_APP_CHECK_VERIFICATION", "true");
+
+  const originalFetch = globalThis.fetch;
+  let githubPayload: any = null;
+
+  globalThis.fetch = async (url: string | URL | Request, options?: RequestInit) => {
+    const urlStr = url.toString();
+    if (urlStr.includes("api.github.com/repos/aresta-climb/aresta_db/issues")) {
+      githubPayload = JSON.parse(options?.body as string);
+      return new Response(
+        JSON.stringify({ html_url: "https://github.com/aresta-climb/aresta_db/issues/46" }),
+        { status: 201, headers: { "Content-Type": "application/json" } }
+      );
+    }
+    return new Response(JSON.stringify([{}]), { status: 200, headers: { "Content-Type": "application/json" } });
+  };
+
+  const formData = new FormData();
+  formData.append("description", "Teste em produção");
+  formData.append("metadata", JSON.stringify({ feedbackId: "prod-uuid-123" }));
+
+  const req = new Request("http://localhost", { method: "POST", body: formData });
+  const res = await handleRequest(req);
+
+  assertEquals(res.status, 200);
+  assertEquals(githubPayload !== null, true);
+  assertEquals(
+    githubPayload.body.includes(
+      "https://supabase.com/dashboard/project/yzkhiaoqtxvvcyyuwmqg/editor/42715?filter=id%3Aeq%3Aprod-uuid-123"
+    ),
+    true
   );
 
   globalThis.fetch = originalFetch;

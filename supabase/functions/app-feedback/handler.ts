@@ -346,7 +346,9 @@ export const handleRequest = async (req: Request): Promise<Response> => {
       labels.push(`pico:${metadataObj.croqui_id}`);
     }
 
-    const linkSupabase = `https://supabase.com/dashboard/project/${projectRef}/editor/feedback_diagnosticos?filter=id%3Deq%3D${feedbackId}`;
+    const tableIdentifier = Deno.env.get('SUPABASE_FEEDBACK_TABLE_ID') ||
+      (projectRef === 'yzkhiaoqtxvvcyyuwmqg' ? '42715' : 'feedback_diagnosticos');
+    const linkSupabase = `https://supabase.com/dashboard/project/${projectRef}/editor/${tableIdentifier}?filter=id%3Aeq%3A${feedbackId}`;
 
     let body = `## Descrição\n${description}\n\n`;
 
