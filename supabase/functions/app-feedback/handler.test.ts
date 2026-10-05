@@ -122,10 +122,25 @@ Deno.test("app-feedback: despacha issue para a API do GitHub com labels e títul
       tipo_feedback: "croqui",
       croqui_id: "br_mg_igarape_pedra_grande",
       modo_acesso_croqui: "online",
+      submittedAt: "05 de outubro de 2026 às 00:00:00 (GMT-3)",
+      submittedAtTimestamp: "2026-10-05T00:00:00.000-03:00",
+      navigationTree: "Início -> Pico (br_mg_igarape_pedra_grande) -> Setor (Setor Central)",
       os: "android",
+      osVersion: "13",
       appVersion: "1.2.0",
       deviceModel: "Samsung Galaxy S22",
+      screenSize: "392x825",
+      deviceOrientation: "portrait",
+      isDarkMode: "true",
+      connectivity: "mobile",
       appInstanceId: "firebase-secret-id",
+      breadcrumbs: [
+        {
+          timestamp: "2026-10-05T00:00:00.000-03:00",
+          evento: "acao_croqui",
+          parametros: { id_croqui: "br_mg_igarape_pedra_grande", acao: "abrir_croqui" },
+        },
+      ],
     })
   );
 
@@ -145,12 +160,27 @@ Deno.test("app-feedback: despacha issue para a API do GitHub com labels e títul
   assertEquals(githubPayload.labels.includes("pico:br_mg_igarape_pedra_grande"), true);
   assertEquals(githubPayload.labels.includes("modo:online"), true);
 
-  // Validação do corpo da issue informando o modo de acesso com clareza
+  // Validação do corpo da issue informando dados gerais e técnicos não sigilosos
+  assertEquals(
+    githubPayload.body.includes("- **Data de Envio:** 05 de outubro de 2026 às 00:00:00 (GMT-3) (`2026-10-05T00:00:00.000-03:00`)"),
+    true
+  );
   assertEquals(githubPayload.body.includes("- **Modo de Acesso:** 🌐 Online (Sob Demanda)"), true);
+  assertEquals(
+    githubPayload.body.includes("- **Árvore de Navegação:** `Início -> Pico (br_mg_igarape_pedra_grande) -> Setor (Setor Central)`"),
+    true
+  );
+  assertEquals(githubPayload.body.includes("- **Plataforma:** `android (Versão 13)`"), true);
+  assertEquals(
+    githubPayload.body.includes("- **Interface:** Resolução: `392x825` | Orientação: `portrait` | Modo Escuro: Sim"),
+    true
+  );
+  assertEquals(githubPayload.body.includes("- **Conectividade:** `mobile`"), true);
 
-  // Validação de privacidade: dados sensíveis NÃO devem constar no corpo da issue do GitHub
+  // Validação de privacidade: dados sensíveis / restritos NÃO devem constar no corpo da issue do GitHub
   assertEquals(githubPayload.body.includes("firebase-secret-id"), false);
   assertEquals(githubPayload.body.includes("Samsung Galaxy S22"), false);
+  assertEquals(githubPayload.body.includes("breadcrumbs"), false);
 
   // Link restrito para o Supabase Dashboard deve constar no corpo usando o gateway canônico
   assertEquals(
@@ -166,7 +196,20 @@ Deno.test("app-feedback: despacha issue para a API do GitHub com labels e títul
   assertEquals(supabaseDiagnosticosPayload.tipo_feedback, "croqui");
   assertEquals(supabaseDiagnosticosPayload.croqui_id, "br_mg_igarape_pedra_grande");
   assertEquals(supabaseDiagnosticosPayload.modo_acesso_croqui, "online");
+  assertEquals(supabaseDiagnosticosPayload.submitted_at, "05 de outubro de 2026 às 00:00:00 (GMT-3)");
+  assertEquals(supabaseDiagnosticosPayload.submitted_at_timestamp, "2026-10-05T00:00:00.000-03:00");
+  assertEquals(supabaseDiagnosticosPayload.navigation_tree, "Início -> Pico (br_mg_igarape_pedra_grande) -> Setor (Setor Central)");
+  assertEquals(supabaseDiagnosticosPayload.device_model, "Samsung Galaxy S22");
+  assertEquals(supabaseDiagnosticosPayload.os, "android");
+  assertEquals(supabaseDiagnosticosPayload.os_version, "13");
+  assertEquals(supabaseDiagnosticosPayload.screen_size, "392x825");
+  assertEquals(supabaseDiagnosticosPayload.device_orientation, "portrait");
+  assertEquals(supabaseDiagnosticosPayload.is_dark_mode, "true");
+  assertEquals(supabaseDiagnosticosPayload.connectivity, "mobile");
   assertEquals(supabaseDiagnosticosPayload.app_instance_id, "firebase-secret-id");
+  assertEquals(Array.isArray(supabaseDiagnosticosPayload.breadcrumbs), true);
+  assertEquals(supabaseDiagnosticosPayload.breadcrumbs.length, 1);
+  assertEquals(supabaseDiagnosticosPayload.breadcrumbs[0].evento, "acao_croqui");
 
   globalThis.fetch = originalFetch;
   setCustomTokenProvider(null);
@@ -658,5 +701,65 @@ Deno.test("app-feedback: realiza retentativa automática sem labels se o GitHub 
   setCustomTokenProvider(null);
   Deno.env.delete("SKIP_APP_CHECK_VERIFICATION");
 });
+
+Deno.test("app-feedback: realiza fallback gracioso ao inserir diagnóstico se colunas adicionais não existirem no Postgres", async () => {
+  resetRateLimits();
+  setCustomTokenProvider(() => Promise.resolve("gh-secret-token"));
+  Deno.env.set("SUPABASE_URL", "https://aresta-prod-xyz.supabase.co");
+  Deno.env.set("SUPABASE_SECRET_KEYS", JSON.stringify({ service_role: "test-key" }));
+  Deno.env.set("SKIP_APP_CHECK_VERIFICATION", "true");
+
+  const originalFetch = globalThis.fetch;
+  let diagnosticosAttempts = 0;
+  let retryPayload: any = null;
+
+  globalThis.fetch = async (url: string | URL | Request, options?: RequestInit) => {
+    const urlStr = url.toString();
+    if (urlStr.includes("api.github.com/repos/aresta-climb/aresta_db/issues")) {
+      return new Response(JSON.stringify({ html_url: "https://github.com/issue/fallback-col" }), { status: 201 });
+    }
+    if (urlStr.includes("feedback_diagnosticos")) {
+      diagnosticosAttempts++;
+      if (diagnosticosAttempts === 1) {
+        return new Response(
+          JSON.stringify({ message: 'column "submitted_at" of relation "feedback_diagnosticos" does not exist' }),
+          { status: 400, headers: { "Content-Type": "application/json" } }
+        );
+      }
+      retryPayload = JSON.parse(options?.body as string);
+      return new Response(JSON.stringify([{}]), { status: 201, headers: { "Content-Type": "application/json" } });
+    }
+    return new Response(JSON.stringify([{}]), { status: 200, headers: { "Content-Type": "application/json" } });
+  };
+
+  const formData = new FormData();
+  formData.append("description", "Teste de fallback de colunas");
+  formData.append(
+    "metadata",
+    JSON.stringify({
+      feedbackId: "fallback-col-uuid",
+      tipo_feedback: "app",
+      submittedAt: "05 de outubro de 2026",
+      submittedAtTimestamp: "2026-10-05T00:00:00Z",
+    })
+  );
+
+  const req = new Request("http://localhost", { method: "POST", body: formData });
+  const res = await handleRequest(req);
+
+  assertEquals(res.status, 200);
+  assertEquals(diagnosticosAttempts, 2);
+  assertEquals(retryPayload !== null, true);
+  assertEquals("submitted_at" in retryPayload, false);
+  assertEquals("submitted_at_timestamp" in retryPayload, false);
+  assertEquals("breadcrumbs" in retryPayload, false);
+
+  globalThis.fetch = originalFetch;
+  setCustomTokenProvider(null);
+  Deno.env.delete("SUPABASE_URL");
+  Deno.env.delete("SUPABASE_SECRET_KEYS");
+  Deno.env.delete("SKIP_APP_CHECK_VERIFICATION");
+});
+
 
 

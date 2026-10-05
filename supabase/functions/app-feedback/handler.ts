@@ -410,6 +410,16 @@ export const handleRequest = async (req: Request): Promise<Response> => {
 
     body += `## Informações Gerais\n`;
     body += `- **Categoria:** ${tipoFeedback === 'croqui' ? 'Sobre o Croqui' : 'Sobre o Aplicativo'}\n`;
+
+    const dataEnvio = metadataObj?.submittedAt || metadataObj?.submitted_at;
+    const timestampEnvio = metadataObj?.submittedAtTimestamp || metadataObj?.submitted_at_timestamp;
+    if (dataEnvio || timestampEnvio) {
+      const labelData = dataEnvio && timestampEnvio && dataEnvio !== timestampEnvio
+        ? `${dataEnvio} (\`${timestampEnvio}\`)`
+        : (dataEnvio || `\`${timestampEnvio}\``);
+      body += `- **Data de Envio:** ${labelData}\n`;
+    }
+
     if (metadataObj?.croqui_id) {
       body += `- **Pico / Croqui:** \`${metadataObj.croqui_id}\`\n`;
       if (modoCroqui) {
@@ -420,9 +430,34 @@ export const handleRequest = async (req: Request): Promise<Response> => {
         body += `- **Modo de Acesso:** ${modoFormatado}\n`;
       }
     }
+
+    const navTree = metadataObj?.navigationTree || metadataObj?.navigation_tree;
+    if (navTree) {
+      const navTreeStr = typeof navTree === 'string' ? navTree : JSON.stringify(navTree);
+      body += `- **Árvore de Navegação:** \`${navTreeStr}\`\n`;
+    }
+
     body += `- **Versão do App:** \`${metadataObj?.appVersion || 'Desconhecida'}\`\n`;
     if (metadataObj?.os) {
-      body += `- **Plataforma:** \`${metadataObj.os}\`\n`;
+      const osVersion = metadataObj?.osVersion || metadataObj?.os_version;
+      const plataforma = osVersion ? `${metadataObj.os} (Versão ${osVersion})` : metadataObj.os;
+      body += `- **Plataforma:** \`${plataforma}\`\n`;
+    }
+
+    const screenSize = metadataObj?.screenSize || metadataObj?.screen_size;
+    const orientation = metadataObj?.deviceOrientation || metadataObj?.device_orientation;
+    const isDark = metadataObj?.isDarkMode !== undefined ? String(metadataObj.isDarkMode) : null;
+    if (screenSize || orientation || isDark !== null) {
+      const partesUi: string[] = [];
+      if (screenSize) partesUi.push(`Resolução: \`${screenSize}\``);
+      if (orientation) partesUi.push(`Orientação: \`${orientation}\``);
+      if (isDark !== null) partesUi.push(`Modo Escuro: ${isDark === 'true' ? 'Sim' : 'Não'}`);
+      body += `- **Interface:** ${partesUi.join(' | ')}\n`;
+    }
+
+    const connectivity = metadataObj?.connectivity;
+    if (connectivity) {
+      body += `- **Conectividade:** \`${connectivity}\`\n`;
     }
 
     if (metadataObj?.croqui_status || metadataObj?.thumbnail_status || metadataObj?.indice_sha256) {
@@ -543,6 +578,9 @@ export const handleRequest = async (req: Request): Promise<Response> => {
         is_dark_mode: metadataObj?.isDarkMode !== undefined ? String(metadataObj.isDarkMode) : null,
         connectivity: metadataObj?.connectivity || null,
         app_instance_id: metadataObj?.appInstanceId || metadataObj?.app_instance_id || null,
+        submitted_at: metadataObj?.submittedAt || metadataObj?.submitted_at || null,
+        submitted_at_timestamp: metadataObj?.submittedAtTimestamp || metadataObj?.submitted_at_timestamp || null,
+        breadcrumbs: metadataObj?.breadcrumbs || null,
         navigation_tree: metadataObj?.navigationTree
           ? (typeof metadataObj.navigationTree === 'string' ? metadataObj.navigationTree : JSON.stringify(metadataObj.navigationTree))
           : null,
@@ -575,6 +613,9 @@ export const handleRequest = async (req: Request): Promise<Response> => {
         delete diagnosticoPayload.indice_url;
         delete diagnosticoPayload.croqui_url;
         delete diagnosticoPayload.modo_acesso_croqui;
+        delete diagnosticoPayload.submitted_at;
+        delete diagnosticoPayload.submitted_at_timestamp;
+        delete diagnosticoPayload.breadcrumbs;
         const resRetry = await supabase
           .from('feedback_diagnosticos')
           .insert(diagnosticoPayload);
