@@ -6,6 +6,7 @@ import {
   resetRateLimits,
   checkRateLimit,
   extrairProjectRef,
+  sanitizarLabel,
 } from "./handler.ts";
 import { obterTokenArestaClimbBot } from "../compartilhado/cliente_github_bot.ts";
 
@@ -546,6 +547,115 @@ Deno.test("app-feedback: faz upload de screenshot WebP com content-type image/we
   setCustomTokenProvider(null);
   Deno.env.delete("SUPABASE_URL");
   Deno.env.delete("SUPABASE_SECRET_KEYS");
+  Deno.env.delete("SKIP_APP_CHECK_VERIFICATION");
+});
+
+Deno.test("app-feedback: sanitizarLabel trunca labels com mais de 50 caracteres e limpa vírgulas", () => {
+  const labelLonga = "pico:br_mg_santa_luzia_morro_do_carrapato_setor_covide"; // 54 caracteres
+  const resultado = sanitizarLabel(labelLonga);
+  assertEquals(resultado !== null, true);
+  assertEquals(resultado!.length, 50);
+  assertEquals(resultado, "pico:br_mg_santa_luzia_morro_do_carrapato_setor_co");
+
+  assertEquals(sanitizarLabel("label,com,virgula"), "labelcomvirgula");
+  assertEquals(sanitizarLabel(""), null);
+  assertEquals(sanitizarLabel("   "), null);
+});
+
+Deno.test("app-feedback: despacha issue para croqui com id longo truncando a label para no máximo 50 caracteres", async () => {
+  resetRateLimits();
+  setCustomTokenProvider(() => Promise.resolve("gh-token"));
+  Deno.env.set("SKIP_APP_CHECK_VERIFICATION", "true");
+
+  const originalFetch = globalThis.fetch;
+  let githubPayload: any = null;
+
+  globalThis.fetch = async (url: string | URL | Request, options?: RequestInit) => {
+    const urlStr = url.toString();
+    if (urlStr.includes("api.github.com/repos/aresta-climb/aresta_db/issues")) {
+      githubPayload = JSON.parse(options?.body as string);
+      return new Response(JSON.stringify({ html_url: "https://github.com/issue/long-id" }), { status: 201 });
+    }
+    return new Response(JSON.stringify([{}]), { status: 200, headers: { "Content-Type": "application/json" } });
+  };
+
+  const formData = new FormData();
+  formData.append("description", "Problema no croqui com id longo");
+  formData.append(
+    "metadata",
+    JSON.stringify({
+      feedbackId: "croqui-long-uuid",
+      tipo_feedback: "croqui",
+      croqui_id: "br_mg_santa_luzia_morro_do_carrapato_setor_covide",
+      os: "android",
+    })
+  );
+
+  const req = new Request("http://localhost", { method: "POST", body: formData });
+  const res = await handleRequest(req);
+
+  assertEquals(res.status, 200);
+  assertEquals(githubPayload !== null, true);
+  // Todas as labels geradas devem ter 50 caracteres ou menos
+  for (const label of githubPayload.labels) {
+    assertEquals(label.length <= 50, true);
+  }
+  const labelPico = githubPayload.labels.find((l: string) => l.startsWith("pico:"));
+  assertEquals(labelPico !== undefined, true);
+  assertEquals(labelPico!.length, 50);
+
+  globalThis.fetch = originalFetch;
+  setCustomTokenProvider(null);
+  Deno.env.delete("SKIP_APP_CHECK_VERIFICATION");
+});
+
+Deno.test("app-feedback: realiza retentativa automática sem labels se o GitHub responder 422 Validation Failed", async () => {
+  resetRateLimits();
+  setCustomTokenProvider(() => Promise.resolve("gh-token"));
+  Deno.env.set("SKIP_APP_CHECK_VERIFICATION", "true");
+
+  const originalFetch = globalThis.fetch;
+  let attempts = 0;
+  let lastPayload: any = null;
+
+  globalThis.fetch = async (url: string | URL | Request, options?: RequestInit) => {
+    const urlStr = url.toString();
+    if (urlStr.includes("api.github.com/repos/aresta-climb/aresta_db/issues")) {
+      attempts++;
+      lastPayload = JSON.parse(options?.body as string);
+      if (attempts === 1) {
+        return new Response(
+          JSON.stringify({
+            message: "Validation Failed",
+            errors: [{ value: "invalid-label", resource: "Label", field: "name", code: "invalid" }],
+          }),
+          { status: 422, headers: { "Content-Type": "application/json" } }
+        );
+      }
+      return new Response(JSON.stringify({ html_url: "https://github.com/issue/fallback-422" }), { status: 201 });
+    }
+    return new Response(JSON.stringify([{}]), { status: 200, headers: { "Content-Type": "application/json" } });
+  };
+
+  const formData = new FormData();
+  formData.append("description", "Teste 422 fallback");
+  formData.append(
+    "metadata",
+    JSON.stringify({
+      feedbackId: "fallback-422-uuid",
+      tipo_feedback: "app",
+    })
+  );
+
+  const req = new Request("http://localhost", { method: "POST", body: formData });
+  const res = await handleRequest(req);
+
+  assertEquals(res.status, 200);
+  assertEquals(attempts, 2);
+  assertEquals(lastPayload.labels, []);
+
+  globalThis.fetch = originalFetch;
+  setCustomTokenProvider(null);
   Deno.env.delete("SKIP_APP_CHECK_VERIFICATION");
 });
 

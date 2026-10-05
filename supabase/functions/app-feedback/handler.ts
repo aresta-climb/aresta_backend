@@ -130,6 +130,20 @@ export function extrairProjectRef(supabaseUrl: string): string {
 }
 
 /**
+ * Sanitiza e valida o nome de uma label para conformidade estrita com a API do GitHub.
+ * Regras do GitHub:
+ * 1. Comprimento máximo: 50 caracteres (nomes maiores disparam HTTP 422 Validation Failed).
+ * 2. Caracteres proibidos: vírgulas (usadas como delimitador no CLI e endpoints legados).
+ * 3. Strings vazias ou quebras de linha são removidas.
+ */
+export function sanitizarLabel(label: string): string | null {
+  if (!label) return null;
+  const limpa = label.replace(/[,\r\n]/g, '').trim();
+  if (!limpa) return null;
+  return limpa.length > 50 ? limpa.substring(0, 50) : limpa;
+}
+
+/**
  * Função principal para processar a requisição de feedback.
  */
 export const handleRequest = async (req: Request): Promise<Response> => {
@@ -349,16 +363,21 @@ export const handleRequest = async (req: Request): Promise<Response> => {
       : (tipoFeedback === 'croqui' ? `[Croqui] ${msgPreview}` : `[App] ${msgPreview}`);
 
     const labels: string[] = [];
-    labels.push(`feedback:${tipoFeedback}`);
+    const labelTipo = sanitizarLabel(`feedback:${tipoFeedback}`);
+    if (labelTipo) labels.push(labelTipo);
+
     if (metadataObj?.os) {
-      labels.push(`so:${String(metadataObj.os).toLowerCase()}`);
+      const labelSo = sanitizarLabel(`so:${String(metadataObj.os).toLowerCase()}`);
+      if (labelSo) labels.push(labelSo);
     }
     const modoCroqui = metadataObj?.modo_acesso_croqui || metadataObj?.modoAcessoCroqui;
     if (tipoFeedback === 'croqui' && metadataObj?.croqui_id) {
-      labels.push(`pico:${metadataObj.croqui_id}`);
+      const labelPico = sanitizarLabel(`pico:${metadataObj.croqui_id}`);
+      if (labelPico) labels.push(labelPico);
     }
     if (tipoFeedback === 'croqui' && modoCroqui) {
-      labels.push(`modo:${String(modoCroqui).toLowerCase()}`);
+      const labelModo = sanitizarLabel(`modo:${String(modoCroqui).toLowerCase()}`);
+      if (labelModo) labels.push(labelModo);
     }
 
     // Configuração de URLs canônicas via Gateway próprio ou fallback direto do Supabase
@@ -466,6 +485,23 @@ export const handleRequest = async (req: Request): Promise<Response> => {
         method: 'POST',
         headers: githubHeaders,
         body: JSON.stringify(githubPayload),
+      });
+    }
+
+    if (ghResponse.status === 422 && githubPayload.labels && githubPayload.labels.length > 0) {
+      const errorText = await ghResponse.text().catch(() => '');
+      console.warn('Erro 422 de validação no GitHub ao criar issue com labels:', errorText);
+      console.warn('Retentando criação da issue sem labels para garantir a entrega...');
+
+      const payloadSemLabels = {
+        ...githubPayload,
+        labels: [],
+      };
+
+      ghResponse = await fetch(githubApiUrl, {
+        method: 'POST',
+        headers: githubHeaders,
+        body: JSON.stringify(payloadSemLabels),
       });
     }
 
