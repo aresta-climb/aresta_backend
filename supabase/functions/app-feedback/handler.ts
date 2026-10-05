@@ -144,6 +144,50 @@ export function sanitizarLabel(label: string): string | null {
 }
 
 /**
+ * Converte a lista de breadcrumbs (eventos de telemetria) em texto legível de múltiplas linhas
+ * com um evento por linha, otimizado para exibição no painel e no editor do Supabase.
+ */
+export function formatarBreadcrumbs(breadcrumbs: any): string | null {
+  if (!breadcrumbs) return null;
+  if (typeof breadcrumbs === 'string') return breadcrumbs.trim();
+  if (!Array.isArray(breadcrumbs) || breadcrumbs.length === 0) return null;
+
+  return breadcrumbs
+    .map((b: any, index: number) => {
+      if (typeof b === 'string') return b;
+
+      let horario = '';
+      if (b.timestamp) {
+        try {
+          const rawTs = String(b.timestamp);
+          if (rawTs.includes('T')) {
+            const timePart = rawTs.split('T')[1].split('.')[0].split('-')[0].split('+')[0].split('Z')[0];
+            horario = timePart;
+          } else {
+            horario = rawTs;
+          }
+        } catch {
+          horario = String(b.timestamp);
+        }
+      }
+
+      const prefixoHora = horario ? `[${horario}] ` : `[#${index + 1}] `;
+      const evento = b.evento || b.name || 'evento';
+      const params = b.parametros || b.parameters;
+
+      if (params && typeof params === 'object' && Object.keys(params).length > 0) {
+        const paramsStr = Object.entries(params)
+          .map(([k, v]) => `${k}: ${v}`)
+          .join(', ');
+        return `${prefixoHora}${evento} (${paramsStr})`;
+      }
+
+      return `${prefixoHora}${evento}`;
+    })
+    .join('\n');
+}
+
+/**
  * Função principal para processar a requisição de feedback.
  */
 export const handleRequest = async (req: Request): Promise<Response> => {
@@ -580,7 +624,7 @@ export const handleRequest = async (req: Request): Promise<Response> => {
         app_instance_id: metadataObj?.appInstanceId || metadataObj?.app_instance_id || null,
         submitted_at: metadataObj?.submittedAt || metadataObj?.submitted_at || null,
         submitted_at_timestamp: metadataObj?.submittedAtTimestamp || metadataObj?.submitted_at_timestamp || null,
-        breadcrumbs: metadataObj?.breadcrumbs || null,
+        breadcrumbs: formatarBreadcrumbs(metadataObj?.breadcrumbs),
         navigation_tree: metadataObj?.navigationTree
           ? (typeof metadataObj.navigationTree === 'string' ? metadataObj.navigationTree : JSON.stringify(metadataObj.navigationTree))
           : null,

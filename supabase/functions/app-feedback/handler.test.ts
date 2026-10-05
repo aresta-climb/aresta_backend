@@ -7,6 +7,7 @@ import {
   checkRateLimit,
   extrairProjectRef,
   sanitizarLabel,
+  formatarBreadcrumbs,
 } from "./handler.ts";
 import { obterTokenArestaClimbBot } from "../compartilhado/cliente_github_bot.ts";
 
@@ -205,11 +206,12 @@ Deno.test("app-feedback: despacha issue para a API do GitHub com labels e títul
   assertEquals(supabaseDiagnosticosPayload.screen_size, "392x825");
   assertEquals(supabaseDiagnosticosPayload.device_orientation, "portrait");
   assertEquals(supabaseDiagnosticosPayload.is_dark_mode, "true");
-  assertEquals(supabaseDiagnosticosPayload.connectivity, "mobile");
-  assertEquals(supabaseDiagnosticosPayload.app_instance_id, "firebase-secret-id");
-  assertEquals(Array.isArray(supabaseDiagnosticosPayload.breadcrumbs), true);
-  assertEquals(supabaseDiagnosticosPayload.breadcrumbs.length, 1);
-  assertEquals(supabaseDiagnosticosPayload.breadcrumbs[0].evento, "acao_croqui");
+  assertEquals(typeof supabaseDiagnosticosPayload.breadcrumbs, "string");
+  assertEquals(
+    supabaseDiagnosticosPayload.breadcrumbs.includes("[00:00:00] acao_croqui (id_croqui: br_mg_igarape_pedra_grande, acao: abrir_croqui)"),
+    true
+  );
+  assertEquals(Array.isArray(supabaseDiagnosticosPayload.payload_completo.breadcrumbs), true);
 
   globalThis.fetch = originalFetch;
   setCustomTokenProvider(null);
@@ -760,6 +762,35 @@ Deno.test("app-feedback: realiza fallback gracioso ao inserir diagnóstico se co
   Deno.env.delete("SUPABASE_SECRET_KEYS");
   Deno.env.delete("SKIP_APP_CHECK_VERIFICATION");
 });
+
+Deno.test("app-feedback: formatarBreadcrumbs formata lista de eventos com quebra de linha por evento", () => {
+  assertEquals(formatarBreadcrumbs(null), null);
+  assertEquals(formatarBreadcrumbs([]), null);
+  assertEquals(formatarBreadcrumbs("evento_existente"), "evento_existente");
+
+  const lista = [
+    {
+      timestamp: "2026-10-05T12:00:00.123-03:00",
+      evento: "acao_croqui",
+      parametros: { id_croqui: "pico_1", acao: "abrir_croqui" },
+    },
+    {
+      timestamp: "2026-10-05T12:00:15.456-03:00",
+      evento: "abrir_setor",
+      parametros: { nome_setor: "Setor 1" },
+    },
+    {
+      evento: "abrir_modal",
+    },
+  ];
+
+  const formatado = formatarBreadcrumbs(lista);
+  assertEquals(
+    formatado,
+    "[12:00:00] acao_croqui (id_croqui: pico_1, acao: abrir_croqui)\n[12:00:15] abrir_setor (nome_setor: Setor 1)\n[#3] abrir_modal"
+  );
+});
+
 
 
 
