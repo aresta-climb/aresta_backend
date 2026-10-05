@@ -308,6 +308,7 @@ Deno.test("app-feedback: faz upload de screenshot, indice_file e croqui_file par
   let githubPayload: any = null;
   let supabaseDiagnosticosPayload: any = null;
   const storageUploads: string[] = [];
+  const storageContentTypes: Record<string, string> = {};
 
   globalThis.fetch = async (url: string | URL | Request, options?: RequestInit) => {
     const urlStr = url.toString();
@@ -320,6 +321,10 @@ Deno.test("app-feedback: faz upload de screenshot, indice_file e croqui_file par
     }
     if (urlStr.includes("/storage/v1/object/feedback_anexos/")) {
       storageUploads.push(urlStr);
+      const ct = new Headers(options?.headers).get("content-type");
+      if (ct) {
+        storageContentTypes[urlStr] = ct;
+      }
       return new Response(JSON.stringify({ Key: "feedback_anexos/uploaded" }), {
         status: 200,
         headers: { "Content-Type": "application/json" },
@@ -348,7 +353,8 @@ Deno.test("app-feedback: faz upload de screenshot, indice_file e croqui_file par
     })
   );
 
-  const screenshotFile = new File([new Uint8Array([137, 80, 78, 71])], "screenshot.png", { type: "image/png" });
+  // Simula cliente enviando application/octet-stream para o screenshot
+  const screenshotFile = new File([new Uint8Array([137, 80, 78, 71])], "screenshot.png", { type: "application/octet-stream" });
   const indiceFile = new File([new Uint8Array([1, 2, 3])], "indice.binarypb", { type: "application/octet-stream" });
   const croquiFile = new File([new Uint8Array([4, 5, 6])], "compilado.binarypb", { type: "application/octet-stream" });
 
@@ -366,7 +372,9 @@ Deno.test("app-feedback: faz upload de screenshot, indice_file e croqui_file par
 
   // Verifica que os 3 uploads foram realizados para o Supabase Storage
   assertEquals(storageUploads.length, 3);
-  assertEquals(storageUploads.some((u) => u.includes("anexos-uuid-777/screenshot.png")), true);
+  const screenshotKey = storageUploads.find((u) => u.includes("anexos-uuid-777/screenshot.png"));
+  assertEquals(screenshotKey !== undefined, true);
+  assertEquals(storageContentTypes[screenshotKey!], "image/png");
   assertEquals(storageUploads.some((u) => u.includes("anexos-uuid-777/indice.binarypb")), true);
   assertEquals(storageUploads.some((u) => u.includes("anexos-uuid-777/compilado.binarypb")), true);
 
@@ -461,4 +469,84 @@ Deno.test("app-feedback: em produção (yzkhiaoqtxvvcyyuwmqg), utiliza fallback 
   Deno.env.delete("SKIP_APP_CHECK_VERIFICATION");
   Deno.env.delete("FEEDBACK_PUBLIC_BASE_URL");
 });
+
+Deno.test("app-feedback: faz upload de screenshot WebP com content-type image/webp e anexa link .webp no GitHub", async () => {
+  resetRateLimits();
+  setCustomTokenProvider(() => Promise.resolve("gh-secret-token"));
+  Deno.env.set("SUPABASE_URL", "https://aresta-prod-xyz.supabase.co");
+  Deno.env.set("SUPABASE_SECRET_KEYS", JSON.stringify({ service_role: "test-key" }));
+  Deno.env.set("SKIP_APP_CHECK_VERIFICATION", "true");
+
+  const originalFetch = globalThis.fetch;
+  let githubPayload: any = null;
+  const storageUploads: string[] = [];
+  const storageContentTypes: Record<string, string> = {};
+
+  globalThis.fetch = async (url: string | URL | Request, options?: RequestInit) => {
+    const urlStr = url.toString();
+    if (urlStr.includes("api.github.com/repos/aresta-climb/aresta_db/issues")) {
+      githubPayload = JSON.parse(options?.body as string);
+      return new Response(
+        JSON.stringify({ html_url: "https://github.com/aresta-climb/aresta_db/issues/47" }),
+        { status: 201, headers: { "Content-Type": "application/json" } }
+      );
+    }
+    if (urlStr.includes("/storage/v1/object/feedback_anexos/")) {
+      storageUploads.push(urlStr);
+      const ct = new Headers(options?.headers).get("content-type");
+      if (ct) {
+        storageContentTypes[urlStr] = ct;
+      }
+      return new Response(JSON.stringify({ Key: "feedback_anexos/uploaded" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    if (urlStr.includes("feedback_diagnosticos")) {
+      return new Response(JSON.stringify([{}]), { status: 201, headers: { "Content-Type": "application/json" } });
+    }
+    return new Response(JSON.stringify([{}]), { status: 200, headers: { "Content-Type": "application/json" } });
+  };
+
+  const formData = new FormData();
+  formData.append("description", "Teste com imagem WebP");
+  formData.append(
+    "metadata",
+    JSON.stringify({
+      feedbackId: "webp-uuid-888",
+      tipo_feedback: "app",
+      os: "android",
+      appVersion: "0.5.2-dev",
+    })
+  );
+
+  const screenshotWebpFile = new File([new Uint8Array([82, 73, 70, 70])], "screenshot.webp", { type: "image/webp" });
+  formData.append("screenshot", screenshotWebpFile);
+
+  const req = new Request("http://localhost", { method: "POST", body: formData });
+  const res = await handleRequest(req);
+
+  assertEquals(res.status, 200);
+
+  // Verifica que o arquivo foi salvo com extensão .webp e content-type image/webp
+  const screenshotKey = storageUploads.find((u) => u.includes("webp-uuid-888/screenshot.webp"));
+  assertEquals(screenshotKey !== undefined, true);
+  assertEquals(storageContentTypes[screenshotKey!], "image/webp");
+
+  // Verifica que o corpo da issue contém o link screenshot.webp
+  assertEquals(githubPayload !== null, true);
+  assertEquals(
+    githubPayload.body.includes(
+      "https://feedback.arestaclimb.com/anexos/webp-uuid-888/screenshot.webp"
+    ),
+    true
+  );
+
+  globalThis.fetch = originalFetch;
+  setCustomTokenProvider(null);
+  Deno.env.delete("SUPABASE_URL");
+  Deno.env.delete("SUPABASE_SECRET_KEYS");
+  Deno.env.delete("SKIP_APP_CHECK_VERIFICATION");
+});
+
 

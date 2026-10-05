@@ -250,6 +250,7 @@ export const handleRequest = async (req: Request): Promise<Response> => {
 
     // 6. Upload de arquivos anexos no Supabase Storage (se disponível)
     let screenshotUrl: string | null = null;
+    let screenshotExtensao = 'png';
     let indiceUrl: string | null = null;
     let croquiUrl: string | null = null;
 
@@ -263,10 +264,15 @@ export const handleRequest = async (req: Request): Promise<Response> => {
       ): Promise<string | null> => {
         try {
           const buffer = new Uint8Array(await file.arrayBuffer());
+          const contentType = (file.type && file.type !== 'application/octet-stream')
+            ? file.type
+            : (caminho.endsWith('.webp')
+              ? 'image/webp'
+              : (caminho.endsWith('.png') ? 'image/png' : contentTypePadrao));
           const { error } = await supabase.storage
             .from(BUCKET_NAME)
             .upload(caminho, buffer, {
-              contentType: file.type || contentTypePadrao,
+              contentType,
               upsert: true,
             });
 
@@ -281,7 +287,7 @@ export const handleRequest = async (req: Request): Promise<Response> => {
               const retryRes = await supabase.storage
                 .from(BUCKET_NAME)
                 .upload(caminho, buffer, {
-                  contentType: file.type || contentTypePadrao,
+                  contentType,
                   upsert: true,
                 });
               if (retryRes.error) {
@@ -302,10 +308,15 @@ export const handleRequest = async (req: Request): Promise<Response> => {
       };
 
       if (screenshot && screenshot.size > 0) {
+        const isWebp = (screenshot.name && screenshot.name.toLowerCase().endsWith('.webp')) ||
+                       screenshot.type === 'image/webp';
+        screenshotExtensao = isWebp ? 'webp' : 'png';
+        const screenshotMime = isWebp ? 'image/webp' : 'image/png';
+
         screenshotUrl = await uploadArquivoStorage(
           screenshot,
-          `${feedbackId}/screenshot.png`,
-          'image/png'
+          `${feedbackId}/screenshot.${screenshotExtensao}`,
+          screenshotMime
         );
       }
 
@@ -359,7 +370,7 @@ export const handleRequest = async (req: Request): Promise<Response> => {
     let linkSupabase: string;
 
     if (feedbackBaseUrl && feedbackBaseUrl.trim() !== "") {
-      if (screenshotUrl) screenshotUrlPublico = `${feedbackBaseUrl}/anexos/${feedbackId}/screenshot.png`;
+      if (screenshotUrl) screenshotUrlPublico = `${feedbackBaseUrl}/anexos/${feedbackId}/screenshot.${screenshotExtensao}`;
       if (indiceUrl) indiceUrlPublico = `${feedbackBaseUrl}/anexos/${feedbackId}/indice.binarypb`;
       if (croquiUrl) croquiUrlPublico = `${feedbackBaseUrl}/anexos/${feedbackId}/compilado.binarypb`;
       linkSupabase = `${feedbackBaseUrl}/diagnostico/${feedbackId}`;
@@ -375,7 +386,7 @@ export const handleRequest = async (req: Request): Promise<Response> => {
     let body = `## Descrição\n${description}\n\n`;
 
     if (screenshotUrlPublico) {
-      body += `### Captura de Tela\n[![Captura de Tela do Feedback](${screenshotUrlPublico})](${screenshotUrlPublico})\n\n`;
+      body += `### Captura de Tela\n<a href="${screenshotUrlPublico}"><img src="${screenshotUrlPublico}" width="320" alt="Captura de Tela do Feedback" /></a>\n\n`;
     }
 
     body += `## Informações Gerais\n`;
