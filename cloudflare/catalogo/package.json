@@ -1,0 +1,14 @@
+{
+  "name": "aresta-catalogo-gateway",
+  "version": "1.0.0",
+  "description": "Worker de sincronização incremental (Delta Sync) do catálogo SQLite do Aresta Climb via Cloudflare D1",
+  "main": "src/index.ts",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test": "deno test -A"
+  },
+  "devDependencies": {
+    "wrangler": "^4.147.0"
+  }
+}
