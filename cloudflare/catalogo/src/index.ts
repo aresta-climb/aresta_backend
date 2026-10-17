@@ -49,30 +49,32 @@ export const CABECALHO_CACHE_IMUTAVEL = `public, max-age=${TTL_CACHE_SEGUNDOS}, 
 
 /**
  * Condensa (Delta Squash) múltiplos deltas sequenciais em um único conjunto final de upserts e deletes.
+ * O campo 'entidades' armazena as entidades de catalogo_aresta (escaladas, setores, grupos e botões),
+ * normalizadas e unificadas sob o identificador único 'uid'.
  */
 export function condensarDeltas(deltas: RegistroDeltaD1[]): {
   upserts: {
     croquis: Record<string, unknown>[];
-    vias: Record<string, unknown>[];
+    entidades: Record<string, unknown>[];
   };
   deletes: {
     croquis: string[];
-    vias: string[];
+    entidades: string[];
   };
 } {
   const croquisUpsert = new Map<string, Record<string, unknown>>();
   const croquisDelete = new Set<string>();
-  const viasUpsert = new Map<string, Record<string, unknown>>();
-  const viasDelete = new Set<string>();
+  const entidadesUpsert = new Map<string, Record<string, unknown>>();
+  const entidadesDelete = new Set<string>();
 
   for (const delta of deltas) {
     const deletesObj = JSON.parse(delta.deletes_json) as {
       croquis?: string[];
-      vias?: string[];
+      entidades?: string[];
     };
     const upsertsObj = JSON.parse(delta.upserts_json) as {
       croquis?: Record<string, unknown>[];
-      vias?: Record<string, unknown>[];
+      entidades?: Record<string, unknown>[];
     };
 
     for (const croquiUid of deletesObj.croquis ?? []) {
@@ -80,9 +82,9 @@ export function condensarDeltas(deltas: RegistroDeltaD1[]): {
       croquisDelete.add(croquiUid);
     }
 
-    for (const viaUid of deletesObj.vias ?? []) {
-      viasUpsert.delete(viaUid);
-      viasDelete.add(viaUid);
+    for (const entidadeUid of deletesObj.entidades ?? []) {
+      entidadesUpsert.delete(entidadeUid);
+      entidadesDelete.add(entidadeUid);
     }
 
     for (const croqui of upsertsObj.croquis ?? []) {
@@ -91,21 +93,21 @@ export function condensarDeltas(deltas: RegistroDeltaD1[]): {
       croquisUpsert.set(uid, croqui);
     }
 
-    for (const via of upsertsObj.vias ?? []) {
-      const uid = String(via.uid);
-      viasDelete.delete(uid);
-      viasUpsert.set(uid, via);
+    for (const entidade of upsertsObj.entidades ?? []) {
+      const uid = String(entidade.uid);
+      entidadesDelete.delete(uid);
+      entidadesUpsert.set(uid, entidade);
     }
   }
 
   return {
     upserts: {
       croquis: Array.from(croquisUpsert.values()),
-      vias: Array.from(viasUpsert.values()),
+      entidades: Array.from(entidadesUpsert.values()),
     },
     deletes: {
       croquis: Array.from(croquisDelete.values()),
-      vias: Array.from(viasDelete.values()),
+      entidades: Array.from(entidadesDelete.values()),
     },
   };
 }
@@ -175,8 +177,8 @@ export async function processarRequisicao(
           acao: "apply_delta",
           versao_atual: versaoDestino,
           total_deltas: 0,
-          upserts: { croquis: [], vias: [] },
-          deletes: { croquis: [], vias: [] },
+          upserts: { croquis: [], entidades: [] },
+          deletes: { croquis: [], entidades: [] },
         },
         200,
         CABECALHO_CACHE_IMUTAVEL

@@ -88,8 +88,8 @@ Deno.test("catalogo-gateway: /sync com versao_local igual a versao_destino retor
     acao: "apply_delta",
     versao_atual: "8f5027d0f987d808",
     total_deltas: 0,
-    upserts: { croquis: [], vias: [] },
-    deletes: { croquis: [], vias: [] },
+    upserts: { croquis: [], entidades: [] },
+    deletes: { croquis: [], entidades: [] },
   });
 });
 
@@ -170,30 +170,42 @@ Deno.test("catalogo-gateway: /sync realiza Delta Squash entre multiplas versoes 
             uf: "MG",
           },
         ],
-        vias: [
+        entidades: [
           {
             uid: "v1",
+            tipo: "escalada",
             croqui_uid: "c1",
             nome: "Via 1 Versao Antiga",
-            grau: "6sup",
-            tipo: "esportiva",
-            setor_nome: "S1",
+            escalada_grau: "6sup",
+            escalada_tipo: "esportiva",
             setor_uid: "s1",
+            grupo_uid: null,
           },
           {
             uid: "v2",
+            tipo: "escalada",
             croqui_uid: "c1",
             nome: "Via 2 Sera Deletada",
-            grau: "7a",
-            tipo: "esportiva",
-            setor_nome: "S1",
+            escalada_grau: "7a",
+            escalada_tipo: "esportiva",
             setor_uid: "s1",
+            grupo_uid: null,
+          },
+          {
+            uid: "s1",
+            tipo: "setor",
+            croqui_uid: "c1",
+            nome: "Setor Entrada",
+            escalada_grau: null,
+            escalada_tipo: null,
+            setor_uid: null,
+            grupo_uid: null,
           },
         ],
       }),
       deletes_json: JSON.stringify({
         croquis: ["c_recriado"],
-        vias: ["v_antiga_removida", "v_recriada"],
+        entidades: ["v_antiga_removida", "v_recriada"],
       }),
     },
     {
@@ -216,30 +228,32 @@ Deno.test("catalogo-gateway: /sync realiza Delta Squash entre multiplas versoes 
             uf: "MG",
           },
         ],
-        vias: [
+        entidades: [
           {
             uid: "v1",
+            tipo: "escalada",
             croqui_uid: "c1",
             nome: "Via 1 Versao Final",
-            grau: "7b",
-            tipo: "esportiva",
-            setor_nome: "S1",
+            escalada_grau: "7b",
+            escalada_tipo: "esportiva",
             setor_uid: "s1",
+            grupo_uid: null,
           },
           {
             uid: "v_recriada",
+            tipo: "escalada",
             croqui_uid: "c1",
             nome: "Via Recriada",
-            grau: "8a",
-            tipo: "esportiva",
-            setor_nome: "S1",
+            escalada_grau: "8a",
+            escalada_tipo: "esportiva",
             setor_uid: "s1",
+            grupo_uid: null,
           },
         ],
       }),
       deletes_json: JSON.stringify({
         croquis: ["c_temp"],
-        vias: ["v2"],
+        entidades: ["v2"],
       }),
     },
   ];
@@ -289,28 +303,40 @@ Deno.test("catalogo-gateway: /sync realiza Delta Squash entre multiplas versoes 
   ]);
   assertEquals(corpo.deletes.croquis, ["c_temp"]);
 
-  // v1 ficou com a versão final (7b), v_recriada entrou em upserts e saiu de deletes; v2 foi deletada
-  assertEquals(corpo.upserts.vias, [
+  // v1 ficou com a versão final (7b), s1 foi mantido, v_recriada entrou em upserts e saiu de deletes; v2 foi deletada
+  assertEquals(corpo.upserts.entidades, [
     {
       uid: "v1",
+      tipo: "escalada",
       croqui_uid: "c1",
       nome: "Via 1 Versao Final",
-      grau: "7b",
-      tipo: "esportiva",
-      setor_nome: "S1",
+      escalada_grau: "7b",
+      escalada_tipo: "esportiva",
       setor_uid: "s1",
+      grupo_uid: null,
+    },
+    {
+      uid: "s1",
+      tipo: "setor",
+      croqui_uid: "c1",
+      nome: "Setor Entrada",
+      escalada_grau: null,
+      escalada_tipo: null,
+      setor_uid: null,
+      grupo_uid: null,
     },
     {
       uid: "v_recriada",
+      tipo: "escalada",
       croqui_uid: "c1",
       nome: "Via Recriada",
-      grau: "8a",
-      tipo: "esportiva",
-      setor_nome: "S1",
+      escalada_grau: "8a",
+      escalada_tipo: "esportiva",
       setor_uid: "s1",
+      grupo_uid: null,
     },
   ]);
-  assertEquals(corpo.deletes.vias, ["v_antiga_removida", "v2"]);
+  assertEquals(corpo.deletes.entidades, ["v_antiga_removida", "v2"]);
 });
 
 Deno.test("catalogo-gateway: condensarDeltas lida com JSON sem chaves opcionais", () => {
@@ -323,8 +349,8 @@ Deno.test("catalogo-gateway: condensarDeltas lida com JSON sem chaves opcionais"
     },
   ]);
   assertEquals(resultado, {
-    upserts: { croquis: [], vias: [] },
-    deletes: { croquis: [], vias: [] },
+    upserts: { croquis: [], entidades: [] },
+    deletes: { croquis: [], entidades: [] },
   });
 });
 
