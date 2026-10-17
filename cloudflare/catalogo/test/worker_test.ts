@@ -160,14 +160,14 @@ Deno.test("catalogo-gateway: /sync realiza Delta Squash entre multiplas versoes 
             id_slug: "br_mg_bh_1",
             nome: "Pico 1",
             cidade: "BH",
-            uf: "MG",
+            estado: "MG",
           },
           {
             croqui_uid: "c_temp",
             id_slug: "br_mg_temp",
             nome: "Temporario",
             cidade: "BH",
-            uf: "MG",
+            estado: "MG",
           },
         ],
         entidades: [
@@ -218,14 +218,14 @@ Deno.test("catalogo-gateway: /sync realiza Delta Squash entre multiplas versoes 
             id_slug: "br_mg_bh_1",
             nome: "Pico 1 Atualizado",
             cidade: "BH",
-            uf: "MG",
+            estado: "MG",
           },
           {
             croqui_uid: "c_recriado",
             id_slug: "br_mg_rec",
             nome: "Pico Recriado",
             cidade: "BH",
-            uf: "MG",
+            estado: "MG",
           },
         ],
         entidades: [
@@ -291,14 +291,14 @@ Deno.test("catalogo-gateway: /sync realiza Delta Squash entre multiplas versoes 
       id_slug: "br_mg_bh_1",
       nome: "Pico 1 Atualizado",
       cidade: "BH",
-      uf: "MG",
+      estado: "MG",
     },
     {
       croqui_uid: "c_recriado",
       id_slug: "br_mg_rec",
       nome: "Pico Recriado",
       cidade: "BH",
-      uf: "MG",
+      estado: "MG",
     },
   ]);
   assertEquals(corpo.deletes.croquis, ["c_temp"]);

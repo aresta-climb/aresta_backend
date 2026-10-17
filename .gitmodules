@@ -1,0 +1,4 @@
+[submodule "aresta_api"]
+	path = aresta_api
+	url = https://github.com/aresta-climb/aresta_api.git
+	branch = main
