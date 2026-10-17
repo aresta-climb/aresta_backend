@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (C) 2026 Aresta Contributors
 
+import {
+  ErroColaboracao,
+  RequisicaoCriarPullRequest,
+  RespostaCriarPullRequest,
+} from "../../../aresta_api/openapi/generated/ts/colaboracao.ts";
 import { validarNomeBranch } from "../compartilhado/validador_regras_branch.ts";
 import { validarEscopoArquivos } from "../compartilhado/validador_escopo_arquivos.ts";
 import {
@@ -97,7 +102,7 @@ export async function processarRequisicaoCreatePr(
     );
   }
 
-  let corpoJson: any;
+  let corpoJson: Partial<RequisicaoCriarPullRequest>;
   try {
     corpoJson = await requisicao.json();
   } catch (_e) {
@@ -157,11 +162,12 @@ export async function processarRequisicaoCreatePr(
   if (!validacaoEscopo.valido) {
     // Violação de segurança: deleta a branch remota imediatamente
     await funcaoExcluirBranch(nomeSimplesBranch);
+    const erroEscopo: ErroColaboracao = {
+      erro: "Violação de segurança: apenas alterações dentro da pasta 'database/' são permitidas. A branch foi removida.",
+      arquivos_invalidos: validacaoEscopo.arquivosForaDoEscopo,
+    };
     return new Response(
-      JSON.stringify({
-        erro: "Violação de segurança: apenas alterações dentro da pasta 'database/' são permitidas. A branch foi removida.",
-        arquivos_invalidos: validacaoEscopo.arquivosForaDoEscopo,
-      }),
+      JSON.stringify(erroEscopo),
       {
         status: 400,
         headers: { ...CABECALHOS_CORS, "Content-Type": "application/json" },
@@ -181,14 +187,15 @@ export async function processarRequisicaoCreatePr(
   const registroExistente = await funcaoObterRegistro(nomeSimplesBranch);
 
   if (registroExistente && registroExistente.pr_number && registroExistente.pr_url) {
+    const respostaExistente: RespostaCriarPullRequest = {
+      numero_pr: registroExistente.pr_number,
+      url_pr: registroExistente.pr_url,
+      pr_number: registroExistente.pr_number,
+      pr_url: registroExistente.pr_url,
+      atualizado: true,
+    };
     return new Response(
-      JSON.stringify({
-        numero_pr: registroExistente.pr_number,
-        url_pr: registroExistente.pr_url,
-        pr_number: registroExistente.pr_number,
-        pr_url: registroExistente.pr_url,
-        atualizado: true,
-      }),
+      JSON.stringify(respostaExistente),
       {
         status: 200,
         headers: { ...CABECALHOS_CORS, "Content-Type": "application/json" },
@@ -226,13 +233,14 @@ export async function processarRequisicaoCreatePr(
     prUrl: resultadoPr.urlPr,
   });
 
+  const respostaCriada: RespostaCriarPullRequest = {
+    numero_pr: resultadoPr.numeroPr,
+    url_pr: resultadoPr.urlPr,
+    pr_number: resultadoPr.numeroPr,
+    pr_url: resultadoPr.urlPr,
+  };
   return new Response(
-    JSON.stringify({
-      numero_pr: resultadoPr.numeroPr,
-      url_pr: resultadoPr.urlPr,
-      pr_number: resultadoPr.numeroPr,
-      pr_url: resultadoPr.urlPr,
-    }),
+    JSON.stringify(respostaCriada),
     {
       status: 200,
       headers: { ...CABECALHOS_CORS, "Content-Type": "application/json" },

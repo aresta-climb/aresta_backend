@@ -1,6 +1,11 @@
 // SPDX-FileCopyrightText: Copyright (C) 2026 Aresta Climb Contributors
 // SPDX-License-Identifier: MPL-2.0
 
+import {
+  ROTA_VERIFICAR_SAUDE_FEEDBACK,
+  URL_SERVIDOR_PADRAO,
+} from "../../../aresta_api/openapi/generated/ts/feedback.ts";
+
 /**
  * Interface com as variáveis de ambiente injetadas pelo Cloudflare Workers.
  */
@@ -16,8 +21,7 @@ export interface ContextoExecucao {
   waitUntil(promessa: Promise<unknown>): void;
 }
 
-const URL_STORAGE_PADRAO =
-  "https://yzkhiaoqtxvvcyyuwmqg.supabase.co/storage/v1/object/public/feedback_anexos";
+const URL_STORAGE_PADRAO = `${URL_SERVIDOR_PADRAO}/storage/v1/object/public/feedback_anexos`;
 const URL_DASHBOARD_PADRAO =
   "https://supabase.com/dashboard/project/yzkhiaoqtxvvcyyuwmqg/editor/42715";
 
@@ -74,7 +78,7 @@ export async function processarRequisicao(
   }
 
   // 1. Rota de Saúde
-  if (caminho === "/" || caminho === "/health") {
+  if (caminho === "/" || caminho === ROTA_VERIFICAR_SAUDE_FEEDBACK) {
     return new Response("Aresta Feedback Gateway operacional", {
       status: 200,
       headers: { ...cabecalhosCors, "Content-Type": "text/plain; charset=utf-8" },

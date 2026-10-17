@@ -1,6 +1,18 @@
 // SPDX-FileCopyrightText: Copyright (C) 2026 Aresta Climb Contributors
 // SPDX-License-Identifier: MPL-2.0
 
+import {
+  CatalogoCroqui,
+  CatalogoEntidade,
+  DeletesSyncCatalogo,
+  ErroCatalogo,
+  RespostaSyncCatalogo,
+  ROTA_SINCRONIZAR_CATALOGO,
+  ROTA_VERIFICAR_SAUDE_CATALOGO,
+  UpsertsSyncCatalogo,
+} from "../../../aresta_api/openapi/generated/ts/catalogo.ts";
+import { LinhaDeltasCatalogo } from "../../../aresta_api/sql/generated/ts/catalogo_d1_sql.ts";
+
 /**
  * Interface mínima para statement preparado do Cloudflare D1.
  */
@@ -26,12 +38,10 @@ export interface AmbienteCatalogo {
 /**
  * Estrutura de uma linha da tabela deltas_catalogo no Cloudflare D1.
  */
-export interface RegistroDeltaD1 {
-  id: number;
-  versao_hash: string;
-  upserts_json: string;
-  deletes_json: string;
-}
+export type RegistroDeltaD1 = Pick<
+  Required<LinhaDeltasCatalogo>,
+  "id" | "versao_hash" | "upserts_json" | "deletes_json"
+>;
 
 const TTL_CACHE_SEGUNDOS = 31536000;
 
@@ -53,29 +63,21 @@ export const CABECALHO_CACHE_IMUTAVEL = `public, max-age=${TTL_CACHE_SEGUNDOS}, 
  * normalizadas e unificadas sob o identificador único 'uid'.
  */
 export function condensarDeltas(deltas: RegistroDeltaD1[]): {
-  upserts: {
-    croquis: Record<string, unknown>[];
-    entidades: Record<string, unknown>[];
-  };
-  deletes: {
-    croquis: string[];
-    entidades: string[];
-  };
+  upserts: UpsertsSyncCatalogo;
+  deletes: DeletesSyncCatalogo;
 } {
-  const croquisUpsert = new Map<string, Record<string, unknown>>();
+  const croquisUpsert = new Map<string, CatalogoCroqui>();
   const croquisDelete = new Set<string>();
-  const entidadesUpsert = new Map<string, Record<string, unknown>>();
+  const entidadesUpsert = new Map<string, CatalogoEntidade>();
   const entidadesDelete = new Set<string>();
 
   for (const delta of deltas) {
-    const deletesObj = JSON.parse(delta.deletes_json) as {
-      croquis?: string[];
-      entidades?: string[];
-    };
-    const upsertsObj = JSON.parse(delta.upserts_json) as {
-      croquis?: Record<string, unknown>[];
-      entidades?: Record<string, unknown>[];
-    };
+    const deletesObj = JSON.parse(
+      delta.deletes_json
+    ) as Partial<DeletesSyncCatalogo>;
+    const upsertsObj = JSON.parse(
+      delta.upserts_json
+    ) as Partial<UpsertsSyncCatalogo>;
 
     for (const croquiUid of deletesObj.croquis ?? []) {
       croquisUpsert.delete(croquiUid);
@@ -113,7 +115,7 @@ export function condensarDeltas(deltas: RegistroDeltaD1[]): {
 }
 
 function responderJson(
-  corpo: unknown,
+  corpo: RespostaSyncCatalogo | ErroCatalogo,
   status: number,
   cacheControl: string
 ): Response {
@@ -148,7 +150,7 @@ export async function processarRequisicao(
     });
   }
 
-  if (caminho === "/" || caminho === "/health") {
+  if (caminho === "/" || caminho === ROTA_VERIFICAR_SAUDE_CATALOGO) {
     return new Response("Aresta Catálogo Gateway operacional", {
       status: 200,
       headers: {
@@ -159,7 +161,7 @@ export async function processarRequisicao(
     });
   }
 
-  if (caminho === "/sync") {
+  if (caminho === ROTA_SINCRONIZAR_CATALOGO) {
     const versaoLocal = url.searchParams.get("versao_local")?.trim() || "";
     const versaoDestino = url.searchParams.get("versao_destino")?.trim() || "";
 

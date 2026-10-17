@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (C) 2026 Aresta Contributors
 
+import { RequisicaoCriarSessaoPrevia } from "../../../aresta_api/openapi/generated/ts/previa.ts";
+
 export interface DadosUsuarioAutenticado {
   idUsuario: string;
   email: string;
@@ -24,10 +26,8 @@ export interface DadosFimSessao {
   motivoEncerramento: string;
 }
 
-export interface MetadadosEditor {
+export interface MetadadosEditor extends RequisicaoCriarSessaoPrevia {
   urlLocal?: string;
-  ipLocal?: string;
-  portaLocal?: number;
   versaoApp?: string;
 }
 

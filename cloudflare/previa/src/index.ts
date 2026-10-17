@@ -1,6 +1,15 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (C) 2026 Aresta Contributors
 
+import {
+  MetadadosSessaoPrevia,
+  RespostaSaudePrevia,
+  RespostaSessaoPrevia,
+  ROTA_CONECTAR_WEBSOCKET_PREVIA,
+  ROTA_CRIAR_SESSAO_PREVIA,
+  ROTA_VERIFICAR_SAUDE_PREVIA,
+  URL_SERVIDOR_PADRAO,
+} from "../../../aresta_api/openapi/generated/ts/previa.ts";
 import { GerenciadorSessao } from "./gerenciador_sessao.ts";
 import { MensagemEvento, RequisicaoProxy, RespostaProxy, MetadadosEditor } from "./tipos.ts";
 import { validarTokenJwt, extrairJwtDeCabecalho } from "./validador_jwt.ts";
@@ -87,7 +96,7 @@ export async function tratarRequisicao(
     const pathname = url.pathname.replace(/\/+/g, "/");
 
     // 1. Rota Raiz / Health Check
-    if (pathname === "/" || pathname === "/health") {
+    if (pathname === "/" || pathname === ROTA_VERIFICAR_SAUDE_PREVIA) {
       // Se um navegador acessar a raiz sem código de croqui, redireciona para a documentação do editor
       if (
         pathname === "/" &&
@@ -117,15 +126,16 @@ export async function tratarRequisicao(
         }
       }
 
-      return criarRespostaJson({
+      const respostaSaude: RespostaSaudePrevia = {
         servico: "Aresta Previa Relay",
         status: "operacional",
         sessoesAtivas,
-      });
+      };
+      return criarRespostaJson(respostaSaude);
     }
 
     // 2. Criação de Sessão de Prévia Autenticada: POST /sessoes ou POST /sessions
-    if (request.method === "POST" && (pathname === "/sessoes" || pathname === "/sessions")) {
+    if (request.method === "POST" && (pathname === ROTA_CRIAR_SESSAO_PREVIA || pathname === "/sessions")) {
       const authHeader = request.headers.get("Authorization");
       const token = extrairJwtDeCabecalho(authHeader);
 
@@ -161,7 +171,7 @@ export async function tratarRequisicao(
       const codigoReservado = url.searchParams.get("codigo_reservado");
       const codigoGerado = codigoReservado || gerenciadorAtivo.gerarCodigoUnico();
       const codigoFormatado = gerenciadorAtivo.formatarCodigo(codigoGerado);
-      const urlPrevia = `https://previa.arestaclimb.com/${codigoFormatado}`;
+      const urlPrevia = `${URL_SERVIDOR_PADRAO}/${codigoFormatado}`;
 
       // Registra no banco de dados do Supabase
       const idAuditoria = await registrarInicioSessao(
@@ -200,16 +210,14 @@ export async function tratarRequisicao(
         } catch {}
       }
 
-      return criarRespostaJson(
-        {
-          codigo: codigoGerado,
-          codigo_formatado: codigoFormatado,
-          url_previa: urlPrevia,
-          ws_url: `wss://previa.arestaclimb.com/ws?sessao=${codigoGerado}&token=${encodeURIComponent(token)}`,
-          expira_em: 1800,
-        },
-        201,
-      );
+      const respostaSessao: RespostaSessaoPrevia = {
+        codigo: codigoGerado,
+        codigo_formatado: codigoFormatado,
+        url_previa: urlPrevia,
+        ws_url: `wss://previa.arestaclimb.com${ROTA_CONECTAR_WEBSOCKET_PREVIA}?sessao=${codigoGerado}&token=${encodeURIComponent(token)}`,
+        expira_em: 1800,
+      };
+      return criarRespostaJson(respostaSessao, 201);
     }
 
     // 3. Android App Links Verification: /.well-known/assetlinks.json
@@ -252,7 +260,7 @@ export async function tratarRequisicao(
     }
 
     // 5. Conexão WebSocket do Editor Desktop: /ws?sessao=k9x2p83a&token=<jwt>
-    if (pathname === "/ws") {
+    if (pathname === ROTA_CONECTAR_WEBSOCKET_PREVIA) {
       const sessaoId = url.searchParams.get("sessao") || url.searchParams.get("session");
       if (!sessaoId) {
         return criarRespostaJson({ erro: "Parâmetro 'sessao' obrigatório." }, 400);
@@ -553,12 +561,13 @@ export async function tratarRequisicao(
         return criarRespostaJson({ erro: "Sessão não encontrada ou expirada." }, 404);
       }
 
-      return criarRespostaJson({
+      const respostaMeta: MetadadosSessaoPrevia = {
         codigo: sessao.codigo,
         criadoEm: sessao.criadoEm,
         ultimoAcessoEm: sessao.ultimoAcessoEm,
         metadados: sessao.metadados,
-      });
+      };
+      return criarRespostaJson(respostaMeta);
     }
 
     // 9. Proxy Reverso para o Desktop do Usuário: /<codigo>/*

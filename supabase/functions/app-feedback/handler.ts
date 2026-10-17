@@ -24,6 +24,11 @@
  */
 import { createClient } from "@supabase/supabase-js";
 import { createRemoteJWKSet, jwtVerify } from "jose";
+import {
+  ErroFeedback,
+  MetadadosFeedbackApp,
+  RespostaFeedback,
+} from "../../../aresta_api/openapi/generated/ts/feedback.ts";
 import { extrairChaveSecretaSupabase } from "../compartilhado/cliente_supabase_controle.ts";
 import { obterTokenArestaClimbBot } from "../compartilhado/cliente_github_bot.ts";
 
@@ -271,7 +276,7 @@ export const handleRequest = async (req: Request): Promise<Response> => {
     const indiceFile = formData.get('indice_file') as File | null;
     const croquiFile = formData.get('croqui_file') as File | null;
 
-    let metadataObj: Record<string, any> = {};
+    let metadataObj: Partial<MetadadosFeedbackApp> & Record<string, any> = {};
     try {
       metadataObj = JSON.parse(metadataStr);
     } catch (_) {}
@@ -293,8 +298,12 @@ export const handleRequest = async (req: Request): Promise<Response> => {
       if (insertError) {
         if (insertError.code === '23505') {
           console.log(`Feedback duplicado ${feedbackId} detectado. Retornando sucesso.`);
+          const respostaDuplicada: RespostaFeedback = {
+            success: true,
+            message: 'Já processado anteriormente.',
+          };
           return new Response(
-            JSON.stringify({ success: true, message: 'Já processado anteriormente.' }),
+            JSON.stringify(respostaDuplicada),
             {
               headers: { ...corsHeaders, 'Content-Type': 'application/json' },
               status: 200,
@@ -681,12 +690,13 @@ export const handleRequest = async (req: Request): Promise<Response> => {
       }
     }
 
+    const respostaSucesso: RespostaFeedback = {
+      success: true,
+      message: 'Feedback enviado com sucesso!',
+      issue_url: issueUrl,
+    };
     return new Response(
-      JSON.stringify({
-        success: true,
-        message: 'Feedback enviado com sucesso!',
-        issue_url: issueUrl,
-      }),
+      JSON.stringify(respostaSucesso),
       {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         status: 200,
@@ -695,8 +705,11 @@ export const handleRequest = async (req: Request): Promise<Response> => {
 
   } catch (error: any) {
     console.error('Erro na execução da função:', error);
+    const respostaErro: ErroFeedback = {
+      error: error.message || 'Erro interno do servidor.',
+    };
     return new Response(
-      JSON.stringify({ error: error.message || 'Erro interno do servidor.' }),
+      JSON.stringify(respostaErro),
       {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         status: 500,

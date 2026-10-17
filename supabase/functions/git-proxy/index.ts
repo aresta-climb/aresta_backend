@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (C) 2026 Aresta Contributors
 
+import {
+  ROTA_GIT_PROXY_BASE,
+  ROTA_GIT_PROXY_INFO_REFS,
+  ROTA_GIT_PROXY_RECEIVE_PACK,
+} from "../../../aresta_api/openapi/generated/ts/colaboracao.ts";
 import { extrairComandosGit } from "../compartilhado/analisador_pkt_line.ts";
 import { validarNomeBranch, extrairNomeSimplesBranch } from "../compartilhado/validador_regras_branch.ts";
 import {
@@ -16,6 +21,8 @@ import {
 } from "../compartilhado/cliente_github_bot.ts";
 
 const URL_REPOSITORIO_GITHUB = "https://github.com/aresta-climb/aresta_db.git";
+const SUFIXO_INFO_REFS = ROTA_GIT_PROXY_INFO_REFS.slice(ROTA_GIT_PROXY_BASE.length);
+const SUFIXO_RECEIVE_PACK = ROTA_GIT_PROXY_RECEIVE_PACK.slice(ROTA_GIT_PROXY_BASE.length);
 
 export interface ContextoGitProxy {
   validarJwt?: (token: string) => Promise<DadosUsuarioAutenticado | null>;
@@ -76,7 +83,7 @@ export async function processarRequisicaoGitProxy(
 
   // 1. Rota GET /info/refs?service=git-receive-pack
   if (requisicao.method === "GET") {
-    const urlGithub = `${URL_REPOSITORIO_GITHUB}/info/refs${urlRequisicao.search}`;
+    const urlGithub = `${URL_REPOSITORIO_GITHUB}${SUFIXO_INFO_REFS}${urlRequisicao.search}`;
     const respostaGithub = await funcaoFetchGithub(urlGithub, {
       method: "GET",
       headers: {
@@ -160,7 +167,7 @@ export async function processarRequisicaoGitProxy(
     }
 
     // Encaminha o tráfego via streaming para o GitHub com credenciais do Bot
-    const urlGithub = `${URL_REPOSITORIO_GITHUB}/git-receive-pack`;
+    const urlGithub = `${URL_REPOSITORIO_GITHUB}${SUFIXO_RECEIVE_PACK}`;
     const respostaGithub = await funcaoFetchGithub(urlGithub, {
       method: "POST",
       headers: {

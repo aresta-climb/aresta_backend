@@ -20,6 +20,11 @@
  *    * As chaves do Supabase (SUPABASE_URL, SUPABASE_SECRET_KEYS) são automáticas.
  */
 import { createClient } from "@supabase/supabase-js";
+import {
+  ErroFeedback,
+  MetadadosFeedbackApp,
+  RespostaFeedback,
+} from "../../../aresta_api/openapi/generated/ts/feedback.ts";
 import { extrairChaveSecretaSupabase } from "../compartilhado/cliente_supabase_controle.ts";
 
 export const corsHeaders = {
@@ -44,7 +49,8 @@ export const handleRequest = async (req: Request): Promise<Response> => {
 
     // Validação da API KEY para segurança da rota
     if (expectedApiKey && providedApiKey !== expectedApiKey) {
-      return new Response(JSON.stringify({ error: 'Unauthorized' }), {
+      const erroAuth: ErroFeedback = { error: 'Unauthorized' };
+      return new Response(JSON.stringify(erroAuth), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         status: 401,
       });
@@ -56,7 +62,7 @@ export const handleRequest = async (req: Request): Promise<Response> => {
     const metadataStr = formData.get('metadata')?.toString() || "{}";
     const screenshot = formData.get('screenshot') as File | null;
 
-    let metadataObj: Record<string, any> = {};
+    let metadataObj: Partial<MetadadosFeedbackApp> & Record<string, any> = {};
     try {
       metadataObj = JSON.parse(metadataStr);
     } catch (_) {}
@@ -77,7 +83,11 @@ export const handleRequest = async (req: Request): Promise<Response> => {
       if (insertError) {
         if (insertError.code === '23505') { // Postgres code for unique_violation
           console.log(`Duplicate feedback ${feedbackId} detected. Skipping.`);
-          return new Response(JSON.stringify({ success: true, message: 'Already processed' }), {
+          const respostaDuplicada: RespostaFeedback = {
+            success: true,
+            message: 'Already processed',
+          };
+          return new Response(JSON.stringify(respostaDuplicada), {
             headers: { ...corsHeaders, 'Content-Type': 'application/json' },
             status: 200,
           });
