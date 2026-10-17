@@ -76,7 +76,7 @@ As Edge Functions utilizam as seguintes variáveis de ambiente:
 
 ## 🧪 Executando os Testes
 
-Para rodar todos os testes unitários e de integração com cobertura:
+Conforme estabelecido em nossos [Princípios de Engenharia](AGENTS.md), seguimos TDD com testes orientados a comportamento e 100% de cobertura. Para rodar todos os testes unitários e de integração:
 
 ```bash
 deno test -A --config supabase/functions/deno.json

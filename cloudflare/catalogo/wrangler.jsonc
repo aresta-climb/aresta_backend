@@ -6,7 +6,8 @@
   "d1_databases": [
     {
       "binding": "DB",
-      "database_name": "aresta-catalogo"
+      "database_name": "aresta-catalogo",
+      "database_id": "7368d2d3-c69b-4cd5-9e2a-5ecc0ee3c830"
     }
   ],
   "routes": [
@@ -16,6 +17,9 @@
     }
   ],
   "observability": {
+    "enabled": true
+  },
+  "cache": {
     "enabled": true
   }
 }
