@@ -4,6 +4,9 @@
 import {
   ROTA_OBTER_ASSETLINKS_ANDROID,
   ROTA_OBTER_ASSOCIACAO_IOS,
+  ROTA_OBTER_FAVICON_ICO,
+  ROTA_OBTER_FAVICON_SVG,
+  ROTA_OBTER_ROBOTS_TXT,
   ROTA_VERIFICAR_SAUDE_APP_LINKS,
 } from "../../../aresta_api/openapi/generated/ts/app_links.ts";
 import { analisarRotaLink } from "./analisador_rota_link.ts";
@@ -21,6 +24,8 @@ export interface AmbienteAppLinks {
 }
 
 const URL_SITE_PRINCIPAL = "https://arestaclimb.com";
+const URL_FAVICON_OFICIAL = "https://arestaclimb.com/favicon.svg";
+const CONTEUDO_ROBOTS_TXT = "User-agent: *\nAllow: /\n";
 
 export const cabecalhosCors = {
   "Access-Control-Allow-Origin": "*",
@@ -28,17 +33,19 @@ export const cabecalhosCors = {
   "Access-Control-Allow-Headers": "Content-Type",
 };
 
-/**
- * Cabeçalho de cache para arquivos `.well-known` (24 horas no navegador e na borda).
- */
-export const CABECALHO_CACHE_WELL_KNOWN =
-  "public, max-age=86400, s-maxage=86400";
+const TTL_BORDA_UM_ANO_SEGUNDOS = 31536000;
 
 /**
- * Cabeçalho de cache para páginas HTML SSR de App Links (1 hora no navegador, 24 horas na CDN).
+ * Cabeçalho de cache para arquivos `.well-known` (24 horas no navegador, 1 ano na borda da Cloudflare).
+ */
+export const CABECALHO_CACHE_WELL_KNOWN =
+  `public, max-age=86400, s-maxage=${TTL_BORDA_UM_ANO_SEGUNDOS}`;
+
+/**
+ * Cabeçalho de cache para páginas HTML SSR de App Links (1 hora no navegador, 1 ano na borda da Cloudflare).
  */
 export const CABECALHO_CACHE_PAGINA_LINK =
-  "public, max-age=3600, s-maxage=86400";
+  `public, max-age=3600, s-maxage=${TTL_BORDA_UM_ANO_SEGUNDOS}`;
 
 const CONTEUDO_ASSETLINKS_ANDROID = [
   {
@@ -111,7 +118,7 @@ export async function processarRequisicao(
       headers: {
         ...cabecalhosCors,
         Location: `https://aresta.cc${url.pathname}${url.search}`,
-        "Cache-Control": "public, max-age=86400, s-maxage=86400",
+        "Cache-Control": `public, max-age=86400, s-maxage=${TTL_BORDA_UM_ANO_SEGUNDOS}`,
       },
     });
   }
@@ -133,7 +140,32 @@ export async function processarRequisicao(
       headers: {
         ...cabecalhosCors,
         Location: URL_SITE_PRINCIPAL,
-        "Cache-Control": "public, max-age=3600",
+        "Cache-Control": `public, max-age=3600, s-maxage=${TTL_BORDA_UM_ANO_SEGUNDOS}`,
+      },
+    });
+  }
+
+  if (caminho === ROTA_OBTER_ROBOTS_TXT) {
+    return new Response(CONTEUDO_ROBOTS_TXT, {
+      status: 200,
+      headers: {
+        ...cabecalhosCors,
+        "Content-Type": "text/plain; charset=utf-8",
+        "Cache-Control": `public, max-age=86400, s-maxage=${TTL_BORDA_UM_ANO_SEGUNDOS}`,
+      },
+    });
+  }
+
+  if (
+    caminho === ROTA_OBTER_FAVICON_ICO ||
+    caminho === ROTA_OBTER_FAVICON_SVG
+  ) {
+    return new Response(null, {
+      status: 301,
+      headers: {
+        ...cabecalhosCors,
+        Location: URL_FAVICON_OFICIAL,
+        "Cache-Control": `public, max-age=86400, s-maxage=${TTL_BORDA_UM_ANO_SEGUNDOS}, immutable`,
       },
     });
   }
@@ -165,7 +197,7 @@ export async function processarRequisicao(
     return responderHtml(
       renderizarPaginaNaoEncontrada(),
       404,
-      "public, max-age=300, s-maxage=300"
+      `public, max-age=300, s-maxage=${TTL_BORDA_UM_ANO_SEGUNDOS}`
     );
   }
 
@@ -186,7 +218,7 @@ export async function processarRequisicao(
       return responderHtml(
         renderizarPaginaNaoEncontrada(),
         404,
-        "public, max-age=300, s-maxage=300"
+        `public, max-age=300, s-maxage=${TTL_BORDA_UM_ANO_SEGUNDOS}`
       );
     }
 

@@ -159,6 +159,7 @@ export function renderizarPaginaEntidade(
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" type="image/svg+xml" href="https://arestaclimb.com/favicon.svg">
   <title>${tituloOg}</title>
   <meta name="description" content="${descricaoOg}">
   <meta property="og:type" content="website">

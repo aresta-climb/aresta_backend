@@ -120,6 +120,33 @@ Deno.test("worker app-links: GET /.well-known/apple-app-site-association retorna
   assertEquals(corpo.applinks.details[0].paths, ["/*"]);
 });
 
+Deno.test("worker app-links: serve /robots.txt e redireciona /favicon.ico e /favicon.svg com cache de 1 ano na borda", async () => {
+  const resRobots = await processarRequisicao(
+    new Request("https://aresta.cc/robots.txt")
+  );
+  assertEquals(resRobots.status, 200);
+  assertEquals(
+    resRobots.headers.get("Cache-Control"),
+    "public, max-age=86400, s-maxage=31536000"
+  );
+  assertStringIncludes(await resRobots.text(), "User-agent: *");
+
+  for (const rotaIcone of ["/favicon.ico", "/favicon.svg"]) {
+    const resIcone = await processarRequisicao(
+      new Request(`https://aresta.cc${rotaIcone}`)
+    );
+    assertEquals(resIcone.status, 301);
+    assertEquals(
+      resIcone.headers.get("Location"),
+      "https://arestaclimb.com/favicon.svg"
+    );
+    assertEquals(
+      resIcone.headers.get("Cache-Control"),
+      "public, max-age=86400, s-maxage=31536000, immutable"
+    );
+  }
+});
+
 Deno.test("worker app-links: GET /s/<uid> resolve entidade no D1 e retorna HTML SSR 200 com OpenGraph, Umami e cache na borda", async () => {
   const banco = criarBancoComVia();
   const req = new Request("https://aresta.cc/s/ESCALA12345678");
