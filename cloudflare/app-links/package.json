@@ -1,0 +1,14 @@
+{
+  "name": "aresta-app-links",
+  "version": "1.0.0",
+  "description": "Worker de App Links, Universal Links, preview OpenGraph SSR e telemetria Umami para o domínio aresta.cc",
+  "main": "src/index.ts",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test": "deno test -A"
+  },
+  "devDependencies": {
+    "wrangler": "^4.147.0"
+  }
+}

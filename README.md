@@ -9,12 +9,20 @@ Este repositório contém a infraestrutura de backend e as Edge Functions do **A
    - `create-pr`: API REST para validação de escopo de pastas (`database/` restrito) e abertura de Pull Requests automatizados via Bot no GitHub (`aresta-climb/aresta_db`).
 2. **Sistema de Feedback In-App**:
    - `app-feedback` / `discord-feedback`: Processamento de relatórios e capturas de tela do app móvel para canais privados no Discord.
+3. **Cloudflare Workers em Borda (`cloudflare/`)**:
+   - `catalogo` (`catalogo.arestaclimb.com`): Sincronização incremental (Delta Squash) do catálogo SQLite (`catalogo.db`) via Cloudflare D1.
+   - `app-links` (`aresta.cc`): Verificação de Android App Links / iOS Universal Links (`.well-known`), páginas HTML SSR com preview OpenGraph, fallback para lojas e telemetria Umami (`utm_source` / `utm_medium`).
+   - `previa` (`previa.arestaclimb.com`): Proxy de artefatos de prévia de Pull Requests.
 
 ---
 
 ## 🗂 Estrutura do Projeto
 
 ```text
+cloudflare/
+├── app-links/            # Worker de App Links, OpenGraph SSR e Umami (aresta.cc)
+├── catalogo/             # Worker de Delta Sync do catálogo SQLite (catalogo.arestaclimb.com)
+└── previa/               # Worker de prévia de Pull Requests (previa.arestaclimb.com)
 supabase/
 ├── config.toml           # Configuração principal do Supabase CLI
 ├── migrations/           # Scripts SQL de controle de versão do banco de dados
