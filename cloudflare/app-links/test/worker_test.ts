@@ -20,7 +20,6 @@ function criarBancoComVia(): BancoD1Fake {
     nome: "Serra do Cipó",
     cidade: "Santana do Riacho",
     estado: "MG",
-    atualizado_em: 1700000000,
   });
   banco.inserirEntidade({
     uid: "ESCALA12345678",

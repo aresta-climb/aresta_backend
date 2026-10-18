@@ -16,7 +16,6 @@ Deno.test("banco_d1_fake: insere e consulta registros de catalogo_croquis e cata
     nome: " Serra do Cipó ",
     cidade: " Santana do Riacho ",
     estado: " MG ",
-    atualizado_em: 1700000000,
   });
 
   banco.inserirEntidade({
