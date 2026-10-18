@@ -34,6 +34,7 @@ export const cabecalhosCors = {
 };
 
 const TTL_BORDA_UM_ANO_SEGUNDOS = 31536000;
+const TTL_BORDA_UM_DIA_SEGUNDOS = 86400;
 
 /**
  * Cabeçalho de cache para arquivos `.well-known` (24 horas no navegador, 1 ano na borda da Cloudflare).
@@ -42,10 +43,10 @@ export const CABECALHO_CACHE_WELL_KNOWN =
   `public, max-age=86400, s-maxage=${TTL_BORDA_UM_ANO_SEGUNDOS}`;
 
 /**
- * Cabeçalho de cache para páginas HTML SSR de App Links (1 hora no navegador, 1 ano na borda da Cloudflare).
+ * Cabeçalho de cache para páginas HTML SSR de App Links (1 hora no navegador, 24 horas na borda da Cloudflare).
  */
 export const CABECALHO_CACHE_PAGINA_LINK =
-  `public, max-age=3600, s-maxage=${TTL_BORDA_UM_ANO_SEGUNDOS}`;
+  `public, max-age=3600, s-maxage=${TTL_BORDA_UM_DIA_SEGUNDOS}`;
 
 const CONTEUDO_ASSETLINKS_ANDROID = [
   {
@@ -218,7 +219,7 @@ export async function processarRequisicao(
       return responderHtml(
         renderizarPaginaNaoEncontrada(),
         404,
-        `public, max-age=300, s-maxage=${TTL_BORDA_UM_ANO_SEGUNDOS}`
+        `public, max-age=300, s-maxage=${TTL_BORDA_UM_DIA_SEGUNDOS}`
       );
     }
 

@@ -169,7 +169,7 @@ Deno.test("worker app-links: GET /s/<uid> resolve entidade no D1 e retorna HTML 
   assertStringIncludes(html, '"utm_medium":"social"');
 });
 
-Deno.test("worker app-links: GET /<uid> para UID inexistente no D1 ou rota invalida retorna 404 com pagina HTML amigavel", async () => {
+Deno.test("worker app-links: GET /<uid> para UID inexistente no D1 (cache 24h) ou rota invalida (cache 1 ano) retorna 404 com pagina HTML amigavel", async () => {
   const banco = criarBancoComVia();
 
   const resUidInexistente = await processarRequisicao(
@@ -177,6 +177,10 @@ Deno.test("worker app-links: GET /<uid> para UID inexistente no D1 ou rota inval
     { DB: banco }
   );
   assertEquals(resUidInexistente.status, 404);
+  assertEquals(
+    resUidInexistente.headers.get("Cache-Control"),
+    "public, max-age=300, s-maxage=86400"
+  );
   assertStringIncludes(await resUidInexistente.text(), "Link não encontrado");
 
   const resRotaInvalida = await processarRequisicao(
@@ -184,6 +188,10 @@ Deno.test("worker app-links: GET /<uid> para UID inexistente no D1 ou rota inval
     { DB: banco }
   );
   assertEquals(resRotaInvalida.status, 404);
+  assertEquals(
+    resRotaInvalida.headers.get("Cache-Control"),
+    "public, max-age=300, s-maxage=31536000"
+  );
   assertStringIncludes(await resRotaInvalida.text(), "Link não encontrado");
 });
 
