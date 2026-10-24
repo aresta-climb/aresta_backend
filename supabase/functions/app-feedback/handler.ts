@@ -31,6 +31,14 @@ import {
 } from "../../../aresta_api/openapi/generated/ts/feedback.ts";
 import { extrairChaveSecretaSupabase } from "../compartilhado/cliente_supabase_controle.ts";
 import { obterTokenArestaClimbBot } from "../compartilhado/cliente_github_bot.ts";
+import {
+  InterfaceRelatorSentry,
+  relatarErroSentry,
+} from "../compartilhado/relator_sentry.ts";
+
+export interface OpcoesAppFeedback {
+  relatorSentry?: InterfaceRelatorSentry;
+}
 
 export const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -195,7 +203,10 @@ export function formatarBreadcrumbs(breadcrumbs: any): string | null {
 /**
  * Função principal para processar a requisição de feedback.
  */
-export const handleRequest = async (req: Request): Promise<Response> => {
+export const handleRequest = async (
+  req: Request,
+  opcoes?: OpcoesAppFeedback,
+): Promise<Response> => {
   // Trata requisições OPTIONS (CORS preflight)
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders });
@@ -596,6 +607,16 @@ export const handleRequest = async (req: Request): Promise<Response> => {
     if (!ghResponse.ok) {
       const errorText = await ghResponse.text();
       console.error('Erro na resposta do GitHub:', errorText);
+      await relatarErroSentry(
+        new Error(`Falha ao entregar feedback para o GitHub (Status: ${ghResponse.status}): ${errorText}`),
+        {
+          dsn: Deno.env.get('SENTRY_DSN'),
+          servico: 'supabase-app-feedback',
+          requisicao: req,
+          tags: { github_status: String(ghResponse.status) },
+        },
+        opcoes?.relatorSentry,
+      );
 
       // Remove a trava de idempotência para permitir reenvio pelo App
       if (feedbackId && supabase) {
@@ -705,6 +726,15 @@ export const handleRequest = async (req: Request): Promise<Response> => {
 
   } catch (error: any) {
     console.error('Erro na execução da função:', error);
+    await relatarErroSentry(
+      error,
+      {
+        dsn: Deno.env.get('SENTRY_DSN'),
+        servico: 'supabase-app-feedback',
+        requisicao: req,
+      },
+      opcoes?.relatorSentry,
+    );
     const respostaErro: ErroFeedback = {
       error: error.message || 'Erro interno do servidor.',
     };
@@ -717,3 +747,4 @@ export const handleRequest = async (req: Request): Promise<Response> => {
     );
   }
 };
+

@@ -5,6 +5,10 @@ import {
   ROTA_VERIFICAR_SAUDE_FEEDBACK,
   URL_SERVIDOR_PADRAO,
 } from "../../../aresta_api/openapi/generated/ts/feedback.ts";
+import {
+  InterfaceRelatorSentry,
+  relatarErroSentry,
+} from "../../../supabase/functions/compartilhado/relator_sentry.ts";
 
 /**
  * Interface com as variáveis de ambiente injetadas pelo Cloudflare Workers.
@@ -12,6 +16,8 @@ import {
 export interface AmbienteFeedback {
   SUPABASE_STORAGE_URL?: string;
   SUPABASE_DASHBOARD_URL?: string;
+  SENTRY_DSN?: string;
+  relatorSentry?: InterfaceRelatorSentry;
 }
 
 /**
@@ -161,6 +167,16 @@ export async function processarRequisicao(
 
       return respostaFinal;
     } catch (e: any) {
+      await relatarErroSentry(
+        e,
+        {
+          dsn: env.SENTRY_DSN,
+          servico: "cloudflare-feedback",
+          requisicao: req,
+          contextoExecucao: ctx,
+        },
+        env.relatorSentry
+      );
       return new Response(
         `Erro ao buscar anexo no storage de origem: ${e?.message || e}`,
         {

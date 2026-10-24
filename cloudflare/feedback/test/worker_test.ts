@@ -3,6 +3,7 @@
 
 import { assertEquals } from "https://deno.land/std@0.192.0/testing/asserts.ts";
 import { processarRequisicao, cabecalhosCors } from "../src/index.ts";
+import { RelatorSentryFake } from "../../../supabase/functions/compartilhado/relator_sentry_fake.ts";
 
 Deno.test("feedback-gateway: responde a OPTIONS com status 204 e cabecalhos CORS", async () => {
   const req = new Request("https://feedback.arestaclimb.com/anexos/uuid/screenshot.png", {
@@ -201,19 +202,26 @@ Deno.test("feedback-gateway: grava no Edge Cache via ctx.waitUntil se nao estive
   }
 });
 
-Deno.test("feedback-gateway: retorna 502 se o fetch para o storage de origem falhar", async () => {
+Deno.test("feedback-gateway: retorna 502 e reporta ao Sentry se o fetch para o storage de origem falhar", async () => {
   const originalFetch = globalThis.fetch;
+  const relatorFake = new RelatorSentryFake();
 
   globalThis.fetch = (): Promise<Response> => {
     return Promise.reject(new Error("Conexao recusada na origem"));
   };
 
   const req = new Request("https://feedback.arestaclimb.com/anexos/uuid-123/screenshot.png");
-  const res = await processarRequisicao(req);
+  const res = await processarRequisicao(req, {
+    SENTRY_DSN: "https://pub@o1.ingest.sentry.io/1",
+    relatorSentry: relatorFake,
+  });
 
   assertEquals(res.status, 502);
   const texto = await res.text();
   assertEquals(texto.includes("Erro ao buscar anexo no storage de origem"), true);
+  assertEquals(relatorFake.eventos.length, 1);
+  assertEquals(relatorFake.eventos[0].servico, "cloudflare-feedback");
+  assertEquals(relatorFake.eventos[0].mensagem, "Conexao recusada na origem");
 
   globalThis.fetch = originalFetch;
 });

@@ -186,3 +186,28 @@ Deno.test("handleRequest - deletes old UUIDs automatically (TTL)", async () => {
   Deno.env.delete("SUPABASE_URL");
   Deno.env.delete("SUPABASE_SECRET_KEYS");
 });
+
+Deno.test("handleRequest - reporta erro 500 ao Sentry via RelatorSentryFake quando DISCORD_WEBHOOK_URL está ausente", async () => {
+  const { RelatorSentryFake } = await import("../compartilhado/relator_sentry_fake.ts");
+  const relatorFake = new RelatorSentryFake();
+
+  Deno.env.delete("DISCORD_WEBHOOK_URL");
+  Deno.env.set("SENTRY_DSN", "https://pub@o1.ingest.sentry.io/1");
+
+  const formData = new FormData();
+  formData.append("description", "Teste erro Sentry");
+
+  const req = new Request("http://localhost/discord-feedback", {
+    method: "POST",
+    body: formData,
+  });
+  const res = await handleRequest(req, { relatorSentry: relatorFake });
+
+  assertEquals(res.status, 500);
+  assertEquals(relatorFake.eventos.length, 1);
+  assertEquals(relatorFake.eventos[0].servico, "supabase-discord-feedback");
+  assertEquals(relatorFake.eventos[0].mensagem.includes("DISCORD_WEBHOOK_URL"), true);
+
+  Deno.env.delete("SENTRY_DSN");
+});
+

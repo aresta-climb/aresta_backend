@@ -12,6 +12,11 @@ import {
   UpsertsSyncCatalogo,
 } from "../../../aresta_api/openapi/generated/ts/catalogo.ts";
 import { LinhaDeltasCatalogo } from "../../../aresta_api/sql/generated/ts/catalogo_d1_sql.ts";
+import {
+  ContextoExecucaoAssincrona,
+  InterfaceRelatorSentry,
+  relatarErroSentry,
+} from "../../../supabase/functions/compartilhado/relator_sentry.ts";
 
 /**
  * Interface mínima para statement preparado do Cloudflare D1.
@@ -33,6 +38,8 @@ export interface BancoD1 {
  */
 export interface AmbienteCatalogo {
   DB?: BancoD1;
+  SENTRY_DSN?: string;
+  relatorSentry?: InterfaceRelatorSentry;
 }
 
 /**
@@ -134,7 +141,8 @@ function responderJson(
  */
 export async function processarRequisicao(
   req: Request,
-  env: AmbienteCatalogo = {}
+  env: AmbienteCatalogo = {},
+  ctx?: ContextoExecucaoAssincrona
 ): Promise<Response> {
   const url = new URL(req.url);
   const caminho = url.pathname;
@@ -188,6 +196,16 @@ export async function processarRequisicao(
     }
 
     if (!env.DB) {
+      await relatarErroSentry(
+        new Error("Binding DB do Cloudflare D1 não configurado"),
+        {
+          dsn: env.SENTRY_DSN,
+          servico: "cloudflare-catalogo",
+          requisicao: req,
+          contextoExecucao: ctx,
+        },
+        env.relatorSentry
+      );
       return responderJson(
         { erro: "Binding DB do Cloudflare D1 não configurado" },
         500,
@@ -245,6 +263,16 @@ export async function processarRequisicao(
         CABECALHO_CACHE_IMUTAVEL
       );
     } catch (erro: unknown) {
+      await relatarErroSentry(
+        erro,
+        {
+          dsn: env.SENTRY_DSN,
+          servico: "cloudflare-catalogo",
+          requisicao: req,
+          contextoExecucao: ctx,
+        },
+        env.relatorSentry
+      );
       const mensagem = erro instanceof Error ? erro.message : String(erro);
       return responderJson(
         { erro: `Erro ao consultar deltas no D1: ${mensagem}` },
@@ -261,7 +289,11 @@ export async function processarRequisicao(
 }
 
 export default {
-  fetch(req: Request, env: AmbienteCatalogo): Promise<Response> {
-    return processarRequisicao(req, env);
+  fetch(
+    req: Request,
+    env: AmbienteCatalogo,
+    ctx?: ContextoExecucaoAssincrona
+  ): Promise<Response> {
+    return processarRequisicao(req, env, ctx);
   },
 };

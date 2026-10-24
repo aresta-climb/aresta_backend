@@ -50,14 +50,62 @@ Deno.test("renderizador_pagina_link: gera meta tags OpenGraph completas e thumbn
     '<meta property="og:image" content="https://serving.arestaclimb.com/v4/thumbnails/br_mg_serra_do_cipo.webp">'
   );
   assertStringIncludes(html, "Vale da Lua");
-  assertStringIncludes(html, "Grupo Cipó");
+  assertStringIncludes(html, "Grupo: Cipó");
   assertStringIncludes(html, "Santana do Riacho - MG");
-  assertStringIncludes(html, "esportiva");
+  assertStringIncludes(html, "Esportiva");
   assertStringIncludes(html, 'href="aresta://aresta.cc/s/ESCALA12345678"');
   assertStringIncludes(html, "https://apps.apple.com/app/id6776467893");
   assertStringIncludes(
     html,
     "https://play.google.com/store/apps/details?id=app.escalada.croquis"
+  );
+});
+
+Deno.test("renderizador_pagina_link: formata modalidade com inicial maiuscula, usa etiqueta Boulder/Highline e remove prefixos Setor e Grupo duplicados", () => {
+  const boulder: ResumoEntidadeLink = {
+    uid: "BOULDER1234567",
+    tipo: "escalada",
+    nome: "Sobe e desce",
+    croqui_uid: "CROQUI12345678",
+    id_slug: "br_mg_igarape_pedra_grande",
+    croqui_nome: "Igarameca - Complexo Pedra Grande",
+    cidade: "Igarapé",
+    estado: "MG",
+    escalada_grau: "VB",
+    escalada_tipo: "boulder",
+    setor_nome: "Setor Tramontina",
+    grupo_nome: "Grupo Sherpa",
+  };
+
+  const htmlBoulder = renderizarPaginaEntidade(boulder, ROTA_COMPARTILHAMENTO);
+
+  assertStringIncludes(
+    htmlBoulder,
+    "Boulder • Modalidade: Boulder • Setor: Tramontina • Grupo: Sherpa"
+  );
+  assertEquals(htmlBoulder.includes("Setor: Setor Tramontina"), false);
+  assertEquals(htmlBoulder.includes("Grupo: Grupo Sherpa"), false);
+  assertStringIncludes(htmlBoulder, "Boulder");
+  assertStringIncludes(htmlBoulder, "Tramontina");
+  assertStringIncludes(htmlBoulder, "Sherpa");
+
+  const highline: ResumoEntidadeLink = {
+    ...boulder,
+    uid: "HIGHLINE123456",
+    nome: "Travessia do Céu",
+    escalada_grau: "80m",
+    escalada_tipo: "highline",
+    setor_nome: "Setor",
+    grupo_nome: "Grupo",
+  };
+
+  const htmlHighline = renderizarPaginaEntidade(
+    highline,
+    ROTA_COMPARTILHAMENTO
+  );
+  assertStringIncludes(
+    htmlHighline,
+    "Highline • Modalidade: Highline • Setor: Setor • Grupo: Grupo"
   );
 });
 
@@ -217,10 +265,75 @@ Deno.test("renderizador_pagina_link: escapa caracteres especiais HTML contra XSS
   );
 });
 
-Deno.test("renderizador_pagina_link: renderiza pagina 404 amigavel com links para o site e lojas", () => {
+Deno.test("renderizador_pagina_link: aplica Design System Light/Dark de arestaclimb.com, logo oficial, layout 1:1 sem cortes, store badges com SVG e link nativo restrito ao mobile", () => {
+  const escalada: ResumoEntidadeLink = {
+    uid: "BOULDER1234567",
+    tipo: "escalada",
+    nome: "Sobe e desce",
+    croqui_uid: "CROQUI12345678",
+    id_slug: "br_mg_igarape_pedra_grande",
+    croqui_nome: "Igarameca - Complexo Pedra Grande",
+    cidade: "Igarapé",
+    estado: "MG",
+    escalada_grau: "VB",
+    escalada_tipo: "boulder",
+    setor_nome: "Setor Tramontina",
+    grupo_nome: null,
+  };
+
+  const html = renderizarPaginaEntidade(escalada, ROTA_COMPARTILHAMENTO);
+
+  // Design System Light & Dark Mode integrado ao arestaclimb.com
+  assertStringIncludes(html, 'data-theme="dark"');
+  assertStringIncludes(html, "--bg: #f4f1e9");
+  assertStringIncludes(html, 'html[data-theme="dark"]');
+  assertStringIncludes(html, "--bg: #11120f");
+  assertStringIncludes(html, "--accent: #b53e29");
+  assertStringIncludes(html, "--sage: #90a989");
+  assertStringIncludes(html, "aresta-theme");
+  assertStringIncludes(html, 'id="themeToggle"');
+
+  // Cabeçalho com logo oficial do Aresta Climb
+  assertStringIncludes(
+    html,
+    'src="https://arestaclimb.com/assets/logo_app.png"'
+  );
+  assertStringIncludes(html, "ARESTA CLIMB");
+
+  // Layout 1:1 da miniatura sem corte e 2 colunas no desktop
+  assertStringIncludes(html, "aspect-ratio: 1 / 1");
+  assertStringIncludes(html, "@media (min-width: 820px)");
+
+  // Botões clássicos das lojas (.store-badge) com ícones SVG oficiais
+  assertStringIncludes(html, 'class="store-badge"');
+  assertStringIncludes(html, "Disponível na");
+  assertStringIncludes(html, "App Store");
+  assertStringIncludes(html, "Disponível no");
+  assertStringIncludes(html, "Google Play");
+  assertStringIncludes(html, "<svg viewBox=\"0 0 384 512\"");
+  assertStringIncludes(html, "<svg viewBox=\"0 0 512 512\"");
+
+  // Smart App Banner iOS e link discreto de abertura no app apenas no mobile
+  assertStringIncludes(
+    html,
+    '<meta name="apple-itunes-app" content="app-id=6776467893, app-argument=https://aresta.cc/s/ESCALA12345678">'
+  );
+  assertStringIncludes(html, "Já tem o Aresta instalado?");
+  assertStringIncludes(html, "Abrir no aplicativo");
+  assertEquals(html.includes("Abrir no App Aresta"), false);
+});
+
+Deno.test("renderizador_pagina_link: renderiza pagina 404 amigavel com Design System Light/Dark, logo oficial e links para o site e lojas", () => {
   const html404 = renderizarPaginaNaoEncontrada();
 
   assertStringIncludes(html404, "Link não encontrado");
+  assertStringIncludes(html404, "aresta-theme");
+  assertStringIncludes(html404, 'id="themeToggle"');
+  assertStringIncludes(
+    html404,
+    'src="https://arestaclimb.com/assets/logo_app.png"'
+  );
+  assertStringIncludes(html404, 'class="store-badge"');
   assertStringIncludes(html404, "https://arestaclimb.com");
   assertStringIncludes(html404, "https://apps.apple.com/app/id6776467893");
   assertStringIncludes(

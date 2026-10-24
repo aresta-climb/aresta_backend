@@ -164,6 +164,12 @@ Deno.test("worker app-links: GET /s/<uid> resolve entidade no D1 e retorna HTML 
     html,
     "https://serving.arestaclimb.com/v4/thumbnails/br_mg_serra_do_cipo.webp"
   );
+  assertStringIncludes(
+    html,
+    "https://arestaclimb.com/assets/logo_app.png"
+  );
+  assertStringIncludes(html, 'class="store-badge"');
+  assertStringIncludes(html, "Esportiva");
   assertStringIncludes(html, '"utm_source":"compartilhamento"');
   assertStringIncludes(html, '"utm_medium":"social"');
 });

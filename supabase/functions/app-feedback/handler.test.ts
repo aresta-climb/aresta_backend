@@ -791,6 +791,29 @@ Deno.test("app-feedback: formatarBreadcrumbs formata lista de eventos com quebra
   );
 });
 
+Deno.test("app-feedback: reporta ao Sentry via RelatorSentryFake quando ocorre erro 500 por credenciais ausentes", async () => {
+  const { RelatorSentryFake } = await import("../compartilhado/relator_sentry_fake.ts");
+  const relatorFake = new RelatorSentryFake();
 
+  resetRateLimits();
+  setCustomTokenProvider(null);
+  Deno.env.set("SKIP_APP_CHECK_VERIFICATION", "true");
+  Deno.env.set("SENTRY_DSN", "https://pub@o1.ingest.sentry.io/1");
+  Deno.env.delete("ARESTA_CLIMB_BOT_GITHUB_APP_CLIENT_ID");
+  Deno.env.delete("ARESTA_CLIMB_BOT_GITHUB_APP_PRIVATE_KEY");
+  Deno.env.delete("ARESTA_CLIMB_BOT_GITHUB_APP_INSTALLATION_ID");
 
+  const formData = new FormData();
+  formData.append("description", "Teste erro reportado no Sentry");
 
+  const req = new Request("http://localhost/app-feedback", { method: "POST", body: formData });
+  const res = await handleRequest(req, { relatorSentry: relatorFake });
+
+  assertEquals(res.status, 500);
+  assertEquals(relatorFake.eventos.length, 1);
+  assertEquals(relatorFake.eventos[0].servico, "supabase-app-feedback");
+  assertEquals(relatorFake.eventos[0].mensagem.includes("Aresta Climb Bot"), true);
+
+  Deno.env.delete("SKIP_APP_CHECK_VERIFICATION");
+  Deno.env.delete("SENTRY_DSN");
+});

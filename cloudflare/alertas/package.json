@@ -1,0 +1,14 @@
+{
+  "name": "aresta-alertas-worker",
+  "version": "1.0.0",
+  "description": "Roteador central de alertas operacionais (Sentry e GitHub Webhooks) para grupos do WhatsApp via WAHA com fallback de e-mail via Resend",
+  "main": "src/index.ts",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test": "deno test -A"
+  },
+  "devDependencies": {
+    "wrangler": "^4.147.0"
+  }
+}

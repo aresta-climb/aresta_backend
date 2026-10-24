@@ -26,13 +26,24 @@ import {
   RespostaFeedback,
 } from "../../../aresta_api/openapi/generated/ts/feedback.ts";
 import { extrairChaveSecretaSupabase } from "../compartilhado/cliente_supabase_controle.ts";
+import {
+  InterfaceRelatorSentry,
+  relatarErroSentry,
+} from "../compartilhado/relator_sentry.ts";
+
+export interface OpcoesDiscordFeedback {
+  relatorSentry?: InterfaceRelatorSentry;
+}
 
 export const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-export const handleRequest = async (req: Request): Promise<Response> => {
+export const handleRequest = async (
+  req: Request,
+  opcoes?: OpcoesDiscordFeedback,
+): Promise<Response> => {
   // Handle CORS preflight requests
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders });
@@ -184,9 +195,19 @@ export const handleRequest = async (req: Request): Promise<Response> => {
 
   } catch (error: any) {
     console.error('Function error:', error);
+    await relatarErroSentry(
+      error,
+      {
+        dsn: Deno.env.get('SENTRY_DSN'),
+        servico: 'supabase-discord-feedback',
+        requisicao: req,
+      },
+      opcoes?.relatorSentry,
+    );
     return new Response(JSON.stringify({ error: error.message }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       status: 500,
     });
   }
 };
+

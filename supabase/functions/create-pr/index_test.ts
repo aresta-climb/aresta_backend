@@ -385,3 +385,39 @@ Deno.test("create-pr: aceita alias github_user_token e repassa para funcao de cr
   assertEquals(resposta.status, 200);
   assertEquals(tokenUsuarioRecebido, "gho_token_alias_456");
 });
+
+Deno.test("create-pr: captura excecao inesperada, retorna 500 e reporta ao Sentry via RelatorSentryFake", async () => {
+  const { RelatorSentryFake } = await import("../compartilhado/relator_sentry_fake.ts");
+  const relatorFake = new RelatorSentryFake();
+
+  const requisicao = new Request("http://localhost/create-pr", {
+    method: "POST",
+    headers: {
+      "Authorization": "Bearer token-valido",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      branch: "edicao-teste-erro-500",
+      title: "Título",
+    }),
+  });
+
+  const resposta = await processarRequisicaoCreatePr(requisicao, {
+    validarJwt: async () => ({
+      idUsuario: "user-123",
+      email: "autor@teste.com",
+      nomeCompleto: "Autor",
+    }),
+    obterArquivosModificadosBranch: async () => ["database/croqui/croqui.yaml"],
+    obterRegistroBranch: async () => null,
+    criarPullRequestGithub: () => Promise.reject(new Error("Falha inesperada na API do GitHub")),
+    sentryDsn: "https://pub@o1.ingest.sentry.io/1",
+    relatorSentry: relatorFake,
+  });
+
+  assertEquals(resposta.status, 500);
+  assertEquals(relatorFake.eventos.length, 1);
+  assertEquals(relatorFake.eventos[0].servico, "supabase-create-pr");
+  assertEquals(relatorFake.eventos[0].mensagem, "Falha inesperada na API do GitHub");
+});
+

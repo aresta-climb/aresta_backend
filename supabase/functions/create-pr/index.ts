@@ -20,6 +20,10 @@ import {
   excluirBranchRemota,
   criarPullRequestGithub,
 } from "../compartilhado/cliente_github_bot.ts";
+import {
+  InterfaceRelatorSentry,
+  relatarErroSentry,
+} from "../compartilhado/relator_sentry.ts";
 
 export interface ContextoCreatePr {
   validarJwt?: (token: string) => Promise<DadosUsuarioAutenticado | null>;
@@ -48,6 +52,8 @@ export interface ContextoCreatePr {
     numeroPr: number,
     urlPr: string,
   ) => Promise<void>;
+  sentryDsn?: string;
+  relatorSentry?: InterfaceRelatorSentry;
 }
 
 const CABECALHOS_CORS = {
@@ -57,6 +63,36 @@ const CABECALHOS_CORS = {
 };
 
 export async function processarRequisicaoCreatePr(
+  requisicao: Request,
+  contexto?: ContextoCreatePr,
+): Promise<Response> {
+  try {
+    return await executarFluxoCreatePr(requisicao, contexto);
+  } catch (erro: any) {
+    console.error("Erro interno no create-pr:", erro);
+    await relatarErroSentry(
+      erro,
+      {
+        dsn: contexto?.sentryDsn ?? Deno.env.get("SENTRY_DSN"),
+        servico: "supabase-create-pr",
+        requisicao,
+      },
+      contexto?.relatorSentry,
+    );
+    return new Response(
+      JSON.stringify({ erro: `Erro interno no servidor: ${erro?.message || erro}` }),
+      {
+        status: 500,
+        headers: {
+          ...CABECALHOS_CORS,
+          "Content-Type": "application/json",
+        },
+      },
+    );
+  }
+}
+
+async function executarFluxoCreatePr(
   requisicao: Request,
   contexto?: ContextoCreatePr,
 ): Promise<Response> {
@@ -248,20 +284,7 @@ export async function processarRequisicaoCreatePr(
   );
 }
 
-Deno.serve(async (req) => {
-  try {
-    return await processarRequisicaoCreatePr(req);
-  } catch (erro: any) {
-    console.error("Erro interno no create-pr:", erro);
-    return new Response(
-      JSON.stringify({ erro: `Erro interno no servidor: ${erro?.message || erro}` }),
-      {
-        status: 500,
-        headers: {
-          ...CABECALHOS_CORS,
-          "Content-Type": "application/json",
-        },
-      },
-    );
-  }
-});
+if (import.meta.main) {
+  Deno.serve((req) => processarRequisicaoCreatePr(req));
+}
+

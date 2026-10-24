@@ -11,8 +11,10 @@ Este repositório contém a infraestrutura de backend e as Edge Functions do **A
    - `app-feedback` / `discord-feedback`: Processamento de relatórios e capturas de tela do app móvel para canais privados no Discord.
 3. **Cloudflare Workers em Borda (`cloudflare/`)**:
    - `catalogo` (`catalogo.arestaclimb.com`): Sincronização incremental (Delta Squash) do catálogo SQLite (`catalogo.db`) via Cloudflare D1.
+   - `feedback` (`feedback.arestaclimb.com`): Proxy com cache imutável para anexos de feedback e redirecionamento para diagnóstico no Supabase.
    - `app-links` (`aresta.cc`): Verificação de Android App Links / iOS Universal Links (`.well-known`), páginas HTML SSR com preview OpenGraph, fallback para lojas e telemetria Umami (`utm_source` / `utm_medium`).
-   - `previa` (`previa.arestaclimb.com`): Proxy de artefatos de prévia de Pull Requests.
+   - `previa` (`previa.arestaclimb.com`): Proxy de artefatos de prévia de Pull Requests e túnel WebSocket do Editor Desktop.
+   - `alertas` (`alertas.arestaclimb.com`): Roteador central de webhooks assinados (Sentry e GitHub) para dois grupos da Comunidade no WhatsApp via WAHA (`NOWEB` em GCP `e2-micro`) com fallback automático de e-mail via Resend (`contato@arestaclimb.com`). Consulte o guia completo em `../aresta_app/docs/guia_configuracao_observabilidade_e_alertas.md`.
 
 ---
 
@@ -20,8 +22,10 @@ Este repositório contém a infraestrutura de backend e as Edge Functions do **A
 
 ```text
 cloudflare/
+├── alertas/              # Worker roteador de alertas WhatsApp WAHA + fallback Resend (alertas.arestaclimb.com)
 ├── app-links/            # Worker de App Links, OpenGraph SSR e Umami (aresta.cc)
 ├── catalogo/             # Worker de Delta Sync do catálogo SQLite (catalogo.arestaclimb.com)
+├── feedback/             # Worker de proxy de anexos de feedback (feedback.arestaclimb.com)
 └── previa/               # Worker de prévia de Pull Requests (previa.arestaclimb.com)
 supabase/
 ├── config.toml           # Configuração principal do Supabase CLI
@@ -35,6 +39,8 @@ supabase/
     │   ├── analisador_pkt_line.ts
     │   ├── cliente_github_bot.ts
     │   ├── cliente_supabase_controle.ts
+    │   ├── relator_sentry.ts
+    │   ├── relator_sentry_fake.ts
     │   ├── validador_escopo_arquivos.ts
     │   └── validador_regras_branch.ts
     ├── git-proxy/        # Função de proxy Git Smart HTTP

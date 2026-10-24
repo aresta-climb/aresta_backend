@@ -1059,6 +1059,29 @@ Deno.test("GerenciadorSessao - tolerância padrão de desconexão deve ser de 10
   expect(gm.obterSessao("toler10m")).toBeDefined();
 });
 
+Deno.test("Worker HTTP - reporta exceção inesperada ao Sentry via RelatorSentryFake ao retornar 500", async () => {
+  const { RelatorSentryFake } = await import(
+    "../../../supabase/functions/compartilhado/relator_sentry_fake.ts"
+  );
+  const relatorFake = new RelatorSentryFake();
+
+  const reqPost = new Request("https://previa.arestaclimb.com/sessoes", {
+    method: "POST",
+    headers: { Authorization: "Bearer token_qualquer" },
+  });
+
+  const res = await worker.fetch(reqPost, {
+    SENTRY_DSN: "https://pub@o1.ingest.sentry.io/1",
+    relatorSentry: relatorFake,
+    validarJwt: () => Promise.reject(new Error("Falha inesperada no JWKS")),
+  });
+
+  expect(res.status).toBe(500);
+  expect(relatorFake.eventos.length).toBe(1);
+  expect(relatorFake.eventos[0].servico).toBe("cloudflare-previa");
+  expect(relatorFake.eventos[0].mensagem).toBe("Falha inesperada no JWKS");
+});
+
 
 
 

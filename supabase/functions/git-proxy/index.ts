@@ -19,6 +19,10 @@ import {
   verificarBranchExisteNoGithub,
   obterTokenAutenticacaoGithub,
 } from "../compartilhado/cliente_github_bot.ts";
+import {
+  InterfaceRelatorSentry,
+  relatarErroSentry,
+} from "../compartilhado/relator_sentry.ts";
 
 const URL_REPOSITORIO_GITHUB = "https://github.com/aresta-climb/aresta_db.git";
 const SUFIXO_INFO_REFS = ROTA_GIT_PROXY_INFO_REFS.slice(ROTA_GIT_PROXY_BASE.length);
@@ -37,6 +41,8 @@ export interface ContextoGitProxy {
   }) => Promise<RegistroBranchSugestao | null>;
   executarFetchGithub?: (url: string, init?: RequestInit) => Promise<Response>;
   tokenBot?: string;
+  sentryDsn?: string;
+  relatorSentry?: InterfaceRelatorSentry;
 }
 
 const CABECALHOS_CORS = {
@@ -46,6 +52,33 @@ const CABECALHOS_CORS = {
 };
 
 export async function processarRequisicaoGitProxy(
+  requisicao: Request,
+  contexto?: ContextoGitProxy,
+): Promise<Response> {
+  try {
+    return await executarFluxoGitProxy(requisicao, contexto);
+  } catch (erro: any) {
+    console.error("Erro interno no git-proxy:", erro);
+    await relatarErroSentry(
+      erro,
+      {
+        dsn: contexto?.sentryDsn ?? Deno.env.get("SENTRY_DSN"),
+        servico: "supabase-git-proxy",
+        requisicao,
+      },
+      contexto?.relatorSentry,
+    );
+    return new Response(
+      `Erro interno no git-proxy: ${erro?.message || erro}`,
+      {
+        status: 500,
+        headers: CABECALHOS_CORS,
+      },
+    );
+  }
+}
+
+async function executarFluxoGitProxy(
   requisicao: Request,
   contexto?: ContextoGitProxy,
 ): Promise<Response> {
@@ -190,17 +223,6 @@ export async function processarRequisicaoGitProxy(
   return new Response("Método não suportado.", { status: 405, headers: CABECALHOS_CORS });
 }
 
-Deno.serve(async (req) => {
-  try {
-    return await processarRequisicaoGitProxy(req);
-  } catch (erro: any) {
-    console.error("Erro interno no git-proxy:", erro);
-    return new Response(
-      `Erro interno no git-proxy: ${erro?.message || erro}`,
-      {
-        status: 500,
-        headers: CABECALHOS_CORS,
-      },
-    );
-  }
-});
+if (import.meta.main) {
+  Deno.serve((req) => processarRequisicaoGitProxy(req));
+}

@@ -14,6 +14,10 @@ import { GerenciadorSessao } from "./gerenciador_sessao.ts";
 import { MensagemEvento, RequisicaoProxy, RespostaProxy, MetadadosEditor } from "./tipos.ts";
 import { validarTokenJwt, extrairJwtDeCabecalho } from "./validador_jwt.ts";
 import { registrarInicioSessao, registrarFimSessao, obterQuantidadeSessoesAtivasBanco } from "./cliente_auditoria_supabase.ts";
+import {
+  InterfaceRelatorSentry,
+  relatarErroSentry,
+} from "../../../supabase/functions/compartilhado/relator_sentry.ts";
 
 export const gerenciador = new GerenciadorSessao();
 
@@ -30,6 +34,8 @@ export interface ContextoWorker {
   SUPABASE_URL?: string;
   SUPABASE_PUBLISHABLE_KEY?: string;
   SUPABASE_SERVICE_ROLE_KEY?: string;
+  SENTRY_DSN?: string;
+  relatorSentry?: InterfaceRelatorSentry;
   SESSAO_DO?: any;
   validarJwt?: typeof validarTokenJwt;
   gerenciadorPersonalizado?: GerenciadorSessao;
@@ -639,6 +645,15 @@ export async function tratarRequisicao(
     });
   } catch (erro) {
     console.error(`[Worker] Erro inesperado ao processar requisição: ${erro}`);
+    await relatarErroSentry(
+      erro,
+      {
+        dsn: env?.SENTRY_DSN,
+        servico: "cloudflare-previa",
+        requisicao: request,
+      },
+      env?.relatorSentry,
+    );
     return criarRespostaJson({ erro: "Erro interno do servidor." }, 500);
   }
 }

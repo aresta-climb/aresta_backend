@@ -332,3 +332,24 @@ Deno.test("git-proxy: POST /git-receive-pack cria nova branch com prefixo edicao
   assertEquals(branchRegistrada?.authorEmail, "colaborador@teste.com");
   assertEquals(branchRegistrada?.authorName, "Colaborador");
 });
+
+Deno.test("git-proxy: captura excecao inesperada, retorna 500 e reporta ao Sentry via RelatorSentryFake", async () => {
+  const { RelatorSentryFake } = await import("../compartilhado/relator_sentry_fake.ts");
+  const relatorFake = new RelatorSentryFake();
+
+  const requisicao = new Request("http://localhost/git-proxy/info/refs?service=git-receive-pack", {
+    method: "GET",
+    headers: { "Authorization": "Bearer token-jwt-valido" },
+  });
+
+  const resposta = await processarRequisicaoGitProxy(requisicao, {
+    validarJwt: () => Promise.reject(new Error("Falha inesperada ao validar JWT")),
+    sentryDsn: "https://pub@o1.ingest.sentry.io/1",
+    relatorSentry: relatorFake,
+  });
+
+  assertEquals(resposta.status, 500);
+  assertEquals(relatorFake.eventos.length, 1);
+  assertEquals(relatorFake.eventos[0].servico, "supabase-git-proxy");
+  assertEquals(relatorFake.eventos[0].mensagem, "Falha inesperada ao validar JWT");
+});

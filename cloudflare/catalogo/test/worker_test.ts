@@ -8,6 +8,7 @@ import workerDefault, {
   processarRequisicao,
   RegistroDeltaD1,
 } from "../src/index.ts";
+import { RelatorSentryFake } from "../../../supabase/functions/compartilhado/relator_sentry_fake.ts";
 
 function criarMockD1(
   respostasPorQuery: (sql: string, params: unknown[]) => unknown[]
@@ -354,7 +355,8 @@ Deno.test("catalogo-gateway: condensarDeltas lida com JSON sem chaves opcionais"
   });
 });
 
-Deno.test("catalogo-gateway: /sync retorna 500 com no-store se query ao D1 lancar excecao", async () => {
+Deno.test("catalogo-gateway: /sync retorna 500 com no-store e reporta ao Sentry se query ao D1 lancar excecao", async () => {
+  const relatorFake = new RelatorSentryFake();
   const dbComFalha = {
     prepare(_sql: string) {
       return {
@@ -371,12 +373,19 @@ Deno.test("catalogo-gateway: /sync retorna 500 com no-store se query ao D1 lanca
   const req = new Request(
     "https://catalogo.arestaclimb.com/sync?versao_local=v1&versao_destino=v2"
   );
-  const res = await processarRequisicao(req, { DB: dbComFalha });
+  const res = await processarRequisicao(req, {
+    DB: dbComFalha,
+    SENTRY_DSN: "https://pub@o1.ingest.sentry.io/1",
+    relatorSentry: relatorFake,
+  });
 
   assertEquals(res.status, 500);
   assertEquals(res.headers.get("Cache-Control"), "no-store");
   const corpo = await res.json();
   assertEquals(corpo.erro.includes("Erro ao consultar deltas"), true);
+  assertEquals(relatorFake.eventos.length, 1);
+  assertEquals(relatorFake.eventos[0].servico, "cloudflare-catalogo");
+  assertEquals(relatorFake.eventos[0].mensagem, "D1 indisponivel");
 });
 
 Deno.test("catalogo-gateway: retorna 404 para rotas desconhecidas", async () => {
