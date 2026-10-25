@@ -655,14 +655,26 @@ Deno.test("alertas-worker: aciona fallback Resend quando Discord configurado fal
   assertStringIncludes(resendFake.emailsEnviados[0].motivoFalhaWaha, "Discord API indisponível");
 });
 
-Deno.test("ClienteDiscordHttp: envia webhook real silencioso (sem @everyone), define avatar_url, trunca textos longos e trata erros", async () => {
-  const chamadas: Array<{ url: string; corpoJson: any }> = [];
+Deno.test("ClienteDiscordHttp: envia webhook real silencioso (sem @everyone) com ?wait=true, resolve urlMensagem, define avatar_url, trunca textos longos e trata erros", async () => {
+  const chamadas: Array<{ metodo: string; url: string; corpoJson: any }> = [];
   const fetchSucesso: typeof fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+    const metodo = init?.method || "GET";
+    const url = String(input);
     chamadas.push({
-      url: String(input),
-      corpoJson: JSON.parse(String(init?.body || "{}")),
+      metodo,
+      url,
+      corpoJson: init?.body ? JSON.parse(String(init.body)) : null,
     });
-    return new Response(null, { status: 204 });
+    if (metodo === "GET") {
+      return new Response(
+        JSON.stringify({ guild_id: "777000", channel_id: "888000" }),
+        { status: 200 },
+      );
+    }
+    return new Response(
+      JSON.stringify({ id: "999001", channel_id: "888000" }),
+      { status: 200 },
+    );
   };
 
   const discordHttp = new ClienteDiscordHttp(fetchSucesso);
@@ -672,23 +684,25 @@ Deno.test("ClienteDiscordHttp: envia webhook real silencioso (sem @everyone), de
     avatarUrl: URL_ICONE_EMERGENCIA,
   });
   assertEquals(resSucesso.sucesso, true);
-  assertEquals(resSucesso.statusHttp, 204);
-  assertEquals(chamadas.length, 1);
-  assertEquals(chamadas[0].url, "https://discord.com/api/webhooks/123/xyz");
+  assertEquals(resSucesso.statusHttp, 200);
+  assertEquals(resSucesso.urlMensagem, "https://discord.com/channels/777000/888000/999001");
+  assertEquals(chamadas[0].url, "https://discord.com/api/webhooks/123/xyz?wait=true");
   assertEquals(chamadas[0].corpoJson.content.includes("@everyone"), false);
   assertStringIncludes(chamadas[0].corpoJson.content, "Emergência teste");
   assertEquals(chamadas[0].corpoJson.allowed_mentions.parse, []);
   assertEquals(chamadas[0].corpoJson.avatar_url, URL_ICONE_EMERGENCIA);
 
-  // Teste de truncamento preventivo (> 2000 chars)
+  // Teste de truncamento preventivo (> 2000 chars) usando cache de guild_id
   const textoLongo = "A".repeat(2500);
   const resLongo = await discordHttp.enviarMensagemWebhook({
     urlWebhook: "https://discord.com/api/webhooks/123/xyz",
     texto: textoLongo,
   });
   assertEquals(resLongo.sucesso, true);
-  assertEquals(chamadas[1].corpoJson.content.length <= 1990, true);
-  assertEquals(chamadas[1].corpoJson.avatar_url, undefined);
+  assertEquals(resLongo.urlMensagem, "https://discord.com/channels/777000/888000/999001");
+  const chamadaPostLongo = chamadas.find((c, i) => i > 0 && c.metodo === "POST")!;
+  assertEquals(chamadaPostLongo.corpoJson.content.length <= 1990, true);
+  assertEquals(chamadaPostLongo.corpoJson.avatar_url, undefined);
 
   // Erro HTTP do Discord
   const fetchErro: typeof fetch = async () => new Response("Rate limited", { status: 429 });
@@ -1532,11 +1546,25 @@ Deno.test("alertas-worker: despacha notificacoes push ricas via ntfy com priorid
   assertStringIncludes(pushEmergencia.titulo, "Aresta Climb •");
   assertStringIncludes(pushEmergencia.mensagem, "Out of memory no SyncWorker");
   assertEquals(pushEmergencia.urlClique, "https://github.com/aresta-climb/aresta_app/issues/1");
-  assertEquals((pushEmergencia.acoes || []).length >= 2, true);
-  assertEquals(pushEmergencia.acoes?.[0].label, "Abrir no GitHub");
-  assertEquals(pushEmergencia.acoes?.[0].url, "https://github.com/aresta-climb/aresta_app/issues/1");
+  assertEquals(pushEmergencia.acoes, [
+    {
+      action: "view",
+      label: "Discord",
+      url: "https://discord.com/channels/1000/2000/3001",
+    },
+    {
+      action: "view",
+      label: "GitHub",
+      url: "https://github.com/aresta-climb/aresta_app/issues/1",
+    },
+    {
+      action: "view",
+      label: "Sentry",
+      url: "https://aresta-climb.sentry.io/issues/7070/",
+    },
+  ]);
 
-  // 2. Bug / Nova Issue no GitHub -> envia push ntfy com prioridade 3
+  // 2. Bug / Nova Issue no GitHub (com link do Sentry no corpo) -> envia push ntfy com prioridade 3 e 3 botões
   const corpoBug = JSON.stringify({
     action: "opened",
     repository: { full_name: "aresta-climb/aresta_app" },
@@ -1544,6 +1572,7 @@ Deno.test("alertas-worker: despacha notificacoes push ricas via ntfy com priorid
       number: 88,
       title: "Filtro de graduação não limpa",
       html_url: "https://github.com/aresta-climb/aresta_app/issues/88",
+      body: "Issue gerada pelo Sentry: https://aresta-climb.sentry.io/issues/8080/",
       labels: [{ name: "bug" }],
     },
   });
@@ -1568,7 +1597,23 @@ Deno.test("alertas-worker: despacha notificacoes push ricas via ntfy com priorid
   assertEquals(pushBug.iconeUrl, URL_ICONE_FEEDBACK_BUGS);
   assertStringIncludes(pushBug.titulo, "Aresta Climb •");
   assertEquals(pushBug.urlClique, "https://github.com/aresta-climb/aresta_app/issues/88");
-  assertEquals(pushBug.acoes?.[0].url, "https://github.com/aresta-climb/aresta_app/issues/88");
+  assertEquals(pushBug.acoes, [
+    {
+      action: "view",
+      label: "Discord",
+      url: "https://discord.com/channels/1000/2000/3002",
+    },
+    {
+      action: "view",
+      label: "GitHub",
+      url: "https://github.com/aresta-climb/aresta_app/issues/88",
+    },
+    {
+      action: "view",
+      label: "Sentry",
+      url: "https://aresta-climb.sentry.io/issues/8080/",
+    },
+  ]);
 });
 
 Deno.test("ClienteNtfyHttp: envia POST JSON ao servidor ntfy com Authorization Bearer opcional e trata falhas", async () => {

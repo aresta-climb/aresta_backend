@@ -100,7 +100,8 @@ Deno.test("ClienteDiscordFake: registra mensagens de webhook enviadas e permite 
   });
 
   assertEquals(resSucesso.sucesso, true);
-  assertEquals(resSucesso.statusHttp, 204);
+  assertEquals(resSucesso.statusHttp, 200);
+  assertEquals(resSucesso.urlMensagem, "https://discord.com/channels/1000/2000/3001");
   assertEquals(discordFake.mensagensEnviadas.length, 1);
   assertEquals(discordFake.mensagensEnviadas[0].urlWebhook, "https://discord.com/api/webhooks/123/abc");
   assertEquals(discordFake.mensagensEnviadas[0].texto, "@everyone 🚨 Teste de emergência");

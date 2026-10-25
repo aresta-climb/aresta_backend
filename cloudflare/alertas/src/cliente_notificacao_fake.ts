@@ -143,6 +143,7 @@ export interface OpcoesEnvioDiscord {
 export interface ResultadoEnvioDiscord {
   sucesso: boolean;
   statusHttp: number;
+  urlMensagem?: string;
   erro?: string;
 }
 
@@ -175,7 +176,8 @@ export class ClienteDiscordFake implements InterfaceClienteDiscord {
 
     return {
       sucesso: true,
-      statusHttp: 204,
+      statusHttp: 200,
+      urlMensagem: `https://discord.com/channels/1000/2000/${3000 + this.mensagensEnviadas.length}`,
     };
   }
 

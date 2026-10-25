@@ -116,21 +116,48 @@ export function formatarTextoMuralDiscord(texto: string): string {
 }
 
 /**
- * Implementação HTTP real do cliente Discord Incoming Webhook (`POST <webhook_url>`).
- * Opera como mural silencioso (`allowed_mentions: { parse: [] }`) e aplica `avatar_url` por categoria.
+ * Implementação HTTP real do cliente Discord Incoming Webhook (`POST <webhook_url>?wait=true`).
+ * Opera como mural silencioso (`allowed_mentions: { parse: [] }`), aplica `avatar_url` por categoria
+ * e resolve o link direto da mensagem criada no Discord (`https://discord.com/channels/<guild>/<channel>/<msg>`).
  */
 export class ClienteDiscordHttp implements InterfaceClienteDiscord {
   private readonly fetchImpl: typeof fetch;
+  private readonly cacheGuildIdPorWebhook = new Map<string, string>();
 
   constructor(fetchImpl: typeof fetch = globalThis.fetch.bind(globalThis)) {
     this.fetchImpl = fetchImpl;
   }
 
+  private async obterGuildIdWebhook(urlWebhookBase: string): Promise<string | null> {
+    const emCache = this.cacheGuildIdPorWebhook.get(urlWebhookBase);
+    if (emCache) {
+      return emCache;
+    }
+    try {
+      const resInfo = await this.fetchImpl(urlWebhookBase, { method: "GET" });
+      if (resInfo.ok) {
+        const dadosInfo = (await resInfo.json()) as { guild_id?: string };
+        if (dadosInfo?.guild_id) {
+          this.cacheGuildIdPorWebhook.set(urlWebhookBase, dadosInfo.guild_id);
+          return dadosInfo.guild_id;
+        }
+      }
+    } catch {
+      // Se não for possível obter metadados do webhook, prossegue sem urlMensagem
+    }
+    return null;
+  }
+
   async enviarMensagemWebhook(opcoes: OpcoesEnvioDiscord): Promise<ResultadoEnvioDiscord> {
     try {
       const conteudoAjustado = formatarTextoMuralDiscord(opcoes.texto);
+      const urlBaseSemQuery = opcoes.urlWebhook.split("?")[0];
+      const separadorQuery = opcoes.urlWebhook.includes("?") ? "&" : "?";
+      const urlComWait = opcoes.urlWebhook.includes("wait=")
+        ? opcoes.urlWebhook
+        : `${opcoes.urlWebhook}${separadorQuery}wait=true`;
 
-      const resposta = await this.fetchImpl(opcoes.urlWebhook, {
+      const resposta = await this.fetchImpl(urlComWait, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -151,9 +178,29 @@ export class ClienteDiscordHttp implements InterfaceClienteDiscord {
         };
       }
 
+      let urlMensagem: string | undefined;
+      if (resposta.status === 200) {
+        try {
+          const dadosMsg = (await resposta.json()) as {
+            id?: string;
+            channel_id?: string;
+            guild_id?: string;
+          };
+          if (dadosMsg?.id && dadosMsg?.channel_id) {
+            const guildId = dadosMsg.guild_id || (await this.obterGuildIdWebhook(urlBaseSemQuery));
+            if (guildId) {
+              urlMensagem = `https://discord.com/channels/${guildId}/${dadosMsg.channel_id}/${dadosMsg.id}`;
+            }
+          }
+        } catch {
+          // Caso a resposta 200 não possua corpo JSON
+        }
+      }
+
       return {
         sucesso: true,
         statusHttp: resposta.status,
+        ...(urlMensagem ? { urlMensagem } : {}),
       };
     } catch (erro: unknown) {
       const msg = erro instanceof Error ? erro.message : String(erro);
@@ -1050,12 +1097,13 @@ function obterClienteGithubApp(env: AmbienteAlertas): InterfaceClienteGithubApp 
 
 /**
  * Constrói o payload de notificação push rica do `ntfy` com ícone WebP por categoria,
- * prioridade (`5` para emergências e `3` para bugs) e botões de ação clicáveis.
+ * prioridade (`5` para emergências e `3` para bugs) e até 3 botões de ação ("Discord", "GitHub", "Sentry").
  */
 function construirOpcoesEnvioNtfy(
   notificacao: NotificacaoClassificada,
   topico: string,
   env: AmbienteAlertas,
+  urlMensagemDiscord?: string,
 ): OpcoesEnvioNtfy {
   const primeiraLinhaLimpa = notificacao.texto
     .split("\n")[0]
@@ -1072,10 +1120,17 @@ function construirOpcoesEnvioNtfy(
   const ehEmergencia = notificacao.categoria === "emergencias";
   const acoes: AcaoNtfy[] = [];
 
+  if (urlMensagemDiscord) {
+    acoes.push({
+      action: "view",
+      label: "Discord",
+      url: urlMensagemDiscord,
+    });
+  }
   if (notificacao.urlDiscussaoGithub) {
     acoes.push({
       action: "view",
-      label: "Abrir no GitHub",
+      label: "GitHub",
       url: notificacao.urlDiscussaoGithub,
     });
   }
@@ -1085,7 +1140,7 @@ function construirOpcoesEnvioNtfy(
   ) {
     acoes.push({
       action: "view",
-      label: "Ver Origem",
+      label: "Sentry",
       url: notificacao.urlOrigem,
     });
   }
@@ -1100,7 +1155,7 @@ function construirOpcoesEnvioNtfy(
       ? ["rotating_light", "aresta-emergencia"]
       : ["wrench", "aresta-bugs"],
     iconeUrl: ehEmergencia ? URL_ICONE_EMERGENCIA : URL_ICONE_FEEDBACK_BUGS,
-    urlClique: notificacao.urlDiscussaoGithub || notificacao.urlOrigem,
+    urlClique: notificacao.urlDiscussaoGithub || notificacao.urlOrigem || urlMensagemDiscord,
     acoes: acoes.length > 0 ? acoes : undefined,
     tokenApi: env.NTFY_API_TOKEN,
   };
@@ -1181,6 +1236,7 @@ async function despacharNotificacaoComFallback(
 
   const canaisSucesso: string[] = [];
   const motivosFalha: string[] = [];
+  let urlMensagemDiscord: string | undefined;
 
   // 1. Tenta envio ao mural do Discord se configurado (sem @everyone e com avatar WebP customizado)
   if (permiteDiscord && urlDiscord) {
@@ -1193,6 +1249,7 @@ async function despacharNotificacaoComFallback(
     });
     if (resultadoDiscord.sucesso) {
       canaisSucesso.push("discord");
+      urlMensagemDiscord = resultadoDiscord.urlMensagem;
     } else {
       motivosFalha.push(
         `Discord falhou: ${resultadoDiscord.erro || `Status HTTP ${resultadoDiscord.statusHttp}`}`,
@@ -1214,7 +1271,12 @@ async function despacharNotificacaoComFallback(
 
   // 2. Tenta envio push móvel dedicado via ntfy se configurado
   if (topicoNtfy) {
-    const opcoesNtfy = construirOpcoesEnvioNtfy(notificacao, topicoNtfy, env);
+    const opcoesNtfy = construirOpcoesEnvioNtfy(
+      notificacao,
+      topicoNtfy,
+      env,
+      urlMensagemDiscord,
+    );
     const clienteNtfy = env.clienteNtfy || new ClienteNtfyHttp();
     const resultadoNtfy = await clienteNtfy.enviarNotificacaoPush(opcoesNtfy);
     if (resultadoNtfy.sucesso) {
