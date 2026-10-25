@@ -69,9 +69,7 @@ export interface AmbienteAlertas {
   DISCORD_WEBHOOK_BUGS_URL?: string;
   NTFY_BASE_URL?: string;
   NTFY_TOPICO_EMERGENCIAS?: string;
-  NOTIFY_TOPICO_EMERGENCIAS?: string;
   NTFY_TOPICO_BUGS?: string;
-  NOTIFY_TOPICO_BUGS?: string;
   NTFY_API_TOKEN?: string;
   WAHA_BASE_URL?: string;
   WAHA_API_KEY?: string;
@@ -254,6 +252,9 @@ export class ClienteNtfyHttp implements InterfaceClienteNtfy {
 
       if (!resposta.ok) {
         const detalhe = await resposta.text();
+        console.error(
+          `[aresta-alertas-worker] Erro HTTP ao enviar notificação para o ntfy (${url}, tópico '${opcoes.topico}'): HTTP ${resposta.status} - ${detalhe}`,
+        );
         return {
           sucesso: false,
           statusHttp: resposta.status,
@@ -267,6 +268,9 @@ export class ClienteNtfyHttp implements InterfaceClienteNtfy {
       };
     } catch (erro: unknown) {
       const msg = erro instanceof Error ? erro.message : String(erro);
+      console.error(
+        `[aresta-alertas-worker] Falha de conexão ao enviar notificação para o ntfy (${url}, tópico '${opcoes.topico}'): ${msg}`,
+      );
       return {
         sucesso: false,
         statusHttp: 0,
@@ -811,7 +815,8 @@ function resolverRepositorioPorServicoSentry(servicoTag: string): string {
     tagNormalizada.includes("arestaclimb-com") ||
     tagNormalizada.includes("arestaclimb.com") ||
     tagNormalizada.includes("aresta-web") ||
-    tagNormalizada.includes("site")
+    tagNormalizada.includes("site") ||
+    tagNormalizada === "4512313437913088"
   ) {
     return "aresta-climb/arestaclimb.com";
   }
@@ -868,7 +873,59 @@ function classificarWebhookSentry(
     };
   }
 
-  // 2. Crash Fatal ou Evento de Emergência
+  // 2a. Nova Issue Fatal no Sentry (recurso === "issue" && acao === "created" && level === "fatal")
+  const issueSentry = payload?.data?.issue;
+  if (
+    recurso === "issue" &&
+    acao === "created" &&
+    issueSentry &&
+    String(issueSentry.level || "").toLowerCase() === "fatal"
+  ) {
+    const idIssueSentry = String(issueSentry.id || "");
+    const titulo = String(issueSentry.title || "Exceção Fatal em Produção");
+    const url = String(
+      issueSentry.web_url ||
+        (idIssueSentry
+          ? `https://aresta-climb.sentry.io/issues/${idIssueSentry}/`
+          : "https://aresta-climb.sentry.io/issues/"),
+    );
+    const servicoTag = String(
+      issueSentry.project?.slug ||
+        issueSentry.project?.name ||
+        issueSentry.project?.id ||
+        payload?.project_slug ||
+        payload?.project ||
+        "ecossistema-aresta",
+    );
+    const repositorio = resolverRepositorioPorServicoSentry(servicoTag);
+
+    return {
+      categoria: "emergencias",
+      grupoId: env.WHATSAPP_GRUPO_EMERGENCIAS_ID,
+      assuntoFallback: `[CONTINGÊNCIA ALERTA] 🚨 Crash Fatal em ${servicoTag}`,
+      urlOrigem: url,
+      texto: [
+        `🚨 *[EMERGÊNCIA] Crash Fatal em ${servicoTag}: ${titulo}*`,
+        `• *Serviço:* \`${servicoTag}\``,
+        `• *Erro:* ${titulo}`,
+        `• *Investigação Sentry:* ${url}`,
+      ].join("\n"),
+      dadosIssueEmergencia: {
+        repositorio,
+        titulo: `🚨 [EMERGÊNCIA] Crash Fatal (${servicoTag}): ${titulo}`,
+        corpo: [
+          "### 🚨 Crash Fatal Detectado pelo Sentry",
+          "",
+          `- **Serviço:** \`${servicoTag}\``,
+          `- **Erro:** ${titulo}`,
+          `- **Investigação Sentry:** ${url}`,
+        ].join("\n"),
+        labels: ["emergencia"],
+      },
+    };
+  }
+
+  // 2b. Crash Fatal ou Evento de Emergência (recurso === "event_alert")
   const evento = payload?.data?.event;
   if (evento && (evento.level === "fatal" || acao === "triggered")) {
     const titulo = evento.title || "Exceção Fatal em Produção";
@@ -1326,8 +1383,8 @@ async function despacharNotificacaoComFallback(
     : URL_ICONE_FEEDBACK_BUGS;
 
   const topicoNtfy = notificacao.categoria === "emergencias"
-    ? (env.NTFY_TOPICO_EMERGENCIAS || env.NOTIFY_TOPICO_EMERGENCIAS)
-    : (env.NTFY_TOPICO_BUGS || env.NOTIFY_TOPICO_BUGS);
+    ? env.NTFY_TOPICO_EMERGENCIAS
+    : env.NTFY_TOPICO_BUGS;
 
   const wahaAtivo = Boolean(
     env.WAHA_BASE_URL &&
@@ -1393,9 +1450,11 @@ async function despacharNotificacaoComFallback(
     if (resultadoNtfy.sucesso) {
       canaisSucesso.push("ntfy");
     } else {
-      motivosFalha.push(
-        `ntfy falhou: ${resultadoNtfy.erro || `Status HTTP ${resultadoNtfy.statusHttp}`}`,
+      const detalheErroNtfy = resultadoNtfy.erro || `Status HTTP ${resultadoNtfy.statusHttp}`;
+      console.error(
+        `[aresta-alertas-worker] Falha ao enviar notificação para o ntfy (tópico '${topicoNtfy}'): ${detalheErroNtfy}`,
       );
+      motivosFalha.push(`ntfy falhou: ${detalheErroNtfy}`);
       if (fila) {
         await fila.enfileirar({
           id: `ntfy-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,

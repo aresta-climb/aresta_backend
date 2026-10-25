@@ -5,9 +5,21 @@ import { assertEquals } from "@std/assert";
 import {
   extrairConfiguracaoDsn,
   extrairFramesPilha,
+  obterDsnSentryPadrao,
   RelatorSentry,
   relatarErroSentry,
 } from "./relator_sentry.ts";
+
+Deno.test("obterDsnSentryPadrao: retorna valor explicito ou segredo SENTRY_DSN do ambiente", () => {
+  Deno.env.delete("SENTRY_DSN");
+  assertEquals(obterDsnSentryPadrao(), undefined);
+  assertEquals(obterDsnSentryPadrao("https://custom@o1.ingest.sentry.io/99"), "https://custom@o1.ingest.sentry.io/99");
+  assertEquals(obterDsnSentryPadrao(""), "");
+
+  Deno.env.set("SENTRY_DSN", "https://env@o1.ingest.sentry.io/55");
+  assertEquals(obterDsnSentryPadrao(), "https://env@o1.ingest.sentry.io/55");
+  Deno.env.delete("SENTRY_DSN");
+});
 
 Deno.test("extrairConfiguracaoDsn: extrai URL de envelope a partir de DSN valido e retorna null para invalidos", () => {
   const config = extrairConfiguracaoDsn("https://chavePublica123@o456.ingest.us.sentry.io/789012");

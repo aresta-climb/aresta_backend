@@ -16,6 +16,23 @@ export type {
 export { sanitizarCabecalhos };
 
 /**
+ * Resolve o DSN do Sentry a partir de um valor explícito ou do segredo de ambiente `SENTRY_DSN`.
+ */
+export function obterDsnSentryPadrao(dsnExplicito?: string): string | undefined {
+  if (dsnExplicito !== undefined) {
+    return dsnExplicito;
+  }
+  try {
+    if (typeof Deno !== "undefined" && typeof Deno.env?.get === "function") {
+      return Deno.env.get("SENTRY_DSN");
+    }
+  } catch {
+    // Caso permissão de ambiente não esteja disponível
+  }
+  return undefined;
+}
+
+/**
  * Componentes extraídos de um DSN do Sentry.
  */
 export interface ConfiguracaoDsnSentry {

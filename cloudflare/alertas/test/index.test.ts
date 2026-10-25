@@ -1983,14 +1983,15 @@ Deno.test("alertas-worker: roteia falha de commit status de deploy (Vercel) e wo
   assertEquals(discordFake.mensagensEnviadas.length, 2);
 });
 
-Deno.test("alertas-worker: cria GitHub Issue com label 'bug' quando Sentry envia issue.created nao-fatal e suporta alias NOTIFY_TOPICO_BUGS", async () => {
+Deno.test("alertas-worker: cria GitHub Issue com label 'bug' para issue.created nao-fatal e com label 'emergencia' (+ alerta imediato) para issue.created fatal", async () => {
   const discordFake = new ClienteDiscordFake();
   const ntfyFake = new ClienteNtfyFake();
   const githubFake = new ClienteGithubAppFake();
   const resendFake = new ClienteResendFake();
   const env = criarAmbientePadrao(undefined, resendFake, discordFake);
   env.CANAL_ALERTAS_ATIVO = "discord";
-  env.NOTIFY_TOPICO_BUGS = "aresta-bugs-via-alias";
+  env.NTFY_TOPICO_BUGS = "aresta-bugs-topico-oficial";
+  env.NTFY_TOPICO_EMERGENCIAS = "aresta-emergencias-topico-oficial";
   env.ARESTA_CLIMB_BOT_GITHUB_APP_CLIENT_ID = "app-id";
   env.ARESTA_CLIMB_BOT_GITHUB_APP_PRIVATE_KEY = "key";
   env.ARESTA_CLIMB_BOT_GITHUB_APP_INSTALLATION_ID = "123";
@@ -2038,7 +2039,7 @@ Deno.test("alertas-worker: cria GitHub Issue com label 'bug' quando Sentry envia
     "https://aresta-climb.sentry.io/issues/7811812260/",
   );
 
-  // 2. Quando o GitHub dispara issues.opened para essa issue criada, o alias NOTIFY_TOPICO_BUGS envia ao ntfy
+  // 2. Quando o GitHub dispara issues.opened para essa issue criada, envia ao NTFY_TOPICO_BUGS
   const corpoGithubOpened = JSON.stringify({
     action: "opened",
     repository: { full_name: "aresta-climb/aresta_app" },
@@ -2065,8 +2066,55 @@ Deno.test("alertas-worker: cria GitHub Issue com label 'bug' quando Sentry envia
   );
   assertEquals(resGh.status, 200);
   assertEquals(ntfyFake.notificacoesEnviadas.length, 1);
-  assertEquals(ntfyFake.notificacoesEnviadas[0].topico, "aresta-bugs-via-alias");
+  assertEquals(ntfyFake.notificacoesEnviadas[0].topico, "aresta-bugs-topico-oficial");
+  assertEquals(ntfyFake.notificacoesEnviadas[0].prioridade, 3);
   assertEquals(ntfyFake.notificacoesEnviadas[0].acoes?.length, 3);
+
+  // 3. Sentry envia issue.created com level === "fatal" -> cria Issue com label 'emergencia' e notifica #emergencias + ntfy prioridade 5
+  const corpoIssueFatalCreated = JSON.stringify({
+    action: "created",
+    data: {
+      issue: {
+        id: "7811899999",
+        title: "UnhandledFatalException: Isolates crash",
+        level: "fatal",
+        web_url: "https://aresta-climb.sentry.io/issues/7811899999/",
+        project: {
+          id: "4512313378013184",
+          slug: "aresta-backend",
+          name: "aresta-backend",
+        },
+      },
+    },
+  });
+  const sigFatalCreated = await assinarHmacSha256Hex(
+    env.SENTRY_WEBHOOK_SECRET,
+    corpoIssueFatalCreated,
+  );
+
+  const resFatalCreated = await worker.fetch(
+    new Request("https://alertas.arestaclimb.com/webhook/sentry", {
+      method: "POST",
+      headers: {
+        "sentry-hook-signature": sigFatalCreated,
+        "sentry-hook-resource": "issue",
+      },
+      body: corpoIssueFatalCreated,
+    }),
+    env,
+  );
+  assertEquals(resFatalCreated.status, 200);
+  assertEquals(githubFake.issuesCriadas.length, 2);
+  assertEquals(githubFake.issuesCriadas[1].repositorio, "aresta-climb/aresta_backend");
+  assertEquals(githubFake.issuesCriadas[1].labels, ["emergencia"]);
+  assertStringIncludes(
+    githubFake.issuesCriadas[1].titulo,
+    "UnhandledFatalException: Isolates crash",
+  );
+  assertEquals(ntfyFake.notificacoesEnviadas.length, 2);
+  assertEquals(ntfyFake.notificacoesEnviadas[1].topico, "aresta-emergencias-topico-oficial");
+  assertEquals(ntfyFake.notificacoesEnviadas[1].prioridade, 5);
+  assertEquals(ntfyFake.notificacoesEnviadas[1].acoes?.length, 3);
 });
 
 

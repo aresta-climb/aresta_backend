@@ -22,6 +22,7 @@ import {
 } from "../compartilhado/cliente_github_bot.ts";
 import {
   InterfaceRelatorSentry,
+  obterDsnSentryPadrao,
   relatarErroSentry,
 } from "../compartilhado/relator_sentry.ts";
 
@@ -73,7 +74,7 @@ export async function processarRequisicaoCreatePr(
     await relatarErroSentry(
       erro,
       {
-        dsn: contexto?.sentryDsn ?? Deno.env.get("SENTRY_DSN"),
+        dsn: obterDsnSentryPadrao(contexto?.sentryDsn),
         servico: "supabase-create-pr",
         requisicao,
       },
@@ -185,6 +186,17 @@ async function executarFluxoCreatePr(
   try {
     arquivosModificados = await funcaoObterArquivos(nomeSimplesBranch);
   } catch (erro: any) {
+    await relatarErroSentry(
+      erro,
+      {
+        dsn: obterDsnSentryPadrao(contexto?.sentryDsn),
+        servico: "supabase-create-pr",
+        requisicao,
+        tags: { etapa: "inspecionar_branch_github" },
+        extras: { branch: nomeSimplesBranch },
+      },
+      contexto?.relatorSentry,
+    );
     return new Response(
       JSON.stringify({ erro: `Falha ao inspecionar branch no GitHub: ${erro.message}` }),
       {
@@ -264,10 +276,24 @@ async function executarFluxoCreatePr(
     tokenUsuarioFinal,
   );
 
-  await funcaoAtualizarMetadados(nomeSimplesBranch, {
+  const metadadosAtualizados = await funcaoAtualizarMetadados(nomeSimplesBranch, {
     prNumber: resultadoPr.numeroPr,
     prUrl: resultadoPr.urlPr,
   });
+
+  if (!metadadosAtualizados) {
+    await relatarErroSentry(
+      new Error(`Falha ao atualizar metadados do PR #${resultadoPr.numeroPr} na branch '${nomeSimplesBranch}' em sugestoes_branches`),
+      {
+        dsn: obterDsnSentryPadrao(contexto?.sentryDsn),
+        servico: "supabase-create-pr",
+        requisicao,
+        tags: { etapa: "atualizar_metadados_pr" },
+        extras: { branch: nomeSimplesBranch, numeroPr: resultadoPr.numeroPr },
+      },
+      contexto?.relatorSentry,
+    );
+  }
 
   const respostaCriada: RespostaCriarPullRequest = {
     numero_pr: resultadoPr.numeroPr,
@@ -287,4 +313,3 @@ async function executarFluxoCreatePr(
 if (import.meta.main) {
   Deno.serve((req) => processarRequisicaoCreatePr(req));
 }
-
