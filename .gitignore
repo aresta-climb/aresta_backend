@@ -23,6 +23,8 @@ node_modules/
 
 # Cloudflare Wrangler
 .wrangler/
+.dev.vars
+.dev.vars.*
 
 # Deno
 # https://deno.com/

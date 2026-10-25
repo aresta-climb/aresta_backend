@@ -5,6 +5,7 @@ import { assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
 import {
   ClienteDiscordFake,
   ClienteGithubAppFake,
+  ClienteNtfyFake,
   ClienteResendFake,
   ClienteSentryFake,
   ClienteWahaFake,
@@ -258,4 +259,55 @@ Deno.test("FilaRetentativasFake: enfileira, lista e remove itens pendentes em me
   });
   filaFake.limpar();
   assertEquals((await filaFake.listarPendentes()).length, 0);
+});
+
+Deno.test("ClienteNtfyFake: registra notificacoes push com prioridade, icone e acoes e permite simular falha e limpeza", async () => {
+  const ntfyFake = new ClienteNtfyFake();
+
+  const resSucesso = await ntfyFake.enviarNotificacaoPush({
+    urlBase: "https://ntfy.sh",
+    topico: "aresta-emergencias-123",
+    titulo: "Aresta Climb • 🚨 [EMERGÊNCIA] Crash Fatal",
+    mensagem: "Detalhes do crash",
+    prioridade: 5,
+    tags: ["rotating_light", "emergencia"],
+    iconeUrl: "https://alertas.arestaclimb.com/icones/emergencia.webp",
+    urlClique: "https://github.com/aresta-climb/aresta_backend/issues/1",
+    acoes: [
+      {
+        action: "view",
+        label: "Abrir no GitHub",
+        url: "https://github.com/aresta-climb/aresta_backend/issues/1",
+      },
+    ],
+    tokenApi: "tk_secreto",
+  });
+
+  assertEquals(resSucesso.sucesso, true);
+  assertEquals(resSucesso.statusHttp, 200);
+  assertEquals(ntfyFake.notificacoesEnviadas.length, 1);
+  assertEquals(ntfyFake.notificacoesEnviadas[0].prioridade, 5);
+  assertEquals(
+    ntfyFake.notificacoesEnviadas[0].iconeUrl,
+    "https://alertas.arestaclimb.com/icones/emergencia.webp",
+  );
+
+  ntfyFake.deveFalhar = true;
+  ntfyFake.statusFalha = 502;
+  ntfyFake.mensagemFalha = "ntfy indisponível";
+
+  const resFalha = await ntfyFake.enviarNotificacaoPush({
+    urlBase: "https://ntfy.sh",
+    topico: "aresta-bugs-123",
+    titulo: "Bug",
+    mensagem: "Detalhe",
+    prioridade: 3,
+  });
+  assertEquals(resFalha.sucesso, false);
+  assertEquals(resFalha.statusHttp, 502);
+  assertEquals(resFalha.erro, "ntfy indisponível");
+
+  ntfyFake.limpar();
+  assertEquals(ntfyFake.notificacoesEnviadas.length, 0);
+  assertEquals(ntfyFake.deveFalhar, false);
 });

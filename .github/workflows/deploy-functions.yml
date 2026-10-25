@@ -5,8 +5,11 @@ on:
     branches:
       - main
     paths:
+      - 'aresta_api'
+      - 'supabase/config.toml'
       - 'supabase/functions/**'
       - 'supabase/migrations/**'
+      - '.github/workflows/deploy-functions.yml'
   workflow_dispatch:
 
 jobs:
@@ -20,6 +23,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
+        with:
+          submodules: recursive
 
       - name: Setup Supabase CLI
         uses: supabase/setup-cli@v3
@@ -28,12 +33,8 @@ jobs:
 
       - name: Push Database Migrations
         run: |
-          if [ -z "$SUPABASE_DB_PASSWORD" ]; then
-            echo "::warning::Secret SUPABASE_DB_PASSWORD não configurado nos Secrets do GitHub. Pulei o 'supabase db push'. Configure o secret com a senha do banco Postgres para habilitar migrations automáticas."
-          else
-            supabase link --project-ref "$PROJECT_ID" --password "$SUPABASE_DB_PASSWORD"
-            supabase db push --password "$SUPABASE_DB_PASSWORD"
-          fi
+          supabase link --project-ref "$PROJECT_ID" --password "$SUPABASE_DB_PASSWORD"
+          supabase db push --password "$SUPABASE_DB_PASSWORD"
 
   deploy:
     name: Deploy ${{ matrix.function }}
@@ -53,6 +54,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
+        with:
+          submodules: recursive
 
       - name: Setup Supabase CLI
         uses: supabase/setup-cli@v3

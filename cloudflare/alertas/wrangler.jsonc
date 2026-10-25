@@ -9,6 +9,7 @@
   "upload_source_maps": true,
   "vars": {
     "CANAL_ALERTAS_ATIVO": "discord",
+    "NTFY_BASE_URL": "https://ntfy.sh",
     "WAHA_SESSION": "default",
     "EMAIL_REMETENTE_ALERTA": "alerta@login.arestaclimb.com",
     "EMAIL_DESTINATARIO_FALLBACK": "contato@arestaclimb.com"

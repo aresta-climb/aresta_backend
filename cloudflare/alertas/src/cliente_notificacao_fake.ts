@@ -134,6 +134,7 @@ export class ClienteResendFake implements InterfaceClienteResend {
 export interface OpcoesEnvioDiscord {
   urlWebhook: string;
   texto: string;
+  avatarUrl?: string;
 }
 
 /**
@@ -363,11 +364,86 @@ export class ClienteSentryFake implements InterfaceClienteSentry {
 }
 
 /**
- * Representa uma tarefa pendente de retentativa (criação de Issue no GitHub ou envio ao Discord).
+ * Ação clicável (botão) em uma notificação push do `ntfy`.
+ */
+export interface AcaoNtfy {
+  action: "view";
+  label: string;
+  url: string;
+}
+
+/**
+ * Parâmetros para envio de notificação push móvel via `ntfy`.
+ */
+export interface OpcoesEnvioNtfy {
+  urlBase: string;
+  topico: string;
+  titulo: string;
+  mensagem: string;
+  prioridade: 1 | 2 | 3 | 4 | 5;
+  tags?: string[];
+  iconeUrl?: string;
+  urlClique?: string;
+  acoes?: AcaoNtfy[];
+  tokenApi?: string;
+}
+
+/**
+ * Resultado da tentativa de envio via `ntfy`.
+ */
+export interface ResultadoEnvioNtfy {
+  sucesso: boolean;
+  statusHttp: number;
+  erro?: string;
+}
+
+/**
+ * Contrato de fronteira para o cliente de notificações push `ntfy`.
+ */
+export interface InterfaceClienteNtfy {
+  enviarNotificacaoPush(opcoes: OpcoesEnvioNtfy): Promise<ResultadoEnvioNtfy>;
+}
+
+/**
+ * Implementação Fake determinística em memória do cliente `ntfy` para testes comportamentais.
+ */
+export class ClienteNtfyFake implements InterfaceClienteNtfy {
+  public readonly notificacoesEnviadas: OpcoesEnvioNtfy[] = [];
+  public deveFalhar = false;
+  public statusFalha = 502;
+  public mensagemFalha = "Servidor ntfy indisponível";
+
+  async enviarNotificacaoPush(opcoes: OpcoesEnvioNtfy): Promise<ResultadoEnvioNtfy> {
+    if (this.deveFalhar) {
+      return {
+        sucesso: false,
+        statusHttp: this.statusFalha,
+        erro: this.mensagemFalha,
+      };
+    }
+
+    this.notificacoesEnviadas.push(structuredClone(opcoes));
+
+    return {
+      sucesso: true,
+      statusHttp: 200,
+    };
+  }
+
+  limpar(): void {
+    this.notificacoesEnviadas.length = 0;
+    this.deveFalhar = false;
+    this.statusFalha = 502;
+    this.mensagemFalha = "Servidor ntfy indisponível";
+  }
+}
+
+/**
+ * Representa uma tarefa pendente de retentativa (criação de Issue no GitHub, envio ao Discord ou envio ao ntfy).
  */
 export interface ItemFilaRetentativa {
   id: string;
-  tipo: "criar_issue_emergencia" | "enviar_notificacao_discord";
+  tipo: "criar_issue_emergencia" | "enviar_notificacao_discord" | "enviar_notificacao_ntfy";
   criadoEmIso: string;
   tentativas: number;
   dadosIssue?: {
@@ -381,6 +457,7 @@ export interface ItemFilaRetentativa {
     categoria: "emergencias" | "bugs";
     texto: string;
   };
+  dadosNtfy?: OpcoesEnvioNtfy;
 }
 
 /**

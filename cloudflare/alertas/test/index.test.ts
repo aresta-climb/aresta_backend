@@ -8,16 +8,22 @@ import {
 import {
   ClienteDiscordFake,
   ClienteGithubAppFake,
+  ClienteNtfyFake,
   ClienteResendFake,
   ClienteSentryFake,
   ClienteWahaFake,
   FilaRetentativasFake,
 } from "../src/cliente_notificacao_fake.ts";
+import {
+  URL_ICONE_EMERGENCIA,
+  URL_ICONE_FEEDBACK_BUGS,
+} from "../src/icones_alertas_webp.ts";
 import worker, {
   AmbienteAlertas,
   assinarHmacSha256Hex,
   ClienteDiscordHttp,
   ClienteGithubAppHttp,
+  ClienteNtfyHttp,
   ClienteResendHttp,
   ClienteSentryHttp,
   ClienteWahaHttp,
@@ -526,7 +532,8 @@ Deno.test("alertas-worker: despacha para Webhook do Discord (com @everyone) quan
   assertEquals(jsonFatal.entregueVia, "discord");
   assertEquals(discordFake.mensagensEnviadas.length, 1);
   assertEquals(discordFake.mensagensEnviadas[0].urlWebhook, env.DISCORD_WEBHOOK_EMERGENCIAS_URL);
-  assertStringIncludes(discordFake.mensagensEnviadas[0].texto, "@everyone");
+  assertEquals(discordFake.mensagensEnviadas[0].texto.includes("@everyone"), false);
+  assertEquals(discordFake.mensagensEnviadas[0].avatarUrl, URL_ICONE_EMERGENCIA);
   assertStringIncludes(discordFake.mensagensEnviadas[0].texto, "Crash fatal em produção");
 
   // 2. Alerta de Bug / Nova Issue (GitHub)
@@ -557,7 +564,8 @@ Deno.test("alertas-worker: despacha para Webhook do Discord (com @everyone) quan
   assertEquals(jsonIssue.entregueVia, "discord");
   assertEquals(discordFake.mensagensEnviadas.length, 2);
   assertEquals(discordFake.mensagensEnviadas[1].urlWebhook, env.DISCORD_WEBHOOK_BUGS_URL);
-  assertStringIncludes(discordFake.mensagensEnviadas[1].texto, "@everyone");
+  assertEquals(discordFake.mensagensEnviadas[1].texto.includes("@everyone"), false);
+  assertEquals(discordFake.mensagensEnviadas[1].avatarUrl, URL_ICONE_FEEDBACK_BUGS);
   assertStringIncludes(discordFake.mensagensEnviadas[1].texto, "Erro ao abrir foto de croqui");
   assertEquals(resendFake.emailsEnviados.length, 0);
 });
@@ -647,7 +655,7 @@ Deno.test("alertas-worker: aciona fallback Resend quando Discord configurado fal
   assertStringIncludes(resendFake.emailsEnviados[0].motivoFalhaWaha, "Discord API indisponível");
 });
 
-Deno.test("ClienteDiscordHttp: envia webhook real formatado com @everyone, trunca textos longos e trata erros", async () => {
+Deno.test("ClienteDiscordHttp: envia webhook real silencioso (sem @everyone), define avatar_url, trunca textos longos e trata erros", async () => {
   const chamadas: Array<{ url: string; corpoJson: any }> = [];
   const fetchSucesso: typeof fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
     chamadas.push({
@@ -660,15 +668,17 @@ Deno.test("ClienteDiscordHttp: envia webhook real formatado com @everyone, trunc
   const discordHttp = new ClienteDiscordHttp(fetchSucesso);
   const resSucesso = await discordHttp.enviarMensagemWebhook({
     urlWebhook: "https://discord.com/api/webhooks/123/xyz",
-    texto: "🚨 Emergência teste",
+    texto: "🚨 Emergência teste\n\n@everyone",
+    avatarUrl: URL_ICONE_EMERGENCIA,
   });
   assertEquals(resSucesso.sucesso, true);
   assertEquals(resSucesso.statusHttp, 204);
   assertEquals(chamadas.length, 1);
   assertEquals(chamadas[0].url, "https://discord.com/api/webhooks/123/xyz");
-  assertStringIncludes(chamadas[0].corpoJson.content, "@everyone");
+  assertEquals(chamadas[0].corpoJson.content.includes("@everyone"), false);
   assertStringIncludes(chamadas[0].corpoJson.content, "Emergência teste");
-  assertEquals(chamadas[0].corpoJson.allowed_mentions.parse, ["everyone"]);
+  assertEquals(chamadas[0].corpoJson.allowed_mentions.parse, []);
+  assertEquals(chamadas[0].corpoJson.avatar_url, URL_ICONE_EMERGENCIA);
 
   // Teste de truncamento preventivo (> 2000 chars)
   const textoLongo = "A".repeat(2500);
@@ -678,6 +688,7 @@ Deno.test("ClienteDiscordHttp: envia webhook real formatado com @everyone, trunc
   });
   assertEquals(resLongo.sucesso, true);
   assertEquals(chamadas[1].corpoJson.content.length <= 1990, true);
+  assertEquals(chamadas[1].corpoJson.avatar_url, undefined);
 
   // Erro HTTP do Discord
   const fetchErro: typeof fetch = async () => new Response("Rate limited", { status: 429 });
@@ -849,7 +860,7 @@ Deno.test("alertas-worker: CANAL_ALERTAS_ATIVO='whatsapp' forca envio apenas ao 
   assertEquals(resendFake.emailsEnviados.length, 0);
 });
 
-Deno.test("alertas-worker: posiciona o gist na primeira linha e @everyone no rodape da mensagem do Discord", async () => {
+Deno.test("alertas-worker: posiciona o gist na primeira linha, define avatarUrl customizado e nao inclui @everyone na mensagem do Discord", async () => {
   const discordFake = new ClienteDiscordFake();
   const resendFake = new ClienteResendFake();
   const env = criarAmbientePadrao(undefined, resendFake, discordFake);
@@ -881,10 +892,8 @@ Deno.test("alertas-worker: posiciona o gist na primeira linha e @everyone no rod
   assertEquals(res.status, 200);
   assertEquals(discordFake.mensagensEnviadas.length, 1);
   const textoEnviado = discordFake.mensagensEnviadas[0].texto;
-  // A primeira linha NÃO deve começar com @everyone; deve começar com o gist
-  assertEquals(textoEnviado.startsWith("@everyone"), false);
-  // Deve terminar com @everyone no rodapé
-  assertEquals(textoEnviado.endsWith("\n\n@everyone"), true);
+  assertEquals(textoEnviado.includes("@everyone"), false);
+  assertEquals(discordFake.mensagensEnviadas[0].avatarUrl, URL_ICONE_FEEDBACK_BUGS);
   assertStringIncludes(textoEnviado.split("\n")[0], "Falha ao carregar foto offline");
 });
 
@@ -1438,4 +1447,253 @@ Deno.test("ClienteGithubAppHttp: assina JWT RS256 (PKCS#8 e PKCS#1), obtem insta
   assertEquals(resSync.sucesso, true);
   assertEquals(resSync.issuesAtualizadas, 1);
   assertEquals(chamadasUrl.length, 5);
+});
+
+Deno.test("alertas-worker: serve icones WebP comprimidos em /icones/emergencia.webp e /icones/feedback_bugs.webp", async () => {
+  const env = criarAmbientePadrao();
+
+  const resEmergencia = await worker.fetch(
+    new Request("https://alertas.arestaclimb.com/icones/emergencia.webp", { method: "GET" }),
+    env,
+  );
+  assertEquals(resEmergencia.status, 200);
+  assertEquals(resEmergencia.headers.get("content-type"), "image/webp");
+  assertStringIncludes(resEmergencia.headers.get("cache-control") || "", "immutable");
+  const bytesEmergencia = new Uint8Array(await resEmergencia.arrayBuffer());
+  assertEquals(bytesEmergencia.length > 1000 && bytesEmergencia.length < 25000, true);
+  assertEquals(new TextDecoder().decode(bytesEmergencia.slice(0, 4)), "RIFF");
+  assertEquals(new TextDecoder().decode(bytesEmergencia.slice(8, 12)), "WEBP");
+
+  const resBugs = await worker.fetch(
+    new Request("https://alertas.arestaclimb.com/icones/feedback_bugs.webp", { method: "GET" }),
+    env,
+  );
+  assertEquals(resBugs.status, 200);
+  assertEquals(resBugs.headers.get("content-type"), "image/webp");
+  const bytesBugs = new Uint8Array(await resBugs.arrayBuffer());
+  assertEquals(bytesBugs.length > 1000 && bytesBugs.length < 25000, true);
+  assertEquals(new TextDecoder().decode(bytesBugs.slice(0, 4)), "RIFF");
+  assertEquals(new TextDecoder().decode(bytesBugs.slice(8, 12)), "WEBP");
+});
+
+Deno.test("alertas-worker: despacha notificacoes push ricas via ntfy com prioridade 5 (emergencias), prioridade 3 (bugs), icones WebP e botoes de acao", async () => {
+  const discordFake = new ClienteDiscordFake();
+  const ntfyFake = new ClienteNtfyFake();
+  const githubFake = new ClienteGithubAppFake();
+  const resendFake = new ClienteResendFake();
+  const env = criarAmbientePadrao(undefined, resendFake, discordFake);
+  env.CANAL_ALERTAS_ATIVO = "discord";
+  env.NTFY_BASE_URL = "https://ntfy.sh";
+  env.NTFY_TOPICO_EMERGENCIAS = "aresta-emergencias-segredo-999";
+  env.NTFY_TOPICO_BUGS = "aresta-bugs-segredo-888";
+  env.NTFY_API_TOKEN = "tk_ntfy_secreto";
+  env.ARESTA_CLIMB_BOT_GITHUB_APP_CLIENT_ID = "app-id";
+  env.ARESTA_CLIMB_BOT_GITHUB_APP_PRIVATE_KEY = "key";
+  env.ARESTA_CLIMB_BOT_GITHUB_APP_INSTALLATION_ID = "123";
+  env.clienteNtfy = ntfyFake;
+  env.clienteGithubApp = githubFake;
+
+  // 1. Emergência (Sentry Fatal) -> cria issue #1 e envia push ntfy com prioridade 5
+  const corpoFatal = JSON.stringify({
+    action: "triggered",
+    data: {
+      event: {
+        level: "fatal",
+        title: "Out of memory no SyncWorker",
+        web_url: "https://aresta-climb.sentry.io/issues/7070/",
+        tags: [["service", "aresta-app"]],
+      },
+    },
+  });
+  const sigFatal = await assinarHmacSha256Hex(env.SENTRY_WEBHOOK_SECRET, corpoFatal);
+
+  const resFatal = await worker.fetch(
+    new Request("https://alertas.arestaclimb.com/webhook/sentry", {
+      method: "POST",
+      headers: {
+        "sentry-hook-signature": sigFatal,
+        "sentry-hook-resource": "event_alert",
+      },
+      body: corpoFatal,
+    }),
+    env,
+  );
+  assertEquals(resFatal.status, 200);
+  const jsonFatal = await resFatal.json();
+  assertStringIncludes(jsonFatal.entregueVia, "discord");
+  assertStringIncludes(jsonFatal.entregueVia, "ntfy");
+
+  assertEquals(ntfyFake.notificacoesEnviadas.length, 1);
+  const pushEmergencia = ntfyFake.notificacoesEnviadas[0];
+  assertEquals(pushEmergencia.topico, "aresta-emergencias-segredo-999");
+  assertEquals(pushEmergencia.prioridade, 5);
+  assertEquals(pushEmergencia.iconeUrl, URL_ICONE_EMERGENCIA);
+  assertEquals(pushEmergencia.tokenApi, "tk_ntfy_secreto");
+  assertStringIncludes(pushEmergencia.titulo, "Aresta Climb •");
+  assertStringIncludes(pushEmergencia.mensagem, "Out of memory no SyncWorker");
+  assertEquals(pushEmergencia.urlClique, "https://github.com/aresta-climb/aresta_app/issues/1");
+  assertEquals((pushEmergencia.acoes || []).length >= 2, true);
+  assertEquals(pushEmergencia.acoes?.[0].label, "Abrir no GitHub");
+  assertEquals(pushEmergencia.acoes?.[0].url, "https://github.com/aresta-climb/aresta_app/issues/1");
+
+  // 2. Bug / Nova Issue no GitHub -> envia push ntfy com prioridade 3
+  const corpoBug = JSON.stringify({
+    action: "opened",
+    repository: { full_name: "aresta-climb/aresta_app" },
+    issue: {
+      number: 88,
+      title: "Filtro de graduação não limpa",
+      html_url: "https://github.com/aresta-climb/aresta_app/issues/88",
+      labels: [{ name: "bug" }],
+    },
+  });
+  const sigBug = await assinarHmacSha256Hex(env.GITHUB_WEBHOOK_SECRET, corpoBug);
+
+  const resBug = await worker.fetch(
+    new Request("https://alertas.arestaclimb.com/webhook/github", {
+      method: "POST",
+      headers: {
+        "x-github-event": "issues",
+        "x-hub-signature-256": `sha256=${sigBug}`,
+      },
+      body: corpoBug,
+    }),
+    env,
+  );
+  assertEquals(resBug.status, 200);
+  assertEquals(ntfyFake.notificacoesEnviadas.length, 2);
+  const pushBug = ntfyFake.notificacoesEnviadas[1];
+  assertEquals(pushBug.topico, "aresta-bugs-segredo-888");
+  assertEquals(pushBug.prioridade, 3);
+  assertEquals(pushBug.iconeUrl, URL_ICONE_FEEDBACK_BUGS);
+  assertStringIncludes(pushBug.titulo, "Aresta Climb •");
+  assertEquals(pushBug.urlClique, "https://github.com/aresta-climb/aresta_app/issues/88");
+  assertEquals(pushBug.acoes?.[0].url, "https://github.com/aresta-climb/aresta_app/issues/88");
+});
+
+Deno.test("ClienteNtfyHttp: envia POST JSON ao servidor ntfy com Authorization Bearer opcional e trata falhas", async () => {
+  const chamadas: Array<{ url: string; headers: Record<string, string>; corpo: any }> = [];
+  const fetchSucesso: typeof fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+    const hdrs: Record<string, string> = {};
+    new Headers(init?.headers).forEach((v, k) => {
+      hdrs[k.toLowerCase()] = v;
+    });
+    chamadas.push({
+      url: String(input),
+      headers: hdrs,
+      corpo: JSON.parse(String(init?.body || "{}")),
+    });
+    return new Response(JSON.stringify({ id: "msg_123" }), { status: 200 });
+  };
+
+  const ntfyHttp = new ClienteNtfyHttp(fetchSucesso);
+  const resOk = await ntfyHttp.enviarNotificacaoPush({
+    urlBase: "https://ntfy.sh/",
+    topico: "aresta-emergencias-xyz",
+    titulo: "Aresta Climb • 🚨 [EMERGÊNCIA] Crash",
+    mensagem: "Detalhe do crash",
+    prioridade: 5,
+    tags: ["rotating_light", "aresta-emergencia"],
+    iconeUrl: URL_ICONE_EMERGENCIA,
+    urlClique: "https://github.com/aresta-climb/aresta_app/issues/1",
+    acoes: [
+      {
+        action: "view",
+        label: "Abrir no GitHub",
+        url: "https://github.com/aresta-climb/aresta_app/issues/1",
+      },
+    ],
+    tokenApi: "tk_secreto_123",
+  });
+
+  assertEquals(resOk.sucesso, true);
+  assertEquals(resOk.statusHttp, 200);
+  assertEquals(chamadas.length, 1);
+  assertEquals(chamadas[0].url, "https://ntfy.sh");
+  assertEquals(chamadas[0].headers["authorization"], "Bearer tk_secreto_123");
+  assertEquals(chamadas[0].corpo.topic, "aresta-emergencias-xyz");
+  assertEquals(chamadas[0].corpo.priority, 5);
+  assertEquals(chamadas[0].corpo.icon, URL_ICONE_EMERGENCIA);
+  assertEquals(chamadas[0].corpo.click, "https://github.com/aresta-climb/aresta_app/issues/1");
+  assertEquals(chamadas[0].corpo.actions.length, 1);
+
+  const fetchErro: typeof fetch = async () => new Response("Too Many Requests", { status: 429 });
+  const resErro = await new ClienteNtfyHttp(fetchErro).enviarNotificacaoPush({
+    urlBase: "https://ntfy.sh",
+    topico: "topico",
+    titulo: "Titulo",
+    mensagem: "Msg",
+    prioridade: 3,
+    tags: [],
+    iconeUrl: URL_ICONE_FEEDBACK_BUGS,
+  });
+  assertEquals(resErro.sucesso, false);
+  assertEquals(resErro.statusHttp, 429);
+
+  const fetchExcecao: typeof fetch = async () => {
+    throw new Error("Connection reset");
+  };
+  const resExcecao = await new ClienteNtfyHttp(fetchExcecao).enviarNotificacaoPush({
+    urlBase: "https://ntfy.sh",
+    topico: "topico",
+    titulo: "Titulo",
+    mensagem: "Msg",
+    prioridade: 3,
+    tags: [],
+    iconeUrl: URL_ICONE_FEEDBACK_BUGS,
+  });
+  assertEquals(resExcecao.sucesso, false);
+  assertEquals(resExcecao.statusHttp, 0);
+  assertStringIncludes(resExcecao.erro || "", "Connection reset");
+});
+
+Deno.test("alertas-worker: enfileira falha do ntfy em FILA_RETENTATIVAS_ALERTAS e reprocessa no Cron Trigger", async () => {
+  const discordFake = new ClienteDiscordFake();
+  const ntfyFake = new ClienteNtfyFake();
+  const resendFake = new ClienteResendFake();
+  const filaFake = new FilaRetentativasFake();
+
+  const env = criarAmbientePadrao(undefined, resendFake, discordFake);
+  env.CANAL_ALERTAS_ATIVO = "discord";
+  env.NTFY_TOPICO_BUGS = "aresta-bugs-segredo-888";
+  env.clienteNtfy = ntfyFake;
+  env.filaRetentativas = filaFake;
+
+  // ntfy falha temporariamente, mas Discord funciona
+  ntfyFake.deveFalhar = true;
+
+  const corpoBug = JSON.stringify({
+    action: "opened",
+    repository: { full_name: "aresta-climb/aresta_app" },
+    issue: {
+      number: 99,
+      title: "Bug teste retentativa ntfy",
+      html_url: "https://github.com/aresta-climb/aresta_app/issues/99",
+    },
+  });
+  const sigBug = await assinarHmacSha256Hex(env.GITHUB_WEBHOOK_SECRET, corpoBug);
+
+  const res = await worker.fetch(
+    new Request("https://alertas.arestaclimb.com/webhook/github", {
+      method: "POST",
+      headers: {
+        "x-github-event": "issues",
+        "x-hub-signature-256": `sha256=${sigBug}`,
+      },
+      body: corpoBug,
+    }),
+    env,
+  );
+  assertEquals(res.status, 200);
+  const pendentesAntes = await filaFake.listarPendentes();
+  assertEquals(pendentesAntes.length, 1);
+  assertEquals(pendentesAntes[0].tipo, "enviar_notificacao_ntfy");
+
+  // ntfy volta a ficar disponível no próximo ciclo do Cron Trigger
+  ntfyFake.deveFalhar = false;
+  await processarFilaRetentativas(env);
+
+  assertEquals((await filaFake.listarPendentes()).length, 0);
+  assertEquals(ntfyFake.notificacoesEnviadas.length, 1);
+  assertEquals(ntfyFake.notificacoesEnviadas[0].topico, "aresta-bugs-segredo-888");
 });

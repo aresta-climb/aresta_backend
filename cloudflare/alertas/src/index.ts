@@ -24,8 +24,10 @@
  */
 
 import {
+  AcaoNtfy,
   InterfaceClienteDiscord,
   InterfaceClienteGithubApp,
+  InterfaceClienteNtfy,
   InterfaceClienteResend,
   InterfaceClienteSentry,
   InterfaceClienteWaha,
@@ -34,16 +36,24 @@ import {
   OpcoesAtualizarStatusSentry,
   OpcoesCriarIssueGithub,
   OpcoesEnvioDiscord,
+  OpcoesEnvioNtfy,
   OpcoesEnvioResend,
   OpcoesEnvioWaha,
   OpcoesSincronizarEstadoIssueGithub,
   ResultadoAtualizarStatusSentry,
   ResultadoCriarIssueGithub,
   ResultadoEnvioDiscord,
+  ResultadoEnvioNtfy,
   ResultadoEnvioResend,
   ResultadoEnvioWaha,
   ResultadoSincronizarEstadoIssueGithub,
 } from "./cliente_notificacao_fake.ts";
+import {
+  ICONE_EMERGENCIA_WEBP_BASE64,
+  ICONE_FEEDBACK_BUGS_WEBP_BASE64,
+  URL_ICONE_EMERGENCIA,
+  URL_ICONE_FEEDBACK_BUGS,
+} from "./icones_alertas_webp.ts";
 import * as Sentry from "@sentry/cloudflare";
 
 export interface KvNamespaceCompativel {
@@ -57,6 +67,10 @@ export interface AmbienteAlertas {
   CANAL_ALERTAS_ATIVO?: "discord" | "whatsapp" | "ambos";
   DISCORD_WEBHOOK_EMERGENCIAS_URL?: string;
   DISCORD_WEBHOOK_BUGS_URL?: string;
+  NTFY_BASE_URL?: string;
+  NTFY_TOPICO_EMERGENCIAS?: string;
+  NTFY_TOPICO_BUGS?: string;
+  NTFY_API_TOKEN?: string;
   WAHA_BASE_URL?: string;
   WAHA_API_KEY?: string;
   WAHA_SESSION?: string;
@@ -74,6 +88,7 @@ export interface AmbienteAlertas {
   SENTRY_DSN?: string;
   FILA_RETENTATIVAS_ALERTAS?: KvNamespaceCompativel;
   clienteDiscord?: InterfaceClienteDiscord;
+  clienteNtfy?: InterfaceClienteNtfy;
   clienteWaha?: InterfaceClienteWaha;
   clienteResend?: InterfaceClienteResend;
   clienteGithubApp?: InterfaceClienteGithubApp;
@@ -88,23 +103,21 @@ const CABECALHOS_PADRAO: Record<string, string> = {
     "Content-Type, sentry-hook-signature, sentry-hook-resource, x-hub-signature-256, x-github-event",
 };
 
-const SUFIXO_MENCAO_DISCORD = "\n\n@everyone";
-
 /**
- * Formata o texto para envio ao Discord garantindo o resumo (gist) na primeira linha
- * e a menção `@everyone` posicionada no rodapé dentro do limite de 2000 caracteres.
+ * Formata o texto para envio ao mural do Discord sem menções sonoras (`@everyone`),
+ * preservando o resumo (gist) na primeira linha e respeitando o limite de 2000 caracteres.
  */
-export function formatarTextoComMencaoNoRodape(texto: string): string {
+export function formatarTextoMuralDiscord(texto: string): string {
   const textoLimpo = texto.replace(/^@everyone\s*/i, "").replace(/\s*@everyone$/i, "").trim();
-  const limiteCorpo = 1990 - SUFIXO_MENCAO_DISCORD.length;
-  const corpoTruncado = textoLimpo.length > limiteCorpo
+  const limiteCorpo = 1990;
+  return textoLimpo.length > limiteCorpo
     ? `${textoLimpo.slice(0, limiteCorpo - 3)}...`
     : textoLimpo;
-  return `${corpoTruncado}${SUFIXO_MENCAO_DISCORD}`;
 }
 
 /**
  * Implementação HTTP real do cliente Discord Incoming Webhook (`POST <webhook_url>`).
+ * Opera como mural silencioso (`allowed_mentions: { parse: [] }`) e aplica `avatar_url` por categoria.
  */
 export class ClienteDiscordHttp implements InterfaceClienteDiscord {
   private readonly fetchImpl: typeof fetch;
@@ -115,7 +128,7 @@ export class ClienteDiscordHttp implements InterfaceClienteDiscord {
 
   async enviarMensagemWebhook(opcoes: OpcoesEnvioDiscord): Promise<ResultadoEnvioDiscord> {
     try {
-      const conteudoAjustado = formatarTextoComMencaoNoRodape(opcoes.texto);
+      const conteudoAjustado = formatarTextoMuralDiscord(opcoes.texto);
 
       const resposta = await this.fetchImpl(opcoes.urlWebhook, {
         method: "POST",
@@ -124,7 +137,69 @@ export class ClienteDiscordHttp implements InterfaceClienteDiscord {
         },
         body: JSON.stringify({
           content: conteudoAjustado,
-          allowed_mentions: { parse: ["everyone"] },
+          allowed_mentions: { parse: [] },
+          ...(opcoes.avatarUrl ? { avatar_url: opcoes.avatarUrl } : {}),
+        }),
+      });
+
+      if (!resposta.ok) {
+        const detalhe = await resposta.text();
+        return {
+          sucesso: false,
+          statusHttp: resposta.status,
+          erro: `HTTP ${resposta.status}: ${detalhe}`,
+        };
+      }
+
+      return {
+        sucesso: true,
+        statusHttp: resposta.status,
+      };
+    } catch (erro: unknown) {
+      const msg = erro instanceof Error ? erro.message : String(erro);
+      return {
+        sucesso: false,
+        statusHttp: 0,
+        erro: msg,
+      };
+    }
+  }
+}
+
+/**
+ * Implementação HTTP real do cliente `ntfy` (`POST <urlBase>`) para notificações push móveis
+ * dedicadas com prioridade por categoria, ícone WebP customizado e botões de ação clicáveis.
+ */
+export class ClienteNtfyHttp implements InterfaceClienteNtfy {
+  private readonly fetchImpl: typeof fetch;
+
+  constructor(fetchImpl: typeof fetch = globalThis.fetch.bind(globalThis)) {
+    this.fetchImpl = fetchImpl;
+  }
+
+  async enviarNotificacaoPush(opcoes: OpcoesEnvioNtfy): Promise<ResultadoEnvioNtfy> {
+    const url = opcoes.urlBase.replace(/\/+$/, "");
+
+    try {
+      const cabecalhos: Record<string, string> = {
+        "Content-Type": "application/json",
+      };
+      if (opcoes.tokenApi) {
+        cabecalhos["Authorization"] = `Bearer ${opcoes.tokenApi}`;
+      }
+
+      const resposta = await this.fetchImpl(url, {
+        method: "POST",
+        headers: cabecalhos,
+        body: JSON.stringify({
+          topic: opcoes.topico,
+          title: opcoes.titulo,
+          message: opcoes.mensagem,
+          priority: opcoes.prioridade,
+          tags: opcoes.tags,
+          icon: opcoes.iconeUrl,
+          ...(opcoes.urlClique ? { click: opcoes.urlClique } : {}),
+          ...(opcoes.acoes && opcoes.acoes.length > 0 ? { actions: opcoes.acoes } : {}),
         }),
       });
 
@@ -659,6 +734,8 @@ interface NotificacaoClassificada {
   grupoId?: string;
   assuntoFallback: string;
   texto: string;
+  urlOrigem?: string;
+  urlDiscussaoGithub?: string;
   dadosIssueEmergencia?: {
     repositorio: string;
     titulo: string;
@@ -718,6 +795,7 @@ function classificarWebhookSentry(
       categoria: "emergencias",
       grupoId: env.WHATSAPP_GRUPO_EMERGENCIAS_ID,
       assuntoFallback: `[CONTINGÊNCIA ALERTA] 🚨 ${titulo}`,
+      urlOrigem: url,
       texto: [
         `🚨 *[EMERGÊNCIA] ${titulo}*`,
         `• *Detalhe:* ${detalhe}`,
@@ -751,6 +829,7 @@ function classificarWebhookSentry(
       categoria: "emergencias",
       grupoId: env.WHATSAPP_GRUPO_EMERGENCIAS_ID,
       assuntoFallback: `[CONTINGÊNCIA ALERTA] 🚨 Crash Fatal em ${servicoTag}`,
+      urlOrigem: url,
       texto: [
         `🚨 *[EMERGÊNCIA] Crash Fatal em ${servicoTag}: ${titulo}*`,
         `• *Serviço:* \`${servicoTag}\``,
@@ -832,6 +911,7 @@ function classificarWebhookGithub(
         categoria: "emergencias",
         grupoId: env.WHATSAPP_GRUPO_EMERGENCIAS_ID,
         assuntoFallback: `[CONTINGÊNCIA ALERTA] 🚨 Falha de Deploy/CI em ${repositorio}`,
+        urlOrigem: urlRun || undefined,
         texto: [
           `🚨 *[EMERGÊNCIA] Falha de Deploy/CI em ${repositorio}: ${nomeWorkflow} (\`${branch}\`)*`,
           `• *Repositório:* \`${repositorio}\``,
@@ -880,6 +960,8 @@ function classificarWebhookGithub(
         categoria: "emergencias",
         grupoId: env.WHATSAPP_GRUPO_EMERGENCIAS_ID,
         assuntoFallback: `[CONTINGÊNCIA ALERTA] 🚨 Emergência Reaberta #${numero} em ${repositorio}`,
+        urlDiscussaoGithub: urlIssue || undefined,
+        urlOrigem: linkSentry || undefined,
         texto: [
           `🚨 *[EMERGÊNCIA REABERTA #${numero}] ${titulo}*`,
           `• *Repositório:* \`${repositorio}\` (#${numero})`,
@@ -909,6 +991,8 @@ function classificarWebhookGithub(
       categoria: "bugs",
       grupoId: env.WHATSAPP_GRUPO_BUGS_ID,
       assuntoFallback: `[CONTINGÊNCIA ALERTA] 🛠️ Issue #${numero} em ${repositorio}`,
+      urlDiscussaoGithub: urlIssue || undefined,
+      urlOrigem: linkSentry || undefined,
       texto: linhas.join("\n"),
     };
   }
@@ -926,6 +1010,7 @@ function classificarWebhookGithub(
       categoria: "bugs",
       grupoId: env.WHATSAPP_GRUPO_BUGS_ID,
       assuntoFallback: `[CONTINGÊNCIA ALERTA] 🔀 PR #${numero} em ${repositorio}`,
+      urlDiscussaoGithub: urlPr || undefined,
       texto: [
         `${prefixoGist} #${numero}] ${titulo}*`,
         `• *Repositório:* \`${repositorio}\` (#${numero})`,
@@ -964,7 +1049,65 @@ function obterClienteGithubApp(env: AmbienteAlertas): InterfaceClienteGithubApp 
 }
 
 /**
- * Entrega a notificação para o canal primário configurado (Discord e/ou WAHA),
+ * Constrói o payload de notificação push rica do `ntfy` com ícone WebP por categoria,
+ * prioridade (`5` para emergências e `3` para bugs) e botões de ação clicáveis.
+ */
+function construirOpcoesEnvioNtfy(
+  notificacao: NotificacaoClassificada,
+  topico: string,
+  env: AmbienteAlertas,
+): OpcoesEnvioNtfy {
+  const primeiraLinhaLimpa = notificacao.texto
+    .split("\n")[0]
+    .replace(/\*/g, "")
+    .replace(/`/g, "")
+    .trim();
+  const corpoDemaisLinhas = notificacao.texto
+    .split("\n")
+    .slice(1)
+    .join("\n")
+    .replace(/\*/g, "")
+    .trim();
+
+  const ehEmergencia = notificacao.categoria === "emergencias";
+  const acoes: AcaoNtfy[] = [];
+
+  if (notificacao.urlDiscussaoGithub) {
+    acoes.push({
+      action: "view",
+      label: "Abrir no GitHub",
+      url: notificacao.urlDiscussaoGithub,
+    });
+  }
+  if (
+    notificacao.urlOrigem &&
+    notificacao.urlOrigem !== notificacao.urlDiscussaoGithub
+  ) {
+    acoes.push({
+      action: "view",
+      label: "Ver Origem",
+      url: notificacao.urlOrigem,
+    });
+  }
+
+  return {
+    urlBase: env.NTFY_BASE_URL || "https://ntfy.sh",
+    topico,
+    titulo: `Aresta Climb • ${primeiraLinhaLimpa}`,
+    mensagem: corpoDemaisLinhas || primeiraLinhaLimpa,
+    prioridade: ehEmergencia ? 5 : 3,
+    tags: ehEmergencia
+      ? ["rotating_light", "aresta-emergencia"]
+      : ["wrench", "aresta-bugs"],
+    iconeUrl: ehEmergencia ? URL_ICONE_EMERGENCIA : URL_ICONE_FEEDBACK_BUGS,
+    urlClique: notificacao.urlDiscussaoGithub || notificacao.urlOrigem,
+    acoes: acoes.length > 0 ? acoes : undefined,
+    tokenApi: env.NTFY_API_TOKEN,
+  };
+}
+
+/**
+ * Entrega a notificação para o canal primário configurado (Discord mural, `ntfy` push e/ou WAHA),
  * criando previamente a GitHub Issue de emergência quando aplicável, e aciona
  * fallback via Resend + fila de retentativas em caso de falha.
  */
@@ -989,6 +1132,7 @@ async function despacharNotificacaoComFallback(
     });
 
     if (resIssue.sucesso && resIssue.urlIssue) {
+      notificacao.urlDiscussaoGithub = resIssue.urlIssue;
       notificacao.texto += `\n• *Discussão GitHub:* ${resIssue.urlIssue} (#${resIssue.numeroIssue})`;
     } else {
       notificacao.texto +=
@@ -1011,6 +1155,13 @@ async function despacharNotificacaoComFallback(
   const urlDiscord = notificacao.categoria === "emergencias"
     ? env.DISCORD_WEBHOOK_EMERGENCIAS_URL
     : env.DISCORD_WEBHOOK_BUGS_URL;
+  const avatarDiscord = notificacao.categoria === "emergencias"
+    ? URL_ICONE_EMERGENCIA
+    : URL_ICONE_FEEDBACK_BUGS;
+
+  const topicoNtfy = notificacao.categoria === "emergencias"
+    ? env.NTFY_TOPICO_EMERGENCIAS
+    : env.NTFY_TOPICO_BUGS;
 
   const wahaAtivo = Boolean(
     env.WAHA_BASE_URL &&
@@ -1028,20 +1179,20 @@ async function despacharNotificacaoComFallback(
   const permiteDiscord = modoCanal === "discord" || modoCanal === "ambos";
   const permiteWaha = modoCanal === "whatsapp" || modoCanal === "ambos";
 
-  let discordSucesso = false;
-  let wahaSucesso = false;
+  const canaisSucesso: string[] = [];
   const motivosFalha: string[] = [];
 
-  // 1. Tenta envio ao Discord se configurado (com gist na primeira linha e @everyone no rodapé)
+  // 1. Tenta envio ao mural do Discord se configurado (sem @everyone e com avatar WebP customizado)
   if (permiteDiscord && urlDiscord) {
-    const textoDiscord = formatarTextoComMencaoNoRodape(notificacao.texto);
+    const textoDiscord = formatarTextoMuralDiscord(notificacao.texto);
     const clienteDiscord = env.clienteDiscord || new ClienteDiscordHttp();
     const resultadoDiscord = await clienteDiscord.enviarMensagemWebhook({
       urlWebhook: urlDiscord,
       texto: textoDiscord,
+      avatarUrl: avatarDiscord,
     });
     if (resultadoDiscord.sucesso) {
-      discordSucesso = true;
+      canaisSucesso.push("discord");
     } else {
       motivosFalha.push(
         `Discord falhou: ${resultadoDiscord.erro || `Status HTTP ${resultadoDiscord.statusHttp}`}`,
@@ -1061,7 +1212,30 @@ async function despacharNotificacaoComFallback(
     }
   }
 
-  // 2. Tenta envio ao WAHA se configurado
+  // 2. Tenta envio push móvel dedicado via ntfy se configurado
+  if (topicoNtfy) {
+    const opcoesNtfy = construirOpcoesEnvioNtfy(notificacao, topicoNtfy, env);
+    const clienteNtfy = env.clienteNtfy || new ClienteNtfyHttp();
+    const resultadoNtfy = await clienteNtfy.enviarNotificacaoPush(opcoesNtfy);
+    if (resultadoNtfy.sucesso) {
+      canaisSucesso.push("ntfy");
+    } else {
+      motivosFalha.push(
+        `ntfy falhou: ${resultadoNtfy.erro || `Status HTTP ${resultadoNtfy.statusHttp}`}`,
+      );
+      if (fila) {
+        await fila.enfileirar({
+          id: `ntfy-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          tipo: "enviar_notificacao_ntfy",
+          criadoEmIso: new Date().toISOString(),
+          tentativas: 1,
+          dadosNtfy: opcoesNtfy,
+        });
+      }
+    }
+  }
+
+  // 3. Tenta envio ao WAHA se configurado
   if (permiteWaha && wahaAtivo && chatIdWaha) {
     const clienteWaha = env.clienteWaha || new ClienteWahaHttp();
     const resultadoWaha = await clienteWaha.enviarMensagemGrupo({
@@ -1072,7 +1246,7 @@ async function despacharNotificacaoComFallback(
       sessao: env.WAHA_SESSION,
     });
     if (resultadoWaha.sucesso) {
-      wahaSucesso = true;
+      canaisSucesso.push("whatsapp_waha");
     } else {
       motivosFalha.push(
         `WAHA falhou: ${resultadoWaha.erro || `Status HTTP ${resultadoWaha.statusHttp}`}`,
@@ -1081,12 +1255,8 @@ async function despacharNotificacaoComFallback(
   }
 
   // Se algum canal primário obteve sucesso, retorna 200
-  if (discordSucesso || wahaSucesso) {
-    const entregueVia = discordSucesso && wahaSucesso
-      ? "discord+whatsapp_waha"
-      : discordSucesso
-      ? "discord"
-      : "whatsapp_waha";
+  if (canaisSucesso.length > 0) {
+    const entregueVia = canaisSucesso.join("+");
 
     return new Response(
       JSON.stringify({ ok: true, entregueVia }),
@@ -1097,11 +1267,11 @@ async function despacharNotificacaoComFallback(
     );
   }
 
-  // 3. Fallback automático via Resend quando todos os canais configurados falharem
+  // 4. Fallback automático via Resend quando todos os canais configurados falharem
   const clienteResend = env.clienteResend || new ClienteResendHttp();
   const motivoConsolidado = motivosFalha.length > 0
     ? motivosFalha.join(" | ")
-    : "Nenhum canal primário (Discord ou WAHA) configurado no ambiente.";
+    : "Nenhum canal primário (Discord, ntfy ou WAHA) configurado no ambiente.";
 
   await clienteResend.enviarEmailFallback({
     chaveApi: env.RESEND_API_KEY,
@@ -1137,6 +1307,7 @@ export async function processarFilaRetentativas(env: AmbienteAlertas): Promise<v
   const pendentes = await fila.listarPendentes();
   const clienteGithub = obterClienteGithubApp(env);
   const clienteDiscord = env.clienteDiscord || new ClienteDiscordHttp();
+  const clienteNtfy = env.clienteNtfy || new ClienteNtfyHttp();
 
   for (const item of pendentes) {
     if (item.tipo === "criar_issue_emergencia" && item.dadosIssue && clienteGithub) {
@@ -1155,28 +1326,45 @@ export async function processarFilaRetentativas(env: AmbienteAlertas): Promise<v
         if (env.DISCORD_WEBHOOK_EMERGENCIAS_URL) {
           await clienteDiscord.enviarMensagemWebhook({
             urlWebhook: env.DISCORD_WEBHOOK_EMERGENCIAS_URL,
-            texto: formatarTextoComMencaoNoRodape(
+            texto: formatarTextoMuralDiscord(
               `✅ *[ISSUE DE EMERGÊNCIA CRIADA] ${item.dadosIssue.titulo}*\n• *Discussão GitHub:* ${resIssue.urlIssue} (#${resIssue.numeroIssue})`,
             ),
+            avatarUrl: URL_ICONE_EMERGENCIA,
           });
         }
       }
     } else if (item.tipo === "enviar_notificacao_discord" && item.dadosDiscord) {
-      const urlDestino = item.dadosDiscord.categoria === "emergencias"
+      const ehEmergencia = item.dadosDiscord.categoria === "emergencias";
+      const urlDestino = ehEmergencia
         ? env.DISCORD_WEBHOOK_EMERGENCIAS_URL
         : env.DISCORD_WEBHOOK_BUGS_URL;
 
       if (urlDestino) {
         const resDiscord = await clienteDiscord.enviarMensagemWebhook({
           urlWebhook: urlDestino,
-          texto: formatarTextoComMencaoNoRodape(item.dadosDiscord.texto),
+          texto: formatarTextoMuralDiscord(item.dadosDiscord.texto),
+          avatarUrl: ehEmergencia ? URL_ICONE_EMERGENCIA : URL_ICONE_FEEDBACK_BUGS,
         });
         if (resDiscord.sucesso) {
           await fila.remover(item.id);
         }
       }
+    } else if (item.tipo === "enviar_notificacao_ntfy" && item.dadosNtfy) {
+      const resNtfy = await clienteNtfy.enviarNotificacaoPush(item.dadosNtfy);
+      if (resNtfy.sucesso) {
+        await fila.remover(item.id);
+      }
     }
   }
+}
+
+function decodificarBase64ParaBytes(base64: string): Uint8Array {
+  const binario = atob(base64);
+  const bytes = new Uint8Array(binario.length);
+  for (let i = 0; i < binario.length; i++) {
+    bytes[i] = binario.charCodeAt(i);
+  }
+  return bytes;
 }
 
 export async function processarRequisicaoAlertas(
@@ -1201,6 +1389,24 @@ export async function processarRequisicaoAlertas(
         headers: { ...CABECALHOS_PADRAO, "Content-Type": "application/json" },
       },
     );
+  }
+
+  if (
+    requisicao.method === "GET" &&
+    (caminho === "/icones/emergencia.webp" || caminho === "/icones/feedback_bugs.webp")
+  ) {
+    const base64Icone = caminho === "/icones/emergencia.webp"
+      ? ICONE_EMERGENCIA_WEBP_BASE64
+      : ICONE_FEEDBACK_BUGS_WEBP_BASE64;
+    const bytes = decodificarBase64ParaBytes(base64Icone);
+    return new Response(bytes.buffer as ArrayBuffer, {
+      status: 200,
+      headers: {
+        ...CABECALHOS_PADRAO,
+        "Content-Type": "image/webp",
+        "Cache-Control": "public, max-age=31536000, immutable",
+      },
+    });
   }
 
   if (requisicao.method !== "POST") {
