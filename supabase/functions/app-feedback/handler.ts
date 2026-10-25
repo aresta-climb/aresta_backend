@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (C) 2026 Aresta Climb Contributors
+// SPDX-License-Identifier: MPL-2.0
+
 /**
  * Edge Function: App Feedback Segura (v2 - GitHub Issues & Supabase Diagnósticos)
  *
@@ -45,8 +48,9 @@ export const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-firebase-appcheck',
 };
 
-// Repositório fixo de destino para issues de feedback comunitário
-const REPOSITORIO_GITHUB = 'aresta-climb/aresta_db';
+// Repositórios de destino conforme a categoria do feedback (croqui -> aresta_db, app -> aresta_app)
+const REPOSITORIO_GITHUB_CROQUI = 'aresta-climb/aresta_db';
+const REPOSITORIO_GITHUB_APP = 'aresta-climb/aresta_app';
 
 // Cache do conjunto de chaves públicas JWKS do Firebase App Check
 const FIREBASE_JWKS_URL = new URL('https://firebaseappcheck.googleapis.com/v1/jwks');
@@ -546,7 +550,10 @@ export const handleRequest = async (
     body += `[Ver diagnóstico completo do dispositivo no Supabase](${linkSupabase})\n`;
 
     // 7. Envio para a API do GitHub com retentativa em caso de 429
-    const githubApiUrl = `https://api.github.com/repos/${REPOSITORIO_GITHUB}/issues`;
+    const repositorioDestino = tipoFeedback === 'croqui'
+      ? REPOSITORIO_GITHUB_CROQUI
+      : REPOSITORIO_GITHUB_APP;
+    const githubApiUrl = `https://api.github.com/repos/${repositorioDestino}/issues`;
     const githubHeaders = {
       'Authorization': `Bearer ${githubToken}`,
       'Accept': 'application/vnd.github+json',

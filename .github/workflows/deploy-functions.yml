@@ -1,20 +1,20 @@
+# SPDX-FileCopyrightText: Copyright (C) 2026 Aresta Climb Contributors
+# SPDX-License-Identifier: MPL-2.0
+
 name: Deploy Supabase Functions & Migrations
 
 on:
   push:
     branches:
       - main
-    paths:
-      - 'aresta_api'
-      - 'supabase/config.toml'
-      - 'supabase/functions/**'
-      - 'supabase/migrations/**'
-      - '.github/workflows/deploy-functions.yml'
+  pull_request:
+    branches:
+      - main
   workflow_dispatch:
 
 jobs:
   migrate-database:
-    name: Apply Database Migrations
+    name: Validar e Aplicar Migrações SQL
     runs-on: ubuntu-latest
     env:
       SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
@@ -26,19 +26,33 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Setup Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Testar Migrações SQL e Cabeçalhos SPDX
+        run: |
+          deno test -A --config supabase/functions/deno.json \
+            --filter "escopo migracoes SQL" \
+            supabase/functions/compartilhado/validador_cabecalhos_spdx_test.ts
+
       - name: Setup Supabase CLI
+        if: github.event_name != 'pull_request'
         uses: supabase/setup-cli@v3
         with:
           version: latest
 
       - name: Push Database Migrations
+        if: github.event_name != 'pull_request'
         run: |
           supabase link --project-ref "$PROJECT_ID" --password "$SUPABASE_DB_PASSWORD"
           supabase db push --password "$SUPABASE_DB_PASSWORD"
 
   deploy:
-    name: Deploy ${{ matrix.function }}
+    name: Testar e Deploy (${{ matrix.function }})
     needs: migrate-database
+    if: always() && !cancelled()
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -57,10 +71,64 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Setup Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Testar ${{ matrix.function }} e Bibliotecas Compartilhadas
+        run: |
+          deno test -A --config supabase/functions/deno.json \
+            --filter "/escopo compartilhado|escopo function ${{ matrix.function }}/" \
+            supabase/functions/compartilhado/validador_cabecalhos_spdx_test.ts
+          deno test -A --config supabase/functions/deno.json \
+            --ignore=supabase/functions/compartilhado/validador_cabecalhos_spdx_test.ts \
+            supabase/functions/compartilhado/ \
+            "supabase/functions/${{ matrix.function }}/"
+          FUNCTION_UNDERSCORE="${{ matrix.function }}"
+          FUNCTION_UNDERSCORE="${FUNCTION_UNDERSCORE//-/_}"
+          TESTE_INTEGRACAO="supabase/functions/integracao_${FUNCTION_UNDERSCORE}_test.ts"
+          if [ -f "$TESTE_INTEGRACAO" ]; then
+            deno test -A --config supabase/functions/deno.json "$TESTE_INTEGRACAO"
+          fi
+
       - name: Setup Supabase CLI
+        if: github.event_name != 'pull_request'
         uses: supabase/setup-cli@v3
         with:
           version: latest
 
       - name: Deploy ${{ matrix.function }} function
+        if: github.event_name != 'pull_request'
         run: supabase functions deploy ${{ matrix.function }} --project-ref $PROJECT_ID
+
+  test-cloudflare:
+    name: Testar Cloudflare Worker (${{ matrix.worker }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        worker:
+          - alertas
+          - app-links
+          - catalogo
+          - feedback
+          - previa
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Setup Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Testar Conformidade SPDX e Worker (${{ matrix.worker }})
+        run: |
+          deno test -A --config supabase/functions/deno.json \
+            --filter "/escopo worker ${{ matrix.worker }}|todos os arquivos/" \
+            supabase/functions/compartilhado/validador_cabecalhos_spdx_test.ts
+          deno test -A --config supabase/functions/deno.json \
+            "cloudflare/${{ matrix.worker }}/test/"

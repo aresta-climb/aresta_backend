@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (C) 2026 Aresta Climb Contributors
+// SPDX-License-Identifier: MPL-2.0
+
 import { assertEquals } from "https://deno.land/std@0.192.0/testing/asserts.ts";
 import {
   handleRequest,
@@ -220,20 +223,22 @@ Deno.test("app-feedback: despacha issue para a API do GitHub com labels e títul
   Deno.env.delete("SKIP_APP_CHECK_VERIFICATION");
 });
 
-Deno.test("app-feedback: despacha issue para tela neutra com categoria app", async () => {
+Deno.test("app-feedback: despacha issue para aresta_app quando categoria e app", async () => {
   resetRateLimits();
   setCustomTokenProvider(() => Promise.resolve("gh-secret-token"));
   Deno.env.set("SKIP_APP_CHECK_VERIFICATION", "true");
 
   const originalFetch = globalThis.fetch;
   let githubPayload: any = null;
+  let urlGithubChamada = "";
 
   globalThis.fetch = async (url: string | URL | Request, options?: RequestInit) => {
     const urlStr = url.toString();
     if (urlStr.includes("api.github.com")) {
+      urlGithubChamada = urlStr;
       githubPayload = JSON.parse(options?.body as string);
       return new Response(
-        JSON.stringify({ html_url: "https://github.com/aresta-climb/aresta_db/issues/43" }),
+        JSON.stringify({ html_url: "https://github.com/aresta-climb/aresta_app/issues/43" }),
         { status: 201, headers: { "Content-Type": "application/json" } }
       );
     }
@@ -256,6 +261,7 @@ Deno.test("app-feedback: despacha issue para tela neutra com categoria app", asy
   const res = await handleRequest(req);
 
   assertEquals(res.status, 200);
+  assertEquals(urlGithubChamada, "https://api.github.com/repos/aresta-climb/aresta_app/issues");
   assertEquals(githubPayload.title.startsWith("[App]"), true);
   assertEquals(githubPayload.labels.includes("feedback:app"), true);
   assertEquals(githubPayload.labels.includes("so:ios"), true);

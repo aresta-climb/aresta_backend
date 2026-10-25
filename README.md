@@ -41,6 +41,7 @@ supabase/
     │   ├── cliente_supabase_controle.ts
     │   ├── relator_sentry.ts
     │   ├── relator_sentry_fake.ts
+    │   ├── validador_cabecalhos_spdx.ts
     │   ├── validador_escopo_arquivos.ts
     │   └── validador_regras_branch.ts
     ├── git-proxy/        # Função de proxy Git Smart HTTP
@@ -89,8 +90,8 @@ As Edge Functions utilizam as seguintes variáveis de ambiente:
 
 ## 🧪 Executando os Testes
 
-Conforme estabelecido em nossos [Princípios de Engenharia](AGENTS.md), seguimos TDD com testes orientados a comportamento e 100% de cobertura. Para rodar todos os testes unitários e de integração:
+Conforme estabelecido em nossos [Princípios de Engenharia](AGENTS.md), seguimos TDD com testes orientados a comportamento e 100% de cobertura. Para rodar todos os testes unitários, de integração e de conformidade SPDX (incluindo Supabase Edge Functions e Cloudflare Workers):
 
 ```bash
-deno test -A --config supabase/functions/deno.json
+deno test -A --config supabase/functions/deno.json supabase/functions/ cloudflare/alertas/test/ cloudflare/app-links/test/ cloudflare/catalogo/test/ cloudflare/feedback/test/ cloudflare/previa/test/
 ```

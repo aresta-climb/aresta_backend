@@ -1742,3 +1742,244 @@ Deno.test("alertas-worker: enfileira falha do ntfy em FILA_RETENTATIVAS_ALERTAS 
   assertEquals(ntfyFake.notificacoesEnviadas.length, 1);
   assertEquals(ntfyFake.notificacoesEnviadas[0].topico, "aresta-bugs-segredo-888");
 });
+
+Deno.test("alertas-worker: roteia falha de check_run de deploy (Cloudflare Pages e Workers Builds) em branch critica para Emergencias e ignora github-actions ou sucesso", async () => {
+  const discordFake = new ClienteDiscordFake();
+  const githubFake = new ClienteGithubAppFake();
+  const resendFake = new ClienteResendFake();
+  const env = criarAmbientePadrao(undefined, resendFake, discordFake);
+  env.CANAL_ALERTAS_ATIVO = "discord";
+  env.ARESTA_CLIMB_BOT_GITHUB_APP_CLIENT_ID = "app-id";
+  env.ARESTA_CLIMB_BOT_GITHUB_APP_PRIVATE_KEY = "key";
+  env.ARESTA_CLIMB_BOT_GITHUB_APP_INSTALLATION_ID = "123";
+  env.clienteGithubApp = githubFake;
+
+  // 1. Falha no Cloudflare Workers Builds na branch main -> Emergência + Issue
+  const corpoFalhaCloudflare = JSON.stringify({
+    action: "completed",
+    repository: { full_name: "aresta-climb/aresta_backend" },
+    check_run: {
+      name: "Workers Builds: aresta-previa-relay",
+      status: "completed",
+      conclusion: "failure",
+      details_url:
+        "https://dash.cloudflare.com/634a6eddf09849caa3f28f6a5d7b53bb/workers/services/view/aresta-previa-relay/production/builds/123",
+      head_sha: "f91cfbea771707fdc7e0a5bb177e50c7720934c2",
+      app: { slug: "cloudflare-workers-and-pages" },
+      check_suite: {
+        head_branch: "main",
+        head_commit: {
+          message: "Atualiza worker de prévia",
+          author: { name: "Renato" },
+        },
+      },
+    },
+  });
+  const sigCf = await assinarHmacSha256Hex(env.GITHUB_WEBHOOK_SECRET, corpoFalhaCloudflare);
+
+  const resCf = await worker.fetch(
+    new Request("https://alertas.arestaclimb.com/webhook/github", {
+      method: "POST",
+      headers: {
+        "x-github-event": "check_run",
+        "x-hub-signature-256": `sha256=${sigCf}`,
+      },
+      body: corpoFalhaCloudflare,
+    }),
+    env,
+  );
+  assertEquals(resCf.status, 200);
+  assertEquals(githubFake.issuesCriadas.length, 1);
+  assertEquals(githubFake.issuesCriadas[0].repositorio, "aresta-climb/aresta_backend");
+  assertStringIncludes(githubFake.issuesCriadas[0].titulo, "Workers Builds: aresta-previa-relay");
+  assertEquals(discordFake.mensagensEnviadas.length, 1);
+  assertEquals(discordFake.mensagensEnviadas[0].urlWebhook, env.DISCORD_WEBHOOK_EMERGENCIAS_URL);
+  assertStringIncludes(
+    discordFake.mensagensEnviadas[0].texto,
+    "https://dash.cloudflare.com/634a6eddf09849caa3f28f6a5d7b53bb/workers/services/view/aresta-previa-relay/production/builds/123",
+  );
+
+  // 2. check_run originado por github-actions deve ser ignorado (já coberto por workflow_run)
+  const corpoCheckGithubActions = JSON.stringify({
+    action: "completed",
+    repository: { full_name: "aresta-climb/aresta_backend" },
+    check_run: {
+      name: "deploy",
+      status: "completed",
+      conclusion: "failure",
+      app: { slug: "github-actions" },
+      check_suite: { head_branch: "main" },
+    },
+  });
+  const sigGha = await assinarHmacSha256Hex(env.GITHUB_WEBHOOK_SECRET, corpoCheckGithubActions);
+
+  const resGha = await worker.fetch(
+    new Request("https://alertas.arestaclimb.com/webhook/github", {
+      method: "POST",
+      headers: {
+        "x-github-event": "check_run",
+        "x-hub-signature-256": `sha256=${sigGha}`,
+      },
+      body: corpoCheckGithubActions,
+    }),
+    env,
+  );
+  assertEquals(resGha.status, 200);
+  assertEquals((await resGha.json()).ignorado, true);
+  assertEquals(discordFake.mensagensEnviadas.length, 1);
+
+  // 3. check_run com conclusion: "success" ou em branch secundária deve ser ignorado
+  const corpoCheckSucesso = JSON.stringify({
+    action: "completed",
+    repository: { full_name: "aresta-climb/arestaclimb.com" },
+    check_run: {
+      name: "Cloudflare Pages",
+      status: "completed",
+      conclusion: "success",
+      html_url: "https://github.com/aresta-climb/arestaclimb.com/runs/1",
+      app: { slug: "cloudflare-workers-and-pages" },
+      check_suite: { head_branch: "main" },
+    },
+  });
+  const sigOk = await assinarHmacSha256Hex(env.GITHUB_WEBHOOK_SECRET, corpoCheckSucesso);
+  const resOk = await worker.fetch(
+    new Request("https://alertas.arestaclimb.com/webhook/github", {
+      method: "POST",
+      headers: {
+        "x-github-event": "check_run",
+        "x-hub-signature-256": `sha256=${sigOk}`,
+      },
+      body: corpoCheckSucesso,
+    }),
+    env,
+  );
+  assertEquals(resOk.status, 200);
+  assertEquals((await resOk.json()).ignorado, true);
+});
+
+Deno.test("alertas-worker: roteia falha de commit status de deploy (Vercel) e workflow_run na branch master para Emergencias e ignora status pending/canceled", async () => {
+  const discordFake = new ClienteDiscordFake();
+  const githubFake = new ClienteGithubAppFake();
+  const resendFake = new ClienteResendFake();
+  const env = criarAmbientePadrao(undefined, resendFake, discordFake);
+  env.CANAL_ALERTAS_ATIVO = "discord";
+  env.ARESTA_CLIMB_BOT_GITHUB_APP_CLIENT_ID = "app-id";
+  env.ARESTA_CLIMB_BOT_GITHUB_APP_PRIVATE_KEY = "key";
+  env.ARESTA_CLIMB_BOT_GITHUB_APP_INSTALLATION_ID = "123";
+  env.clienteGithubApp = githubFake;
+
+  // 1. Falha de deploy na Vercel via evento 'status' na branch master -> Emergência + Issue
+  const corpoStatusVercelFalha = JSON.stringify({
+    state: "failure",
+    context: "Vercel",
+    description: "Deployment has failed — run this Vercel CLI command: npx vercel inspect dpl_123 --logs",
+    target_url: "https://vercel.com/aresta-climb/umami-analytics/7Y77zfvYfnCWrjRuu2uhA783mDDp",
+    sha: "9120dffd1e60d70ce7122761a8e200c557fa63fe",
+    repository: { full_name: "aresta-climb/umami" },
+    branches: [{ name: "master" }],
+    commit: {
+      commit: {
+        message: "Atualizar Umami automaticamente\nDetalhes extras",
+        author: { name: "Renato Utsch" },
+      },
+    },
+  });
+  const sigVercel = await assinarHmacSha256Hex(env.GITHUB_WEBHOOK_SECRET, corpoStatusVercelFalha);
+
+  const resVercel = await worker.fetch(
+    new Request("https://alertas.arestaclimb.com/webhook/github", {
+      method: "POST",
+      headers: {
+        "x-github-event": "status",
+        "x-hub-signature-256": `sha256=${sigVercel}`,
+      },
+      body: corpoStatusVercelFalha,
+    }),
+    env,
+  );
+  assertEquals(resVercel.status, 200);
+  assertEquals(githubFake.issuesCriadas.length, 1);
+  assertEquals(githubFake.issuesCriadas[0].repositorio, "aresta-climb/umami");
+  assertStringIncludes(githubFake.issuesCriadas[0].titulo, "Vercel (master)");
+  assertEquals(discordFake.mensagensEnviadas.length, 1);
+  assertEquals(discordFake.mensagensEnviadas[0].urlWebhook, env.DISCORD_WEBHOOK_EMERGENCIAS_URL);
+  assertStringIncludes(
+    discordFake.mensagensEnviadas[0].texto,
+    "https://vercel.com/aresta-climb/umami-analytics/7Y77zfvYfnCWrjRuu2uhA783mDDp",
+  );
+
+  // 2. Falha de workflow_run na branch 'master' (ex: sync.yml do umami) -> Emergência + Issue
+  const corpoWorkflowMaster = JSON.stringify({
+    action: "completed",
+    repository: { full_name: "aresta-climb/umami" },
+    workflow_run: {
+      name: "Sincronizar com Upstream Oficial",
+      head_branch: "master",
+      conclusion: "failure",
+      html_url: "https://github.com/aresta-climb/umami/actions/runs/40175328505",
+      head_commit: {
+        message: "Atualizar Umami automaticamente todo domingo",
+        author: { name: "Renato Utsch" },
+      },
+    },
+  });
+  const sigWfMaster = await assinarHmacSha256Hex(env.GITHUB_WEBHOOK_SECRET, corpoWorkflowMaster);
+
+  const resWfMaster = await worker.fetch(
+    new Request("https://alertas.arestaclimb.com/webhook/github", {
+      method: "POST",
+      headers: {
+        "x-github-event": "workflow_run",
+        "x-hub-signature-256": `sha256=${sigWfMaster}`,
+      },
+      body: corpoWorkflowMaster,
+    }),
+    env,
+  );
+  assertEquals(resWfMaster.status, 200);
+  assertEquals(githubFake.issuesCriadas.length, 2);
+  assertEquals(discordFake.mensagensEnviadas.length, 2);
+
+  // 3. Status 'pending', 'Canceled from the Vercel Dashboard' ou sem branch crítica deve ser ignorado
+  for (const payloadIgnorado of [
+    {
+      state: "pending",
+      context: "Vercel",
+      description: "Vercel is deploying your app",
+      repository: { full_name: "aresta-climb/umami" },
+      branches: [{ name: "master" }],
+    },
+    {
+      state: "failure",
+      context: "Vercel",
+      description: "Canceled from the Vercel Dashboard",
+      repository: { full_name: "aresta-climb/umami" },
+      branches: [{ name: "master" }],
+    },
+    {
+      state: "error",
+      context: "Vercel",
+      description: "Preview build failed",
+      repository: { full_name: "aresta-climb/umami" },
+      branches: [{ name: "feature-preview" }],
+    },
+  ]) {
+    const corpoIgn = JSON.stringify(payloadIgnorado);
+    const sigIgn = await assinarHmacSha256Hex(env.GITHUB_WEBHOOK_SECRET, corpoIgn);
+    const resIgn = await worker.fetch(
+      new Request("https://alertas.arestaclimb.com/webhook/github", {
+        method: "POST",
+        headers: {
+          "x-github-event": "status",
+          "x-hub-signature-256": `sha256=${sigIgn}`,
+        },
+        body: corpoIgn,
+      }),
+      env,
+    );
+    assertEquals(resIgn.status, 200);
+    assertEquals((await resIgn.json()).ignorado, true);
+  }
+  assertEquals(discordFake.mensagensEnviadas.length, 2);
+});
+

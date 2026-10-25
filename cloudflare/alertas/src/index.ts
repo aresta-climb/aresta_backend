@@ -931,7 +931,14 @@ function possuiLabelEmergencia(labelsBrutas: unknown): boolean {
 }
 
 /**
- * Classifica e formata um webhook organizacional do GitHub (`workflow_run`, `issues`, `pull_request`).
+ * Verifica se a branch informada corresponde a uma branch de produção (`main`, `master`) ou tag de release (`v*`).
+ */
+function ehBranchProducaoOuRelease(branch: string): boolean {
+  return branch === "main" || branch === "master" || branch.startsWith("v");
+}
+
+/**
+ * Classifica e formata um webhook organizacional do GitHub (`workflow_run`, `check_run`, `status`, `issues`, `pull_request`).
  */
 function classificarWebhookGithub(
   eventoGithub: string,
@@ -941,14 +948,13 @@ function classificarWebhookGithub(
   const acao = String(payload?.action || "");
   const repositorio = payload?.repository?.full_name || "aresta-climb/aresta_app";
 
-  // 1. Falha de CI / Deploy em main ou tag de release -> Grupo 1 (Emergências) + cria Issue
+  // 1a. Falha de CI / Deploy em main, master ou tag de release -> Grupo 1 (Emergências) + cria Issue
   if (eventoGithub === "workflow_run" && acao === "completed") {
     const execucao = payload?.workflow_run;
     const conclusao = execucao?.conclusion;
     const branch = String(execucao?.head_branch || "");
-    const ehBranchCritica = branch === "main" || branch.startsWith("v");
 
-    if (conclusao === "failure" && ehBranchCritica) {
+    if (conclusao === "failure" && ehBranchProducaoOuRelease(branch)) {
       const nomeWorkflow = execucao?.name || "Pipeline CI/CD";
       const urlRun = execucao?.html_url || "";
       const commitMsg = String(execucao?.head_commit?.message || "").split("\n")[0];
@@ -976,6 +982,106 @@ function classificarWebhookGithub(
             `- **Workflow:** ${nomeWorkflow} (\`${branch}\`)`,
             `- **Commit:** ${commitMsg} (${autor})`,
             `- **Logs da Execução:** ${urlRun}`,
+          ].join("\n"),
+          labels: ["emergencia"],
+        },
+      };
+    }
+    return null;
+  }
+
+  // 1b. Falha de Deploy externo via Check Run (Cloudflare Pages e Cloudflare Workers Builds)
+  if (eventoGithub === "check_run" && acao === "completed") {
+    const checkRun = payload?.check_run;
+    const conclusao = checkRun?.conclusion;
+    const slugApp = String(checkRun?.app?.slug || "");
+    const branch = String(checkRun?.check_suite?.head_branch || "");
+
+    if (
+      conclusao === "failure" &&
+      slugApp !== "github-actions" &&
+      ehBranchProducaoOuRelease(branch)
+    ) {
+      const nomeCheck = String(checkRun?.name || "");
+      const urlDetalhes = String(checkRun?.details_url || "");
+      const commitMsg = String(checkRun?.check_suite?.head_commit?.message || "").split("\n")[0];
+      const autor = String(checkRun?.check_suite?.head_commit?.author?.name || "");
+
+      return {
+        categoria: "emergencias",
+        grupoId: env.WHATSAPP_GRUPO_EMERGENCIAS_ID,
+        assuntoFallback: `[CONTINGÊNCIA ALERTA] 🚨 Falha de Deploy em ${repositorio}: ${nomeCheck}`,
+        urlOrigem: urlDetalhes,
+        texto: [
+          `🚨 *[EMERGÊNCIA] Falha de Deploy em ${repositorio}: ${nomeCheck} (\`${branch}\`)*`,
+          `• *Repositório:* \`${repositorio}\``,
+          `• *Serviço / Check:* ${nomeCheck} (\`${branch}\`)`,
+          `• *Commit:* ${commitMsg} (${autor})`,
+          `• *Logs do Deploy:* ${urlDetalhes}`,
+        ].join("\n"),
+        dadosIssueEmergencia: {
+          repositorio,
+          titulo: `🚨 [FALHA DE DEPLOY] ${nomeCheck} (${branch})`,
+          corpo: [
+            "### 🚨 Falha Crítica de Deploy (Check Run)",
+            "",
+            `- **Repositório:** \`${repositorio}\``,
+            `- **Serviço / Check:** ${nomeCheck} (\`${branch}\`)`,
+            `- **Commit:** ${commitMsg} (${autor})`,
+            `- **Logs do Deploy:** ${urlDetalhes}`,
+          ].join("\n"),
+          labels: ["emergencia"],
+        },
+      };
+    }
+    return null;
+  }
+
+  // 1c. Falha de Deploy externo via Commit Status (Vercel)
+  if (eventoGithub === "status") {
+    const estado = String(payload?.state || "");
+    const descricao = String(payload?.description || "");
+    const branchesLista: Array<{ name?: string }> = Array.isArray(payload?.branches)
+      ? payload.branches
+      : [];
+    const branchCritica = branchesLista
+      .map((b) => String(b?.name || ""))
+      .find((nome) => ehBranchProducaoOuRelease(nome));
+
+    if (
+      (estado === "failure" || estado === "error") &&
+      !descricao.toLowerCase().includes("canceled") &&
+      branchCritica
+    ) {
+      const contexto = String(payload?.context || "");
+      const urlAlvo = String(payload?.target_url || "");
+      const commitMsg = String(payload?.commit?.commit?.message || "").split("\n")[0];
+      const autor = String(payload?.commit?.commit?.author?.name || "");
+
+      return {
+        categoria: "emergencias",
+        grupoId: env.WHATSAPP_GRUPO_EMERGENCIAS_ID,
+        assuntoFallback: `[CONTINGÊNCIA ALERTA] 🚨 Falha de Deploy (${contexto}) em ${repositorio}`,
+        urlOrigem: urlAlvo,
+        texto: [
+          `🚨 *[EMERGÊNCIA] Falha de Deploy (${contexto}) em ${repositorio} (\`${branchCritica}\`)*`,
+          `• *Repositório:* \`${repositorio}\``,
+          `• *Provedor:* ${contexto} (\`${branchCritica}\`)`,
+          `• *Detalhe:* ${descricao}`,
+          `• *Commit:* ${commitMsg} (${autor})`,
+          `• *Logs do Deploy:* ${urlAlvo}`,
+        ].join("\n"),
+        dadosIssueEmergencia: {
+          repositorio,
+          titulo: `🚨 [FALHA DE DEPLOY] ${contexto} (${branchCritica})`,
+          corpo: [
+            `### 🚨 Falha Crítica de Deploy (${contexto})`,
+            "",
+            `- **Repositório:** \`${repositorio}\``,
+            `- **Provedor:** ${contexto} (\`${branchCritica}\`)`,
+            `- **Detalhe:** ${descricao}`,
+            `- **Commit:** ${commitMsg} (${autor})`,
+            `- **Logs do Deploy:** ${urlAlvo}`,
           ].join("\n"),
           labels: ["emergencia"],
         },
