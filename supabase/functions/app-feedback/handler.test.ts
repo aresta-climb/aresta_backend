@@ -723,7 +723,7 @@ Deno.test("app-feedback: realiza fallback gracioso ao inserir diagnóstico se co
 
   globalThis.fetch = async (url: string | URL | Request, options?: RequestInit) => {
     const urlStr = url.toString();
-    if (urlStr.includes("api.github.com/repos/aresta-climb/aresta_db/issues")) {
+    if (urlStr.includes("api.github.com/repos/aresta-climb/aresta_app/issues")) {
       return new Response(JSON.stringify({ html_url: "https://github.com/issue/fallback-col" }), { status: 201 });
     }
     if (urlStr.includes("feedback_diagnosticos")) {
@@ -797,7 +797,7 @@ Deno.test("app-feedback: formatarBreadcrumbs formata lista de eventos com quebra
   );
 });
 
-Deno.test("app-feedback: reporta ao Sentry via RelatorSentryFake quando ocorre erro 500 por credenciais ausentes", async () => {
+Deno.test("app-feedback: reporta ao Sentry via RelatorSentryFake quando ocorre erro 500 ou falha de banco no Supabase com SENTRY_DSN configurado", async () => {
   const { RelatorSentryFake } = await import("../compartilhado/relator_sentry_fake.ts");
   const relatorFake = new RelatorSentryFake();
 
@@ -820,6 +820,51 @@ Deno.test("app-feedback: reporta ao Sentry via RelatorSentryFake quando ocorre e
   assertEquals(relatorFake.eventos[0].servico, "supabase-app-feedback");
   assertEquals(relatorFake.eventos[0].mensagem.includes("Aresta Climb Bot"), true);
 
+  // Também reporta falhas de banco (processed_feedbacks e feedback_diagnosticos) sem abortar a abertura da issue no GitHub
+  relatorFake.limpar();
+  setCustomTokenProvider(() => Promise.resolve("gh-token"));
+  Deno.env.set("SUPABASE_URL", "https://test-supabase.supabase.co");
+  Deno.env.set("SUPABASE_SECRET_KEYS", JSON.stringify({ service_role: "test-key" }));
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url: string | URL | Request) => {
+    const urlStr = url.toString();
+    if (urlStr.includes("processed_feedbacks")) {
+      return new Response(
+        JSON.stringify({ code: "42P01", message: "relation processed_feedbacks does not exist" }),
+        { status: 400, headers: { "Content-Type": "application/json" } },
+      );
+    }
+    if (urlStr.includes("feedback_diagnosticos")) {
+      return new Response(
+        JSON.stringify({ code: "42501", message: "permission denied for table feedback_diagnosticos" }),
+        { status: 403, headers: { "Content-Type": "application/json" } },
+      );
+    }
+    if (urlStr.includes("api.github.com")) {
+      return new Response(JSON.stringify({ html_url: "https://github.com/aresta-climb/aresta_app/issues/99" }), {
+        status: 201,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    return new Response("[]", { status: 200 });
+  };
+
+  const formDataDb = new FormData();
+  formDataDb.append("description", "Teste falha banco supabase");
+  formDataDb.append("metadata", JSON.stringify({ feedbackId: "uuid-db-err", tipo_feedback: "app" }));
+  const resDb = await handleRequest(new Request("http://localhost/app-feedback", { method: "POST", body: formDataDb }), {
+    relatorSentry: relatorFake,
+  });
+  assertEquals(resDb.status, 200);
+  assertEquals(relatorFake.eventos.length, 2);
+  assertEquals(relatorFake.eventos[0].tags.etapa, "processed_feedbacks");
+  assertEquals(relatorFake.eventos[1].tags.etapa, "feedback_diagnosticos");
+
+  globalThis.fetch = originalFetch;
+  setCustomTokenProvider(null);
+  Deno.env.delete("SUPABASE_URL");
+  Deno.env.delete("SUPABASE_SECRET_KEYS");
   Deno.env.delete("SKIP_APP_CHECK_VERIFICATION");
   Deno.env.delete("SENTRY_DSN");
 });

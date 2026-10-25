@@ -353,3 +353,65 @@ Deno.test("git-proxy: captura excecao inesperada, retorna 500 e reporta ao Sentr
   assertEquals(relatorFake.eventos[0].servico, "supabase-git-proxy");
   assertEquals(relatorFake.eventos[0].mensagem, "Falha inesperada ao validar JWT");
 });
+
+
+Deno.test("git-proxy: reporta ao Sentry quando GitHub retorna erro 5xx/401/403 ou falha registro no Supabase", async () => {
+  const { RelatorSentryFake } = await import("../compartilhado/relator_sentry_fake.ts");
+  const relatorFake = new RelatorSentryFake();
+
+  // 1. GET /info/refs com falha 502 do GitHub
+  const reqInfoRefs = new Request("http://localhost/git-proxy/info/refs?service=git-receive-pack", {
+    method: "GET",
+    headers: { "Authorization": "Bearer token-jwt-valido" },
+  });
+
+  const resInfo = await processarRequisicaoGitProxy(reqInfoRefs, {
+    validarJwt: async () => ({
+      idUsuario: "user-123",
+      email: "autor@teste.com",
+      nomeCompleto: "Autor",
+    }),
+    executarFetchGithub: async () => new Response("Bad Gateway", { status: 502 }),
+    tokenBot: "bot-token",
+    sentryDsn: "https://pub@o1.ingest.sentry.io/1",
+    relatorSentry: relatorFake,
+  });
+  assertEquals(resInfo.status, 502);
+  assertEquals(relatorFake.eventos.length, 1);
+  assertEquals(relatorFake.eventos[0].servico, "supabase-git-proxy");
+  assertEquals(relatorFake.eventos[0].tags.etapa, "info_refs");
+
+  // 2. POST /git-receive-pack com falha ao registrar nova branch no Supabase e status 500 do GitHub
+  relatorFake.limpar();
+  const linhaComando = "0000000000000000000000000000000000000000 8a3f5b0000000000000000000000000000000000 refs/heads/edicao-lapinha-sentry\0report-status\n";
+  const payload = criarPayloadPktLine(linhaComando);
+
+  const reqReceivePack = new Request("http://localhost/git-proxy/git-receive-pack", {
+    method: "POST",
+    headers: {
+      "Authorization": "Bearer token-jwt-valido",
+      "Content-Type": "application/x-git-receive-pack-request",
+    },
+    body: payload as unknown as BodyInit,
+  });
+
+  const resReceive = await processarRequisicaoGitProxy(reqReceivePack, {
+    validarJwt: async () => ({
+      idUsuario: "user-123",
+      email: "autor@teste.com",
+      nomeCompleto: "Autor",
+    }),
+    verificarBranchExisteNoGithub: async () => false,
+    obterRegistroBranch: async () => null,
+    registrarNovaBranch: async () => null,
+    executarFetchGithub: async () => new Response("Internal Server Error", { status: 500 }),
+    tokenBot: "bot-token",
+    sentryDsn: "https://pub@o1.ingest.sentry.io/1",
+    relatorSentry: relatorFake,
+  });
+
+  assertEquals(resReceive.status, 500);
+  assertEquals(relatorFake.eventos.length, 2);
+  assertEquals(relatorFake.eventos[0].tags.etapa, "registrar_nova_branch");
+  assertEquals(relatorFake.eventos[1].tags.etapa, "git_receive_pack");
+});

@@ -21,6 +21,7 @@ import {
 } from "../compartilhado/cliente_github_bot.ts";
 import {
   InterfaceRelatorSentry,
+  obterDsnSentryPadrao,
   relatarErroSentry,
 } from "../compartilhado/relator_sentry.ts";
 
@@ -62,7 +63,7 @@ export async function processarRequisicaoGitProxy(
     await relatarErroSentry(
       erro,
       {
-        dsn: contexto?.sentryDsn ?? Deno.env.get("SENTRY_DSN"),
+        dsn: obterDsnSentryPadrao(contexto?.sentryDsn),
         servico: "supabase-git-proxy",
         requisicao,
       },
@@ -125,6 +126,23 @@ async function executarFluxoGitProxy(
       },
     });
 
+    if (
+      respostaGithub.status >= 500 ||
+      respostaGithub.status === 401 ||
+      respostaGithub.status === 403
+    ) {
+      await relatarErroSentry(
+        new Error(`Falha no GitHub ao consultar info/refs (Status HTTP ${respostaGithub.status})`),
+        {
+          dsn: obterDsnSentryPadrao(contexto?.sentryDsn),
+          servico: "supabase-git-proxy",
+          requisicao,
+          tags: { etapa: "info_refs", github_status: String(respostaGithub.status) },
+        },
+        contexto?.relatorSentry,
+      );
+    }
+
     const cabecalhosResposta = new Headers(respostaGithub.headers);
     Object.entries(CABECALHOS_CORS).forEach(([c, v]) => cabecalhosResposta.set(c, v));
 
@@ -173,12 +191,25 @@ async function executarFluxoGitProxy(
           });
         }
 
-        await funcaoRegistrarNova({
+        const registroCriado = await funcaoRegistrarNova({
           branchName: nomeSimplesBranch,
           authorId: usuario.idUsuario,
           authorEmail: usuario.email,
           authorName: usuario.nomeCompleto,
         });
+        if (!registroCriado) {
+          await relatarErroSentry(
+            new Error(`Falha ao registrar nova branch '${nomeSimplesBranch}' em sugestoes_branches no Supabase`),
+            {
+              dsn: obterDsnSentryPadrao(contexto?.sentryDsn),
+              servico: "supabase-git-proxy",
+              requisicao,
+              tags: { etapa: "registrar_nova_branch" },
+              extras: { branch: nomeSimplesBranch },
+            },
+            contexto?.relatorSentry,
+          );
+        }
       } else {
         // Atualização de branch existente
         const registro = await funcaoObterRegistro(nomeSimplesBranch);
@@ -210,6 +241,23 @@ async function executarFluxoGitProxy(
       },
       body: bufferCompleto,
     });
+
+    if (
+      respostaGithub.status >= 500 ||
+      respostaGithub.status === 401 ||
+      respostaGithub.status === 403
+    ) {
+      await relatarErroSentry(
+        new Error(`Falha no GitHub ao executar git-receive-pack (Status HTTP ${respostaGithub.status})`),
+        {
+          dsn: obterDsnSentryPadrao(contexto?.sentryDsn),
+          servico: "supabase-git-proxy",
+          requisicao,
+          tags: { etapa: "git_receive_pack", github_status: String(respostaGithub.status) },
+        },
+        contexto?.relatorSentry,
+      );
+    }
 
     const cabecalhosResposta = new Headers(respostaGithub.headers);
     Object.entries(CABECALHOS_CORS).forEach(([c, v]) => cabecalhosResposta.set(c, v));

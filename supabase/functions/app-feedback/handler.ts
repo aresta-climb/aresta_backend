@@ -36,6 +36,7 @@ import { extrairChaveSecretaSupabase } from "../compartilhado/cliente_supabase_c
 import { obterTokenArestaClimbBot } from "../compartilhado/cliente_github_bot.ts";
 import {
   InterfaceRelatorSentry,
+  obterDsnSentryPadrao,
   relatarErroSentry,
 } from "../compartilhado/relator_sentry.ts";
 
@@ -326,6 +327,16 @@ export const handleRequest = async (
           );
         } else {
           console.error('Erro no banco de dados do Supabase:', insertError);
+          await relatarErroSentry(
+            new Error(`Erro ao registrar idempotência em processed_feedbacks: ${insertError.message || JSON.stringify(insertError)}`),
+            {
+              dsn: obterDsnSentryPadrao(),
+              servico: 'supabase-app-feedback',
+              requisicao: req,
+              tags: { etapa: 'processed_feedbacks' },
+            },
+            opcoes?.relatorSentry,
+          );
         }
       }
     }
@@ -617,7 +628,7 @@ export const handleRequest = async (
       await relatarErroSentry(
         new Error(`Falha ao entregar feedback para o GitHub (Status: ${ghResponse.status}): ${errorText}`),
         {
-          dsn: Deno.env.get('SENTRY_DSN'),
+          dsn: obterDsnSentryPadrao(),
           servico: 'supabase-app-feedback',
           requisicao: req,
           tags: { github_status: String(ghResponse.status) },
@@ -705,6 +716,16 @@ export const handleRequest = async (
 
       if (diagError) {
         console.error('Erro ao salvar diagnóstico restrito no Supabase:', diagError);
+        await relatarErroSentry(
+          new Error(`Erro ao salvar diagnóstico restrito em feedback_diagnosticos: ${diagError.message || JSON.stringify(diagError)}`),
+          {
+            dsn: obterDsnSentryPadrao(),
+            servico: 'supabase-app-feedback',
+            requisicao: req,
+            tags: { etapa: 'feedback_diagnosticos' },
+          },
+          opcoes?.relatorSentry,
+        );
       }
     }
 
@@ -736,7 +757,7 @@ export const handleRequest = async (
     await relatarErroSentry(
       error,
       {
-        dsn: Deno.env.get('SENTRY_DSN'),
+        dsn: obterDsnSentryPadrao(),
         servico: 'supabase-app-feedback',
         requisicao: req,
       },

@@ -421,3 +421,72 @@ Deno.test("create-pr: captura excecao inesperada, retorna 500 e reporta ao Sentr
   assertEquals(relatorFake.eventos[0].mensagem, "Falha inesperada na API do GitHub");
 });
 
+
+Deno.test("create-pr: reporta ao Sentry quando falha inspecionar branch no GitHub ou atualizar metadados no Supabase", async () => {
+  const { RelatorSentryFake } = await import("../compartilhado/relator_sentry_fake.ts");
+  const relatorFake = new RelatorSentryFake();
+
+  // 1. Falha ao inspecionar branch no GitHub -> retorna 400 e reporta ao Sentry
+  const reqFalhaInspecao = new Request("http://localhost/create-pr", {
+    method: "POST",
+    headers: {
+      "Authorization": "Bearer token-valido",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      branch: "edicao-falha-inspecao",
+      title: "Título",
+    }),
+  });
+
+  const resInspecao = await processarRequisicaoCreatePr(reqFalhaInspecao, {
+    validarJwt: async () => ({
+      idUsuario: "user-123",
+      email: "autor@teste.com",
+      nomeCompleto: "Autor",
+    }),
+    obterArquivosModificadosBranch: () => Promise.reject(new Error("GitHub API 502 Bad Gateway")),
+    sentryDsn: "https://pub@o1.ingest.sentry.io/1",
+    relatorSentry: relatorFake,
+  });
+
+  assertEquals(resInspecao.status, 400);
+  assertEquals(relatorFake.eventos.length, 1);
+  assertEquals(relatorFake.eventos[0].servico, "supabase-create-pr");
+  assertEquals(relatorFake.eventos[0].tags.etapa, "inspecionar_branch_github");
+
+  // 2. Falha ao atualizar metadados do PR no Supabase -> retorna 200 mas reporta ao Sentry
+  relatorFake.limpar();
+  const reqFalhaMetadados = new Request("http://localhost/create-pr", {
+    method: "POST",
+    headers: {
+      "Authorization": "Bearer token-valido",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      branch: "edicao-falha-metadados",
+      title: "Título",
+    }),
+  });
+
+  const resMetadados = await processarRequisicaoCreatePr(reqFalhaMetadados, {
+    validarJwt: async () => ({
+      idUsuario: "user-123",
+      email: "autor@teste.com",
+      nomeCompleto: "Autor",
+    }),
+    obterArquivosModificadosBranch: async () => ["database/croqui/croqui.yaml"],
+    obterRegistroBranch: async () => null,
+    criarPullRequestGithub: async () => ({
+      numeroPr: 120,
+      urlPr: "https://github.com/aresta-climb/aresta_db/pull/120",
+    }),
+    atualizarMetadadosPr: async () => false,
+    sentryDsn: "https://pub@o1.ingest.sentry.io/1",
+    relatorSentry: relatorFake,
+  });
+
+  assertEquals(resMetadados.status, 200);
+  assertEquals(relatorFake.eventos.length, 1);
+  assertEquals(relatorFake.eventos[0].tags.etapa, "atualizar_metadados_pr");
+});

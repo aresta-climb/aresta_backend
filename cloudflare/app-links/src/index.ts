@@ -16,6 +16,11 @@ import {
 } from "./renderizador_pagina_link.ts";
 import { BancoD1, resolverEntidadePorUid } from "./resolvedor_entidade_d1.ts";
 import * as Sentry from "@sentry/cloudflare";
+import {
+  ContextoExecucaoAssincrona,
+  InterfaceRelatorSentry,
+  relatarErroSentry,
+} from "../../../supabase/functions/compartilhado/relator_sentry.ts";
 
 /**
  * Interface com os bindings de ambiente do Worker `aresta-app-links` (`aresta.cc`).
@@ -23,6 +28,7 @@ import * as Sentry from "@sentry/cloudflare";
 export interface AmbienteAppLinks {
   DB?: BancoD1;
   SENTRY_DSN?: string;
+  relatorSentry?: InterfaceRelatorSentry;
 }
 
 const URL_SITE_PRINCIPAL = "https://arestaclimb.com";
@@ -99,7 +105,8 @@ function responderHtml(
  */
 export async function processarRequisicao(
   req: Request,
-  env: AmbienteAppLinks = {}
+  env: AmbienteAppLinks = {},
+  ctx?: ContextoExecucaoAssincrona
 ): Promise<Response> {
   const url = new URL(req.url);
   const caminho = url.pathname;
@@ -205,6 +212,16 @@ export async function processarRequisicao(
   }
 
   if (!env.DB) {
+    await relatarErroSentry(
+      new Error("Binding DB do Cloudflare D1 não configurado"),
+      {
+        dsn: env.SENTRY_DSN,
+        servico: "cloudflare-app-links",
+        requisicao: req,
+        contextoExecucao: ctx,
+      },
+      env.relatorSentry
+    );
     return new Response("Binding DB do Cloudflare D1 não configurado", {
       status: 500,
       headers: {
@@ -228,6 +245,16 @@ export async function processarRequisicao(
     const html = renderizarPaginaEntidade(entidade, metadadosRota);
     return responderHtml(html, 200, CABECALHO_CACHE_PAGINA_LINK);
   } catch (erro: unknown) {
+    await relatarErroSentry(
+      erro,
+      {
+        dsn: env.SENTRY_DSN,
+        servico: "cloudflare-app-links",
+        requisicao: req,
+        contextoExecucao: ctx,
+      },
+      env.relatorSentry
+    );
     const mensagem = erro instanceof Error ? erro.message : String(erro);
     return new Response(`Erro ao consultar entidade no D1: ${mensagem}`, {
       status: 500,
@@ -253,8 +280,12 @@ export default Sentry.withSentry(
     },
   }),
   {
-    fetch(req: Request, env: AmbienteAppLinks): Promise<Response> {
-      return processarRequisicao(req, env);
+    fetch(
+      req: Request,
+      env: AmbienteAppLinks,
+      ctx?: ContextoExecucaoAssincrona
+    ): Promise<Response> {
+      return processarRequisicao(req, env, ctx);
     },
   }
 );

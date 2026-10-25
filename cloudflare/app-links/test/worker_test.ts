@@ -11,6 +11,7 @@ import workerDefault, {
   processarRequisicao,
 } from "../src/index.ts";
 import { BancoD1Fake } from "./banco_d1_fake.ts";
+import { RelatorSentryFake } from "../../../supabase/functions/compartilhado/relator_sentry_fake.ts";
 
 function criarBancoComVia(): BancoD1Fake {
   const banco = new BancoD1Fake();
@@ -200,19 +201,36 @@ Deno.test("worker app-links: GET /<uid> para UID inexistente no D1 (cache 24h) o
   assertStringIncludes(await resRotaInvalida.text(), "Link não encontrado");
 });
 
-Deno.test("worker app-links: retorna 500 com no-store quando binding DB nao esta configurado ou falha", async () => {
+Deno.test("worker app-links: retorna 500 com no-store e reporta ao Sentry quando binding DB nao esta configurado ou falha", async () => {
   const req = new Request("https://aresta.cc/ESCALA12345678");
+  const relatorFake = new RelatorSentryFake();
 
-  const resSemDb = await processarRequisicao(req, {});
+  const resSemDb = await processarRequisicao(req, {
+    SENTRY_DSN: "https://pub@o1.ingest.sentry.io/1",
+    relatorSentry: relatorFake,
+  });
   assertEquals(resSemDb.status, 500);
   assertEquals(resSemDb.headers.get("Cache-Control"), "no-store");
+  assertEquals(relatorFake.eventos.length, 1);
+  assertEquals(relatorFake.eventos[0].servico, "cloudflare-app-links");
+  assertEquals(
+    relatorFake.eventos[0].mensagem,
+    "Binding DB do Cloudflare D1 não configurado"
+  );
 
   const bancoComFalha = criarBancoComVia();
   bancoComFalha.configurarFalha("D1 fora do ar");
-  const resErroDb = await processarRequisicao(req, { DB: bancoComFalha });
+  const resErroDb = await processarRequisicao(req, {
+    DB: bancoComFalha,
+    SENTRY_DSN: "https://pub@o1.ingest.sentry.io/1",
+    relatorSentry: relatorFake,
+  });
   assertEquals(resErroDb.status, 500);
   assertEquals(resErroDb.headers.get("Cache-Control"), "no-store");
   assertStringIncludes(await resErroDb.text(), "D1 fora do ar");
+  assertEquals(relatorFake.eventos.length, 2);
+  assertEquals(relatorFake.eventos[1].servico, "cloudflare-app-links");
+  assertEquals(relatorFake.eventos[1].mensagem, "D1 fora do ar");
 
   const bancoComExcecaoLiteral = {
     prepare() {
@@ -228,7 +246,11 @@ Deno.test("worker app-links: retorna 500 com no-store quando binding DB nao esta
   };
   const resErroLiteral = await processarRequisicao(req, {
     DB: bancoComExcecaoLiteral,
+    SENTRY_DSN: "https://pub@o1.ingest.sentry.io/1",
+    relatorSentry: relatorFake,
   });
   assertEquals(resErroLiteral.status, 500);
   assertStringIncludes(await resErroLiteral.text(), "erro_literal_string");
+  assertEquals(relatorFake.eventos.length, 3);
+  assertEquals(relatorFake.eventos[2].mensagem, "erro_literal_string");
 });
