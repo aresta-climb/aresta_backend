@@ -488,10 +488,10 @@ Deno.test("app-feedback: em produção (yzkhiaoqtxvvcyyuwmqg), utiliza fallback 
 
   globalThis.fetch = async (url: string | URL | Request, options?: RequestInit) => {
     const urlStr = url.toString();
-    if (urlStr.includes("api.github.com/repos/aresta-climb/aresta_db/issues")) {
+    if (urlStr.includes("api.github.com/repos/aresta-climb/aresta_app/issues")) {
       githubPayload = JSON.parse(options?.body as string);
       return new Response(
-        JSON.stringify({ html_url: "https://github.com/aresta-climb/aresta_db/issues/46" }),
+        JSON.stringify({ html_url: "https://github.com/aresta-climb/aresta_app/issues/46" }),
         { status: 201, headers: { "Content-Type": "application/json" } }
       );
     }
@@ -536,10 +536,10 @@ Deno.test("app-feedback: faz upload de screenshot WebP com content-type image/we
 
   globalThis.fetch = async (url: string | URL | Request, options?: RequestInit) => {
     const urlStr = url.toString();
-    if (urlStr.includes("api.github.com/repos/aresta-climb/aresta_db/issues")) {
+    if (urlStr.includes("api.github.com/repos/aresta-climb/aresta_app/issues")) {
       githubPayload = JSON.parse(options?.body as string);
       return new Response(
-        JSON.stringify({ html_url: "https://github.com/aresta-climb/aresta_db/issues/47" }),
+        JSON.stringify({ html_url: "https://github.com/aresta-climb/aresta_app/issues/47" }),
         { status: 201, headers: { "Content-Type": "application/json" } }
       );
     }
@@ -671,7 +671,7 @@ Deno.test("app-feedback: realiza retentativa automática sem labels se o GitHub 
 
   globalThis.fetch = async (url: string | URL | Request, options?: RequestInit) => {
     const urlStr = url.toString();
-    if (urlStr.includes("api.github.com/repos/aresta-climb/aresta_db/issues")) {
+    if (urlStr.includes("api.github.com/repos/aresta-climb/aresta_app/issues")) {
       attempts++;
       lastPayload = JSON.parse(options?.body as string);
       if (attempts === 1) {

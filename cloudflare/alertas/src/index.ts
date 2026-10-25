@@ -69,7 +69,9 @@ export interface AmbienteAlertas {
   DISCORD_WEBHOOK_BUGS_URL?: string;
   NTFY_BASE_URL?: string;
   NTFY_TOPICO_EMERGENCIAS?: string;
+  NOTIFY_TOPICO_EMERGENCIAS?: string;
   NTFY_TOPICO_BUGS?: string;
+  NOTIFY_TOPICO_BUGS?: string;
   NTFY_API_TOKEN?: string;
   WAHA_BASE_URL?: string;
   WAHA_API_KEY?: string;
@@ -799,18 +801,21 @@ function resolverRepositorioPorServicoSentry(servicoTag: string): string {
   if (
     tagNormalizada.includes("backend") ||
     tagNormalizada.includes("worker") ||
-    tagNormalizada.includes("alertas")
+    tagNormalizada.includes("alertas") ||
+    tagNormalizada.includes("supabase") ||
+    tagNormalizada === "4512313378013184"
   ) {
     return "aresta-climb/aresta_backend";
   }
   if (
     tagNormalizada.includes("arestaclimb-com") ||
     tagNormalizada.includes("arestaclimb.com") ||
+    tagNormalizada.includes("aresta-web") ||
     tagNormalizada.includes("site")
   ) {
     return "aresta-climb/arestaclimb.com";
   }
-  if (tagNormalizada.includes("db")) {
+  if (tagNormalizada.includes("db") || tagNormalizada.includes("editor")) {
     return "aresta-climb/aresta_db";
   }
   return "aresta-climb/aresta_app";
@@ -1321,8 +1326,8 @@ async function despacharNotificacaoComFallback(
     : URL_ICONE_FEEDBACK_BUGS;
 
   const topicoNtfy = notificacao.categoria === "emergencias"
-    ? env.NTFY_TOPICO_EMERGENCIAS
-    : env.NTFY_TOPICO_BUGS;
+    ? (env.NTFY_TOPICO_EMERGENCIAS || env.NOTIFY_TOPICO_EMERGENCIAS)
+    : (env.NTFY_TOPICO_BUGS || env.NOTIFY_TOPICO_BUGS);
 
   const wahaAtivo = Boolean(
     env.WAHA_BASE_URL &&
@@ -1608,6 +1613,63 @@ export async function processarRequisicaoAlertas(
     const recurso = requisicao.headers.get("sentry-hook-resource") || "event_alert";
     const payload = JSON.parse(corpoBruto);
     const acaoSentry = String(payload?.action || "");
+
+    // Abertura automática de GitHub Issue (label 'bug') quando uma nova issue não-fatal surge no Sentry
+    if (recurso === "issue" && acaoSentry === "created") {
+      const issueSentry = payload?.data?.issue || {};
+      const nivelIssue = String(issueSentry.level || "error").toLowerCase();
+      if (nivelIssue !== "fatal") {
+        const idIssueSentry = String(issueSentry.id || "");
+        const tituloIssue = String(issueSentry.title || "Erro capturado no Sentry");
+        const urlIssueSentry = String(
+          issueSentry.web_url ||
+            (idIssueSentry
+              ? `https://aresta-climb.sentry.io/issues/${idIssueSentry}/`
+              : "https://aresta-climb.sentry.io/issues/"),
+        );
+        const identificadorProjeto = String(
+          issueSentry.project?.slug ||
+            issueSentry.project?.name ||
+            issueSentry.project?.id ||
+            payload?.project_slug ||
+            payload?.project ||
+            "aresta-app",
+        );
+        const repositorio = resolverRepositorioPorServicoSentry(identificadorProjeto);
+        const clienteGithub = obterClienteGithubApp(env);
+
+        if (clienteGithub) {
+          const resCriacao = await clienteGithub.criarIssueEmergencia({
+            clientId: env.ARESTA_CLIMB_BOT_GITHUB_APP_CLIENT_ID || "",
+            privateKey: env.ARESTA_CLIMB_BOT_GITHUB_APP_PRIVATE_KEY || "",
+            installationId: env.ARESTA_CLIMB_BOT_GITHUB_APP_INSTALLATION_ID || "",
+            repositorio,
+            titulo: `🐛 [Sentry] ${tituloIssue}`,
+            corpo: [
+              "### 🐛 Novo Erro Inédito Detectado pelo Sentry",
+              "",
+              `- **Projeto Sentry:** \`${identificadorProjeto}\``,
+              `- **Erro:** ${tituloIssue}`,
+              `- **Detalhes no Sentry:** ${urlIssueSentry}`,
+            ].join("\n"),
+            labels: ["bug"],
+          });
+
+          return new Response(
+            JSON.stringify({
+              ok: true,
+              issueBugCriada: resCriacao.sucesso,
+              repositorio,
+              urlIssue: resCriacao.urlIssue,
+            }),
+            {
+              status: 200,
+              headers: { ...CABECALHOS_PADRAO, "Content-Type": "application/json" },
+            },
+          );
+        }
+      }
+    }
 
     // Sincronização Bidirecional Sentry -> GitHub (resolved / archived / ignored / unresolved)
     if (

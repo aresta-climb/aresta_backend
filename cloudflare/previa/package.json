@@ -21,11 +21,7 @@
   "author": "Aresta Contributors",
   "license": "MPL-2.0",
   "devDependencies": {
-    "@cloudflare/vitest-pool-workers": "^0.5.0",
-    "@cloudflare/workers-types": "^4.20240806.0",
-    "typescript": "^5.5.4",
-    "vitest": "^2.0.5",
-    "wrangler": "^3.72.0"
+    "wrangler": "^4.147.0"
   },
   "dependencies": {
     "@sentry/cloudflare": "^11.9.0"

@@ -127,6 +127,9 @@ jobs:
 
       - name: Testar Conformidade SPDX e Worker (${{ matrix.worker }})
         run: |
+          cd "cloudflare/${{ matrix.worker }}"
+          npm clean-install --dry-run
+          cd ../..
           deno test -A --config supabase/functions/deno.json \
             --filter "/escopo worker ${{ matrix.worker }}|todos os arquivos/" \
             supabase/functions/compartilhado/validador_cabecalhos_spdx_test.ts

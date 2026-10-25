@@ -33,17 +33,10 @@
     }
   },
   "workspace": {
-    "dependencies": [
-      "npm:vitest@^2.0.5"
-    ],
     "packageJson": {
       "dependencies": [
-        "npm:@cloudflare/vitest-pool-workers@0.5",
-        "npm:@cloudflare/workers-types@^4.20240806.0",
         "npm:@sentry/cloudflare@^11.9.0",
-        "npm:typescript@^5.5.4",
-        "npm:vitest@^2.0.5",
-        "npm:wrangler@^3.72.0"
+        "npm:wrangler@^4.147.0"
       ]
     }
   }

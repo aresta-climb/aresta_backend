@@ -1983,3 +1983,90 @@ Deno.test("alertas-worker: roteia falha de commit status de deploy (Vercel) e wo
   assertEquals(discordFake.mensagensEnviadas.length, 2);
 });
 
+Deno.test("alertas-worker: cria GitHub Issue com label 'bug' quando Sentry envia issue.created nao-fatal e suporta alias NOTIFY_TOPICO_BUGS", async () => {
+  const discordFake = new ClienteDiscordFake();
+  const ntfyFake = new ClienteNtfyFake();
+  const githubFake = new ClienteGithubAppFake();
+  const resendFake = new ClienteResendFake();
+  const env = criarAmbientePadrao(undefined, resendFake, discordFake);
+  env.CANAL_ALERTAS_ATIVO = "discord";
+  env.NOTIFY_TOPICO_BUGS = "aresta-bugs-via-alias";
+  env.ARESTA_CLIMB_BOT_GITHUB_APP_CLIENT_ID = "app-id";
+  env.ARESTA_CLIMB_BOT_GITHUB_APP_PRIVATE_KEY = "key";
+  env.ARESTA_CLIMB_BOT_GITHUB_APP_INSTALLATION_ID = "123";
+  env.clienteNtfy = ntfyFake;
+  env.clienteGithubApp = githubFake;
+
+  // 1. Sentry envia issue.created (nível error) para o projeto aresta-app (ID 4512313345966080)
+  const corpoIssueCreated = JSON.stringify({
+    action: "created",
+    data: {
+      issue: {
+        id: "7811812260",
+        title: "StateError: Bad state: No element",
+        level: "error",
+        web_url: "https://aresta-climb.sentry.io/issues/7811812260/",
+        project: {
+          id: "4512313345966080",
+          slug: "aresta-app",
+          name: "aresta-app",
+        },
+      },
+    },
+  });
+  const sigSentry = await assinarHmacSha256Hex(env.SENTRY_WEBHOOK_SECRET, corpoIssueCreated);
+
+  const resSentry = await worker.fetch(
+    new Request("https://alertas.arestaclimb.com/webhook/sentry", {
+      method: "POST",
+      headers: {
+        "sentry-hook-signature": sigSentry,
+        "sentry-hook-resource": "issue",
+      },
+      body: corpoIssueCreated,
+    }),
+    env,
+  );
+  assertEquals(resSentry.status, 200);
+  const jsonSentry = await resSentry.json();
+  assertEquals(jsonSentry.issueBugCriada, true);
+  assertEquals(githubFake.issuesCriadas.length, 1);
+  assertEquals(githubFake.issuesCriadas[0].repositorio, "aresta-climb/aresta_app");
+  assertEquals(githubFake.issuesCriadas[0].labels, ["bug"]);
+  assertStringIncludes(
+    githubFake.issuesCriadas[0].corpo,
+    "https://aresta-climb.sentry.io/issues/7811812260/",
+  );
+
+  // 2. Quando o GitHub dispara issues.opened para essa issue criada, o alias NOTIFY_TOPICO_BUGS envia ao ntfy
+  const corpoGithubOpened = JSON.stringify({
+    action: "opened",
+    repository: { full_name: "aresta-climb/aresta_app" },
+    issue: {
+      number: 1,
+      title: githubFake.issuesCriadas[0].titulo,
+      body: githubFake.issuesCriadas[0].corpo,
+      html_url: "https://github.com/aresta-climb/aresta_app/issues/1",
+      labels: [{ name: "bug" }],
+    },
+  });
+  const sigGh = await assinarHmacSha256Hex(env.GITHUB_WEBHOOK_SECRET, corpoGithubOpened);
+
+  const resGh = await worker.fetch(
+    new Request("https://alertas.arestaclimb.com/webhook/github", {
+      method: "POST",
+      headers: {
+        "x-github-event": "issues",
+        "x-hub-signature-256": `sha256=${sigGh}`,
+      },
+      body: corpoGithubOpened,
+    }),
+    env,
+  );
+  assertEquals(resGh.status, 200);
+  assertEquals(ntfyFake.notificacoesEnviadas.length, 1);
+  assertEquals(ntfyFake.notificacoesEnviadas[0].topico, "aresta-bugs-via-alias");
+  assertEquals(ntfyFake.notificacoesEnviadas[0].acoes?.length, 3);
+});
+
+
