@@ -5,7 +5,8 @@
     "octokit": "npm:octokit@^4.0.2",
     "@octokit/rest": "npm:@octokit/rest@^21.0.0",
     "jose": "npm:jose@^5.9.6",
-    "@std/assert": "jsr:@std/assert@^1.0.6"
+    "@std/assert": "jsr:@std/assert@^1.0.6",
+    "@sentry/cloudflare": "npm:@sentry/cloudflare@^11.9.0"
   },
   "compilerOptions": {
     "strict": true

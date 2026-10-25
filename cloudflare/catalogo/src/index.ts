@@ -12,6 +12,7 @@ import {
   UpsertsSyncCatalogo,
 } from "../../../aresta_api/openapi/generated/ts/catalogo.ts";
 import { LinhaDeltasCatalogo } from "../../../aresta_api/sql/generated/ts/catalogo_d1_sql.ts";
+import * as Sentry from "@sentry/cloudflare";
 import {
   ContextoExecucaoAssincrona,
   InterfaceRelatorSentry,
@@ -288,12 +289,25 @@ export async function processarRequisicao(
   });
 }
 
-export default {
-  fetch(
-    req: Request,
-    env: AmbienteCatalogo,
-    ctx?: ContextoExecucaoAssincrona
-  ): Promise<Response> {
-    return processarRequisicao(req, env, ctx);
-  },
-};
+export default Sentry.withSentry(
+  (env: AmbienteCatalogo) => ({
+    dsn: env.SENTRY_DSN,
+    beforeSend(event) {
+      if (event.request?.headers) {
+        delete event.request.headers["authorization"];
+        delete event.request.headers["cookie"];
+        delete event.request.headers["x-api-key"];
+      }
+      return event;
+    },
+  }),
+  {
+    fetch(
+      req: Request,
+      env: AmbienteCatalogo,
+      ctx?: ContextoExecucaoAssincrona
+    ): Promise<Response> {
+      return processarRequisicao(req, env, ctx);
+    },
+  }
+);

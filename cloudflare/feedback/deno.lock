@@ -9,6 +9,7 @@
   "workspace": {
     "packageJson": {
       "dependencies": [
+        "npm:@sentry/cloudflare@^11.9.0",
         "npm:wrangler@^4.147.0"
       ]
     }

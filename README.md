@@ -8,7 +8,7 @@ Este repositório contém a infraestrutura de backend e as Edge Functions do **A
    - `git-proxy`: Proxy transparente para Git Smart HTTP com firewall de branch (`sugestao-*`), verificação de colisão e controle de autoria.
    - `create-pr`: API REST para validação de escopo de pastas (`database/` restrito) e abertura de Pull Requests automatizados via Bot no GitHub (`aresta-climb/aresta_db`).
 2. **Sistema de Feedback In-App**:
-   - `app-feedback` / `discord-feedback`: Processamento de relatórios e capturas de tela do app móvel para canais privados no Discord.
+   - `app-feedback`: Processamento seguro de relatórios, capturas de tela e diagnósticos do app móvel (com validação via Firebase App Check) para abertura de Issues no GitHub e persistência restrita no Supabase.
 3. **Cloudflare Workers em Borda (`cloudflare/`)**:
    - `catalogo` (`catalogo.arestaclimb.com`): Sincronização incremental (Delta Squash) do catálogo SQLite (`catalogo.db`) via Cloudflare D1.
    - `feedback` (`feedback.arestaclimb.com`): Proxy com cache imutável para anexos de feedback e redirecionamento para diagnóstico no Supabase.
@@ -45,8 +45,7 @@ supabase/
     │   └── validador_regras_branch.ts
     ├── git-proxy/        # Função de proxy Git Smart HTTP
     ├── create-pr/        # Função de criação de Pull Requests
-    ├── app-feedback/
-    └── discord-feedback/
+    └── app-feedback/     # Função de recebimento de feedbacks In-App
 ```
 
 ---

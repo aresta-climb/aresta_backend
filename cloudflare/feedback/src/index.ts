@@ -5,6 +5,7 @@ import {
   ROTA_VERIFICAR_SAUDE_FEEDBACK,
   URL_SERVIDOR_PADRAO,
 } from "../../../aresta_api/openapi/generated/ts/feedback.ts";
+import * as Sentry from "@sentry/cloudflare";
 import {
   InterfaceRelatorSentry,
   relatarErroSentry,
@@ -193,12 +194,25 @@ export async function processarRequisicao(
   });
 }
 
-export default {
-  fetch(
-    req: Request,
-    env: AmbienteFeedback,
-    ctx: ContextoExecucao
-  ): Promise<Response> {
-    return processarRequisicao(req, env, ctx);
-  },
-};
+export default Sentry.withSentry(
+  (env: AmbienteFeedback) => ({
+    dsn: env.SENTRY_DSN,
+    beforeSend(event) {
+      if (event.request?.headers) {
+        delete event.request.headers["authorization"];
+        delete event.request.headers["cookie"];
+        delete event.request.headers["x-api-key"];
+      }
+      return event;
+    },
+  }),
+  {
+    fetch(
+      req: Request,
+      env: AmbienteFeedback,
+      ctx: ContextoExecucao
+    ): Promise<Response> {
+      return processarRequisicao(req, env, ctx);
+    },
+  }
+);

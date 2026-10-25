@@ -15,12 +15,14 @@ import {
   renderizarPaginaNaoEncontrada,
 } from "./renderizador_pagina_link.ts";
 import { BancoD1, resolverEntidadePorUid } from "./resolvedor_entidade_d1.ts";
+import * as Sentry from "@sentry/cloudflare";
 
 /**
  * Interface com os bindings de ambiente do Worker `aresta-app-links` (`aresta.cc`).
  */
 export interface AmbienteAppLinks {
   DB?: BancoD1;
+  SENTRY_DSN?: string;
 }
 
 const URL_SITE_PRINCIPAL = "https://arestaclimb.com";
@@ -238,8 +240,21 @@ export async function processarRequisicao(
   }
 }
 
-export default {
-  fetch(req: Request, env: AmbienteAppLinks): Promise<Response> {
-    return processarRequisicao(req, env);
-  },
-};
+export default Sentry.withSentry(
+  (env: AmbienteAppLinks) => ({
+    dsn: env.SENTRY_DSN,
+    beforeSend(event) {
+      if (event.request?.headers) {
+        delete event.request.headers["authorization"];
+        delete event.request.headers["cookie"];
+        delete event.request.headers["x-api-key"];
+      }
+      return event;
+    },
+  }),
+  {
+    fetch(req: Request, env: AmbienteAppLinks): Promise<Response> {
+      return processarRequisicao(req, env);
+    },
+  }
+);

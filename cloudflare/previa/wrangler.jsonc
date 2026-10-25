@@ -3,6 +3,10 @@
   "name": "aresta-previa-relay",
   "main": "src/index.ts",
   "compatibility_date": "2026-08-01",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "upload_source_maps": true,
   "durable_objects": {
     "bindings": [
       {

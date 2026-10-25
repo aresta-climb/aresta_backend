@@ -7,49 +7,150 @@
  * Responsabilidades:
  * 1. Receber e validar criptograficamente (HMAC-SHA256) webhooks do Sentry (`/webhook/sentry`)
  *    e da organização GitHub `aresta-climb` (`/webhook/github`).
- * 2. Classificar a severidade operacional em dois grupos da Comunidade no WhatsApp:
- *    - 🚨 Grupo 1 (Emergências): Crashes fatais (`level: fatal`), Spikes de erro (`metric_alert`),
- *      quedas de Uptime e falhas de GitHub Actions (`workflow_run` com `conclusion === "failure"`
- *      na branch `main` ou tags `v*`, incluindo deploys do `aresta_db`).
- *    - 🛠️ Grupo 2 (Bugs & Feedbacks): Abertura de novas GitHub Issues (`issues.opened`, incluindo
- *      issues criadas pelo Sentry *First Seen* com extração do link de investigação e issues de
- *      feedback comunitário) e novos Pull Requests (`pull_request.opened`).
- * 3. Entregar a mensagem via gateway WAHA (`POST /api/sendText`) hospedado em VM `e2-micro`
- *    no Google Cloud exposta via Cloudflare Tunnel.
- * 4. Acionar fallback automático de e-mail via API do Resend (`alerta@login.arestaclimb.com` ->
- *    `contato@arestaclimb.com`) exclusivamente quando o envio ao WAHA falhar, sem gerar loops
- *    recursivos no Sentry.
+ * 2. Classificar a severidade operacional em dois canais/grupos:
+ *    - 🚨 Emergências: Crashes fatais (`level: fatal`), Spikes de erro (`metric_alert`),
+ *      quedas de Uptime, falhas de GitHub Actions (`workflow_run` com `conclusion === "failure"`
+ *      na branch `main` ou tags `v*`) e reabertura de issues com a label `emergencia`.
+ *    - 🛠️ Bugs & Feedbacks: Abertura e reabertura de GitHub Issues (sem a label `emergencia`)
+ *      e Pull Requests (`opened` e `reopened`).
+ * 3. Para toda emergência sem GitHub Issue prévia (Sentry ou falha de GitHub Actions), criar
+ *    automaticamente uma Issue com a label `emergencia` usando o GitHub App `Aresta Climb Bot`
+ *    e incluir o link na notificação enviada ao canal `#🚨-emergencias` (ignorando o webhook
+ *    subsequente `issues.opened` com label `emergencia` para evitar duplicidade).
+ * 4. Sincronizar bidirecionalmente o fechamento/resolução e reabertura de issues entre Sentry e GitHub.
+ * 5. Entregar notificações via Discord Webhooks (com gist na primeira linha e `@everyone` no rodapé)
+ *    e/ou gateway WAHA em standby, acionando fallback por e-mail via Resend e fila de retentativas
+ *    no Cloudflare KV + Cron Trigger (`scheduled`).
  */
 
 import {
+  InterfaceClienteDiscord,
+  InterfaceClienteGithubApp,
   InterfaceClienteResend,
+  InterfaceClienteSentry,
   InterfaceClienteWaha,
+  InterfaceFilaRetentativas,
+  ItemFilaRetentativa,
+  OpcoesAtualizarStatusSentry,
+  OpcoesCriarIssueGithub,
+  OpcoesEnvioDiscord,
   OpcoesEnvioResend,
   OpcoesEnvioWaha,
+  OpcoesSincronizarEstadoIssueGithub,
+  ResultadoAtualizarStatusSentry,
+  ResultadoCriarIssueGithub,
+  ResultadoEnvioDiscord,
   ResultadoEnvioResend,
   ResultadoEnvioWaha,
+  ResultadoSincronizarEstadoIssueGithub,
 } from "./cliente_notificacao_fake.ts";
+import * as Sentry from "@sentry/cloudflare";
+
+export interface KvNamespaceCompativel {
+  put(chave: string, valor: string, opcoes?: { expirationTtl?: number }): Promise<void>;
+  get(chave: string): Promise<string | null>;
+  delete(chave: string): Promise<void>;
+  list(opcoes?: { prefix?: string }): Promise<{ keys: Array<{ name: string }> }>;
+}
 
 export interface AmbienteAlertas {
-  WAHA_BASE_URL: string;
-  WAHA_API_KEY: string;
+  CANAL_ALERTAS_ATIVO?: "discord" | "whatsapp" | "ambos";
+  DISCORD_WEBHOOK_EMERGENCIAS_URL?: string;
+  DISCORD_WEBHOOK_BUGS_URL?: string;
+  WAHA_BASE_URL?: string;
+  WAHA_API_KEY?: string;
   WAHA_SESSION?: string;
-  WHATSAPP_GRUPO_EMERGENCIAS_ID: string;
-  WHATSAPP_GRUPO_BUGS_ID: string;
+  WHATSAPP_GRUPO_EMERGENCIAS_ID?: string;
+  WHATSAPP_GRUPO_BUGS_ID?: string;
   SENTRY_WEBHOOK_SECRET: string;
+  SENTRY_API_TOKEN?: string;
   GITHUB_WEBHOOK_SECRET: string;
+  ARESTA_CLIMB_BOT_GITHUB_APP_CLIENT_ID?: string;
+  ARESTA_CLIMB_BOT_GITHUB_APP_PRIVATE_KEY?: string;
+  ARESTA_CLIMB_BOT_GITHUB_APP_INSTALLATION_ID?: string;
   RESEND_API_KEY: string;
   EMAIL_REMETENTE_ALERTA?: string;
   EMAIL_DESTINATARIO_FALLBACK?: string;
+  SENTRY_DSN?: string;
+  FILA_RETENTATIVAS_ALERTAS?: KvNamespaceCompativel;
+  clienteDiscord?: InterfaceClienteDiscord;
   clienteWaha?: InterfaceClienteWaha;
   clienteResend?: InterfaceClienteResend;
+  clienteGithubApp?: InterfaceClienteGithubApp;
+  clienteSentry?: InterfaceClienteSentry;
+  filaRetentativas?: InterfaceFilaRetentativas;
 }
 
 const CABECALHOS_PADRAO: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, sentry-hook-signature, sentry-hook-resource, x-hub-signature-256, x-github-event",
+  "Access-Control-Allow-Headers":
+    "Content-Type, sentry-hook-signature, sentry-hook-resource, x-hub-signature-256, x-github-event",
 };
+
+const SUFIXO_MENCAO_DISCORD = "\n\n@everyone";
+
+/**
+ * Formata o texto para envio ao Discord garantindo o resumo (gist) na primeira linha
+ * e a menção `@everyone` posicionada no rodapé dentro do limite de 2000 caracteres.
+ */
+export function formatarTextoComMencaoNoRodape(texto: string): string {
+  const textoLimpo = texto.replace(/^@everyone\s*/i, "").replace(/\s*@everyone$/i, "").trim();
+  const limiteCorpo = 1990 - SUFIXO_MENCAO_DISCORD.length;
+  const corpoTruncado = textoLimpo.length > limiteCorpo
+    ? `${textoLimpo.slice(0, limiteCorpo - 3)}...`
+    : textoLimpo;
+  return `${corpoTruncado}${SUFIXO_MENCAO_DISCORD}`;
+}
+
+/**
+ * Implementação HTTP real do cliente Discord Incoming Webhook (`POST <webhook_url>`).
+ */
+export class ClienteDiscordHttp implements InterfaceClienteDiscord {
+  private readonly fetchImpl: typeof fetch;
+
+  constructor(fetchImpl: typeof fetch = globalThis.fetch.bind(globalThis)) {
+    this.fetchImpl = fetchImpl;
+  }
+
+  async enviarMensagemWebhook(opcoes: OpcoesEnvioDiscord): Promise<ResultadoEnvioDiscord> {
+    try {
+      const conteudoAjustado = formatarTextoComMencaoNoRodape(opcoes.texto);
+
+      const resposta = await this.fetchImpl(opcoes.urlWebhook, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          content: conteudoAjustado,
+          allowed_mentions: { parse: ["everyone"] },
+        }),
+      });
+
+      if (!resposta.ok) {
+        const detalhe = await resposta.text();
+        return {
+          sucesso: false,
+          statusHttp: resposta.status,
+          erro: `HTTP ${resposta.status}: ${detalhe}`,
+        };
+      }
+
+      return {
+        sucesso: true,
+        statusHttp: resposta.status,
+      };
+    } catch (erro: unknown) {
+      const msg = erro instanceof Error ? erro.message : String(erro);
+      return {
+        sucesso: false,
+        statusHttp: 0,
+        erro: msg,
+      };
+    }
+  }
+}
 
 /**
  * Implementação HTTP real do cliente WAHA (`POST /api/sendText`).
@@ -116,8 +217,8 @@ export class ClienteResendHttp implements InterfaceClienteResend {
   async enviarEmailFallback(opcoes: OpcoesEnvioResend): Promise<ResultadoEnvioResend> {
     try {
       const textoCompleto = [
-        "⚠️ AVISO DE CONTINGÊNCIA: O gateway do WhatsApp (WAHA) falhou ao entregar este alerta.",
-        `Motivo da falha no WAHA: ${opcoes.motivoFalhaWaha}`,
+        "⚠️ AVISO DE CONTINGÊNCIA: O canal primário de alertas falhou ao entregar esta notificação.",
+        `Motivo da falha: ${opcoes.motivoFalhaWaha}`,
         "------------------------------------------------------------",
         "",
         opcoes.texto,
@@ -147,6 +248,370 @@ export class ClienteResendHttp implements InterfaceClienteResend {
         statusHttp: 0,
       };
     }
+  }
+}
+
+/**
+ * Implementação HTTP real do cliente da API do Sentry (`PUT https://sentry.io/api/0/issues/{id}/`).
+ */
+export class ClienteSentryHttp implements InterfaceClienteSentry {
+  private readonly fetchImpl: typeof fetch;
+
+  constructor(fetchImpl: typeof fetch = globalThis.fetch.bind(globalThis)) {
+    this.fetchImpl = fetchImpl;
+  }
+
+  async atualizarStatusIssue(
+    opcoes: OpcoesAtualizarStatusSentry,
+  ): Promise<ResultadoAtualizarStatusSentry> {
+    try {
+      const resposta = await this.fetchImpl(
+        `https://sentry.io/api/0/issues/${opcoes.idIssueSentry}/`,
+        {
+          method: "PUT",
+          headers: {
+            "Authorization": `Bearer ${opcoes.tokenApi}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            status: opcoes.novoStatus,
+          }),
+        },
+      );
+
+      if (!resposta.ok) {
+        const detalhe = await resposta.text();
+        return {
+          sucesso: false,
+          statusHttp: resposta.status,
+          erro: `HTTP ${resposta.status}: ${detalhe}`,
+        };
+      }
+
+      return {
+        sucesso: true,
+        statusHttp: resposta.status,
+      };
+    } catch (erro: unknown) {
+      const msg = erro instanceof Error ? erro.message : String(erro);
+      return {
+        sucesso: false,
+        statusHttp: 0,
+        erro: msg,
+      };
+    }
+  }
+}
+
+/**
+ * Codifica um tamanho ASN.1 DER para construção de cabeçalhos PKCS#8.
+ */
+function codificarTamanhoDer(tamanho: number): number[] {
+  if (tamanho < 128) {
+    return [tamanho];
+  }
+  if (tamanho < 256) {
+    return [0x81, tamanho];
+  }
+  return [0x82, (tamanho >> 8) & 0xff, tamanho & 0xff];
+}
+
+/**
+ * Envolve uma chave privada RSA PKCS#1 (DER) no envelope ASN.1 PKCS#8 exigido pelo `crypto.subtle`.
+ */
+function envolverPkcs1EmPkcs8(pkcs1Bytes: Uint8Array): Uint8Array {
+  const versao = [0x02, 0x01, 0x00];
+  const oidRsa = [
+    0x30, 0x0d,
+    0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01,
+    0x05, 0x00,
+  ];
+  const cabecalhoOctetString = [0x04, ...codificarTamanhoDer(pkcs1Bytes.length)];
+  const tamanhoInterno =
+    versao.length + oidRsa.length + cabecalhoOctetString.length + pkcs1Bytes.length;
+  const cabecalhoSequencia = [0x30, ...codificarTamanhoDer(tamanhoInterno)];
+
+  const resultado = new Uint8Array(cabecalhoSequencia.length + tamanhoInterno);
+  let offset = 0;
+  resultado.set(cabecalhoSequencia, offset);
+  offset += cabecalhoSequencia.length;
+  resultado.set(versao, offset);
+  offset += versao.length;
+  resultado.set(oidRsa, offset);
+  offset += oidRsa.length;
+  resultado.set(cabecalhoOctetString, offset);
+  offset += cabecalhoOctetString.length;
+  resultado.set(pkcs1Bytes, offset);
+  return resultado;
+}
+
+/**
+ * Codifica bytes ou string em Base64URL (RFC 7515) para tokens JWT.
+ */
+function codificarBase64Url(entrada: Uint8Array | string): string {
+  const bytes = typeof entrada === "string" ? new TextEncoder().encode(entrada) : entrada;
+  let binario = "";
+  for (let i = 0; i < bytes.length; i++) {
+    binario += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binario).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+/**
+ * Gera um JWT RS256 assinado para autenticação de GitHub App usando `crypto.subtle`.
+ */
+export async function gerarJwtGithubApp(
+  clientId: string,
+  privateKeyPem: string,
+): Promise<string> {
+  const pemNormalizado = privateKeyPem.replace(/\\n/g, "\n").trim();
+  const ehPkcs1 = pemNormalizado.includes("BEGIN RSA PRIVATE KEY");
+  const base64Limpo = pemNormalizado
+    .replace(/-----BEGIN [A-Z ]+-----/g, "")
+    .replace(/-----END [A-Z ]+-----/g, "")
+    .replace(/\s+/g, "");
+
+  const binarioDer = atob(base64Limpo);
+  const bytesDer = new Uint8Array(binarioDer.length);
+  for (let i = 0; i < binarioDer.length; i++) {
+    bytesDer[i] = binarioDer.charCodeAt(i);
+  }
+
+  const pkcs8Bytes = ehPkcs1 ? envolverPkcs1EmPkcs8(bytesDer) : bytesDer;
+
+  const chaveCripto = await crypto.subtle.importKey(
+    "pkcs8",
+    pkcs8Bytes.buffer as ArrayBuffer,
+    { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+
+  const agoraSegundos = Math.floor(Date.now() / 1000);
+  const cabecalhoJwt = codificarBase64Url(JSON.stringify({ alg: "RS256", typ: "JWT" }));
+  const corpoJwt = codificarBase64Url(
+    JSON.stringify({
+      iat: agoraSegundos - 60,
+      exp: agoraSegundos + 540,
+      iss: clientId,
+    }),
+  );
+
+  const dadosAssinatura = `${cabecalhoJwt}.${corpoJwt}`;
+  const assinaturaBuffer = await crypto.subtle.sign(
+    "RSASSA-PKCS1-v1_5",
+    chaveCripto,
+    new TextEncoder().encode(dadosAssinatura),
+  );
+
+  return `${dadosAssinatura}.${codificarBase64Url(new Uint8Array(assinaturaBuffer))}`;
+}
+
+/**
+ * Implementação HTTP real do cliente GitHub App (`Aresta Climb Bot`) para criação e sincronização de Issues.
+ */
+export class ClienteGithubAppHttp implements InterfaceClienteGithubApp {
+  private readonly fetchImpl: typeof fetch;
+
+  constructor(fetchImpl: typeof fetch = globalThis.fetch.bind(globalThis)) {
+    this.fetchImpl = fetchImpl;
+  }
+
+  private async obterTokenInstalacao(
+    clientId: string,
+    privateKey: string,
+    installationId: string,
+  ): Promise<string> {
+    const jwt = await gerarJwtGithubApp(clientId, privateKey);
+    const resposta = await this.fetchImpl(
+      `https://api.github.com/app/installations/${installationId}/access_tokens`,
+      {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${jwt}`,
+          "Accept": "application/vnd.github+json",
+          "User-Agent": "aresta-alertas-worker",
+          "X-GitHub-Api-Version": "2022-11-28",
+        },
+      },
+    );
+
+    if (!resposta.ok) {
+      const detalhe = await resposta.text();
+      throw new Error(`Falha ao obter installation token (HTTP ${resposta.status}): ${detalhe}`);
+    }
+
+    const dados = (await resposta.json()) as { token?: string };
+    return dados.token || "";
+  }
+
+  async criarIssueEmergencia(opcoes: OpcoesCriarIssueGithub): Promise<ResultadoCriarIssueGithub> {
+    try {
+      const token = await this.obterTokenInstalacao(
+        opcoes.clientId,
+        opcoes.privateKey,
+        opcoes.installationId,
+      );
+
+      const resposta = await this.fetchImpl(
+        `https://api.github.com/repos/${opcoes.repositorio}/issues`,
+        {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${token}`,
+            "Accept": "application/vnd.github+json",
+            "Content-Type": "application/json",
+            "User-Agent": "aresta-alertas-worker",
+            "X-GitHub-Api-Version": "2022-11-28",
+          },
+          body: JSON.stringify({
+            title: opcoes.titulo,
+            body: opcoes.corpo,
+            labels: opcoes.labels,
+          }),
+        },
+      );
+
+      if (!resposta.ok) {
+        const detalhe = await resposta.text();
+        return {
+          sucesso: false,
+          statusHttp: resposta.status,
+          erro: `HTTP ${resposta.status}: ${detalhe}`,
+        };
+      }
+
+      const dados = (await resposta.json()) as { number?: number; html_url?: string };
+      return {
+        sucesso: true,
+        statusHttp: resposta.status,
+        numeroIssue: dados.number,
+        urlIssue: dados.html_url,
+      };
+    } catch (erro: unknown) {
+      const msg = erro instanceof Error ? erro.message : String(erro);
+      return {
+        sucesso: false,
+        statusHttp: 0,
+        erro: msg,
+      };
+    }
+  }
+
+  async sincronizarEstadoIssuePorIdSentry(
+    opcoes: OpcoesSincronizarEstadoIssueGithub,
+  ): Promise<ResultadoSincronizarEstadoIssueGithub> {
+    try {
+      const token = await this.obterTokenInstalacao(
+        opcoes.clientId,
+        opcoes.privateKey,
+        opcoes.installationId,
+      );
+
+      const estadoBusca = opcoes.novoEstado === "closed" ? "is:open" : "is:closed";
+      const query = encodeURIComponent(
+        `org:aresta-climb is:issue ${estadoBusca} "sentry.io/issues/${opcoes.idIssueSentry}"`,
+      );
+      const resBusca = await this.fetchImpl(
+        `https://api.github.com/search/issues?q=${query}`,
+        {
+          method: "GET",
+          headers: {
+            "Authorization": `Bearer ${token}`,
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "aresta-alertas-worker",
+            "X-GitHub-Api-Version": "2022-11-28",
+          },
+        },
+      );
+
+      if (!resBusca.ok) {
+        const detalhe = await resBusca.text();
+        return {
+          sucesso: false,
+          statusHttp: resBusca.status,
+          issuesAtualizadas: 0,
+          erro: `HTTP ${resBusca.status}: ${detalhe}`,
+        };
+      }
+
+      const dadosBusca = (await resBusca.json()) as {
+        items?: Array<{ number: number; repository_url: string }>;
+      };
+      const itens = Array.isArray(dadosBusca.items) ? dadosBusca.items : [];
+      let atualizadas = 0;
+
+      for (const item of itens) {
+        const urlIssueApi = `${item.repository_url}/issues/${item.number}`;
+        const resPatch = await this.fetchImpl(urlIssueApi, {
+          method: "PATCH",
+          headers: {
+            "Authorization": `Bearer ${token}`,
+            "Accept": "application/vnd.github+json",
+            "Content-Type": "application/json",
+            "User-Agent": "aresta-alertas-worker",
+            "X-GitHub-Api-Version": "2022-11-28",
+          },
+          body: JSON.stringify({
+            state: opcoes.novoEstado,
+          }),
+        });
+        if (resPatch.ok) {
+          atualizadas++;
+        }
+      }
+
+      return {
+        sucesso: true,
+        statusHttp: 200,
+        issuesAtualizadas: atualizadas,
+      };
+    } catch (erro: unknown) {
+      const msg = erro instanceof Error ? erro.message : String(erro);
+      return {
+        sucesso: false,
+        statusHttp: 0,
+        issuesAtualizadas: 0,
+        erro: msg,
+      };
+    }
+  }
+}
+
+/**
+ * Implementação persistente da fila de retentativas utilizando Cloudflare KV (`FILA_RETENTATIVAS_ALERTAS`).
+ */
+export class FilaRetentativasKv implements InterfaceFilaRetentativas {
+  private readonly kv: KvNamespaceCompativel;
+  private static readonly PREFIXO = "retentativa:";
+  private static readonly TTL_SEGUNDOS = 86400; // 24 horas
+
+  constructor(kv: KvNamespaceCompativel) {
+    this.kv = kv;
+  }
+
+  async enfileirar(item: ItemFilaRetentativa): Promise<void> {
+    await this.kv.put(
+      `${FilaRetentativasKv.PREFIXO}${item.id}`,
+      JSON.stringify(item),
+      { expirationTtl: FilaRetentativasKv.TTL_SEGUNDOS },
+    );
+  }
+
+  async listarPendentes(): Promise<ItemFilaRetentativa[]> {
+    const listagem = await this.kv.list({ prefix: FilaRetentativasKv.PREFIXO });
+    const itens: ItemFilaRetentativa[] = [];
+    for (const chave of listagem.keys) {
+      const bruto = await this.kv.get(chave.name);
+      if (bruto) {
+        itens.push(JSON.parse(bruto) as ItemFilaRetentativa);
+      }
+    }
+    return itens;
+  }
+
+  async remover(id: string): Promise<void> {
+    await this.kv.delete(`${FilaRetentativasKv.PREFIXO}${id}`);
   }
 }
 
@@ -190,9 +655,41 @@ function compararTempoConstante(a: string, b: string): boolean {
 }
 
 interface NotificacaoClassificada {
-  grupoId: string;
+  categoria: "emergencias" | "bugs";
+  grupoId?: string;
   assuntoFallback: string;
   texto: string;
+  dadosIssueEmergencia?: {
+    repositorio: string;
+    titulo: string;
+    corpo: string;
+    labels: string[];
+  };
+}
+
+/**
+ * Resolve o repositório da organização `aresta-climb` correspondente a um serviço/projeto do Sentry.
+ */
+function resolverRepositorioPorServicoSentry(servicoTag: string): string {
+  const tagNormalizada = servicoTag.toLowerCase();
+  if (
+    tagNormalizada.includes("backend") ||
+    tagNormalizada.includes("worker") ||
+    tagNormalizada.includes("alertas")
+  ) {
+    return "aresta-climb/aresta_backend";
+  }
+  if (
+    tagNormalizada.includes("arestaclimb-com") ||
+    tagNormalizada.includes("arestaclimb.com") ||
+    tagNormalizada.includes("site")
+  ) {
+    return "aresta-climb/arestaclimb.com";
+  }
+  if (tagNormalizada.includes("db")) {
+    return "aresta-climb/aresta_db";
+  }
+  return "aresta-climb/aresta_app";
 }
 
 /**
@@ -207,21 +704,37 @@ function classificarWebhookSentry(
   const acao = String(payload?.action || "");
 
   // 1. Spike ou Alerta de Métrica / Uptime
-  if (recurso === "metric_alert" && (acao === "critical" || acao === "warning" || acao === "triggered")) {
+  if (
+    recurso === "metric_alert" &&
+    (acao === "critical" || acao === "warning" || acao === "triggered")
+  ) {
     const dados = payload?.data || {};
     const titulo = dados.description_title || "Alerta Crítico de Métrica / Spike";
     const detalhe = dados.description_text || "Anomalia de volume de erros ou latência detectada.";
     const url = dados.web_url || "https://aresta-climb.sentry.io/alerts/";
+    const repositorio = resolverRepositorioPorServicoSentry(titulo);
 
     return {
+      categoria: "emergencias",
       grupoId: env.WHATSAPP_GRUPO_EMERGENCIAS_ID,
-      assuntoFallback: `[CONTINGÊNCIA WHATSAPP] 🚨 ${titulo}`,
+      assuntoFallback: `[CONTINGÊNCIA ALERTA] 🚨 ${titulo}`,
       texto: [
-        "🚨 *EMERGÊNCIA — SPIKE / MONITOR SENTRY*",
-        `• *Alerta:* ${titulo}`,
+        `🚨 *[EMERGÊNCIA] ${titulo}*`,
         `• *Detalhe:* ${detalhe}`,
         `• *Painel Sentry:* ${url}`,
       ].join("\n"),
+      dadosIssueEmergencia: {
+        repositorio,
+        titulo: `🚨 [EMERGÊNCIA] ${titulo}`,
+        corpo: [
+          "### 🚨 Alerta de Métrica / Spike Detectado no Sentry",
+          "",
+          `- **Alerta:** ${titulo}`,
+          `- **Detalhe:** ${detalhe}`,
+          `- **Painel Sentry:** ${url}`,
+        ].join("\n"),
+        labels: ["emergencia"],
+      },
     };
   }
 
@@ -232,16 +745,30 @@ function classificarWebhookSentry(
     const url = evento.web_url || "https://aresta-climb.sentry.io/issues/";
     const tagsLista: Array<[string, string]> = Array.isArray(evento.tags) ? evento.tags : [];
     const servicoTag = tagsLista.find((t) => t[0] === "service")?.[1] || "ecossistema-aresta";
+    const repositorio = resolverRepositorioPorServicoSentry(servicoTag);
 
     return {
+      categoria: "emergencias",
       grupoId: env.WHATSAPP_GRUPO_EMERGENCIAS_ID,
-      assuntoFallback: `[CONTINGÊNCIA WHATSAPP] 🚨 Crash Fatal em ${servicoTag}`,
+      assuntoFallback: `[CONTINGÊNCIA ALERTA] 🚨 Crash Fatal em ${servicoTag}`,
       texto: [
-        "🚨 *EMERGÊNCIA — CRASH FATAL DETECTADO*",
+        `🚨 *[EMERGÊNCIA] Crash Fatal em ${servicoTag}: ${titulo}*`,
         `• *Serviço:* \`${servicoTag}\``,
         `• *Erro:* ${titulo}`,
         `• *Investigação Sentry:* ${url}`,
       ].join("\n"),
+      dadosIssueEmergencia: {
+        repositorio,
+        titulo: `🚨 [EMERGÊNCIA] Crash Fatal (${servicoTag}): ${titulo}`,
+        corpo: [
+          "### 🚨 Crash Fatal Detectado pelo Sentry",
+          "",
+          `- **Serviço:** \`${servicoTag}\``,
+          `- **Erro:** ${titulo}`,
+          `- **Investigação Sentry:** ${url}`,
+        ].join("\n"),
+        labels: ["emergencia"],
+      },
     };
   }
 
@@ -257,6 +784,27 @@ function extrairLinkSentryDoCorpo(corpoIssue: string): string | null {
 }
 
 /**
+ * Extrai o ID numérico da Issue do Sentry presente em um link no corpo de uma GitHub Issue.
+ */
+function extrairIdIssueSentryDoCorpo(corpoIssue: string): string | null {
+  const match = corpoIssue.match(/https:\/\/[a-zA-Z0-9.-]*sentry\.io\/issues\/([0-9]+)\/?/);
+  return match ? match[1] : null;
+}
+
+/**
+ * Verifica se a lista de labels de uma GitHub Issue contém a etiqueta `emergencia`.
+ */
+function possuiLabelEmergencia(labelsBrutas: unknown): boolean {
+  if (!Array.isArray(labelsBrutas)) {
+    return false;
+  }
+  return labelsBrutas.some((l: any) => {
+    const nome = String(typeof l === "string" ? l : l?.name || "").toLowerCase().trim();
+    return nome === "emergencia" || nome === "emergência";
+  });
+}
+
+/**
  * Classifica e formata um webhook organizacional do GitHub (`workflow_run`, `issues`, `pull_request`).
  */
 function classificarWebhookGithub(
@@ -265,9 +813,9 @@ function classificarWebhookGithub(
   env: AmbienteAlertas,
 ): NotificacaoClassificada | null {
   const acao = String(payload?.action || "");
-  const repositorio = payload?.repository?.full_name || "aresta-climb";
+  const repositorio = payload?.repository?.full_name || "aresta-climb/aresta_app";
 
-  // 1. Falha de CI / Deploy em main ou tag de release -> Grupo 1 (Emergências)
+  // 1. Falha de CI / Deploy em main ou tag de release -> Grupo 1 (Emergências) + cria Issue
   if (eventoGithub === "workflow_run" && acao === "completed") {
     const execucao = payload?.workflow_run;
     const conclusao = execucao?.conclusion;
@@ -281,33 +829,73 @@ function classificarWebhookGithub(
       const autor = execucao?.head_commit?.author?.name || "N/A";
 
       return {
+        categoria: "emergencias",
         grupoId: env.WHATSAPP_GRUPO_EMERGENCIAS_ID,
-        assuntoFallback: `[CONTINGÊNCIA WHATSAPP] 🚨 Falha de Deploy/CI em ${repositorio}`,
+        assuntoFallback: `[CONTINGÊNCIA ALERTA] 🚨 Falha de Deploy/CI em ${repositorio}`,
         texto: [
-          "🚨 *EMERGÊNCIA — FALHA DE DEPLOY / CI*",
+          `🚨 *[EMERGÊNCIA] Falha de Deploy/CI em ${repositorio}: ${nomeWorkflow} (\`${branch}\`)*`,
           `• *Repositório:* \`${repositorio}\``,
           `• *Workflow:* ${nomeWorkflow} (\`${branch}\`)`,
           `• *Commit:* ${commitMsg} (${autor})`,
           `• *Logs da Execução:* ${urlRun}`,
         ].join("\n"),
+        dadosIssueEmergencia: {
+          repositorio,
+          titulo: `🚨 [FALHA DE DEPLOY/CI] ${nomeWorkflow} (${branch})`,
+          corpo: [
+            "### 🚨 Falha Crítica de Pipeline / Deploy no GitHub Actions",
+            "",
+            `- **Repositório:** \`${repositorio}\``,
+            `- **Workflow:** ${nomeWorkflow} (\`${branch}\`)`,
+            `- **Commit:** ${commitMsg} (${autor})`,
+            `- **Logs da Execução:** ${urlRun}`,
+          ].join("\n"),
+          labels: ["emergencia"],
+        },
       };
     }
     return null;
   }
 
-  // 2. Nova Issue aberta (Sentry First Seen, Feedback do App ou Comunidade) -> Grupo 2 (Bugs & Feedbacks)
-  if (eventoGithub === "issues" && acao === "opened") {
+  // 2. Issue aberta ou reaberta
+  if (eventoGithub === "issues" && (acao === "opened" || acao === "reopened")) {
     const issue = payload?.issue;
+    const ehEmergencia = possuiLabelEmergencia(issue?.labels);
+
+    // Se for abertura (`opened`) com label `emergencia`, ignoramos pois a instância do Worker
+    // que originou a emergência já criou a issue e está despachando a notificação!
+    if (acao === "opened" && ehEmergencia) {
+      return null;
+    }
+
     const numero = issue?.number;
-    const titulo = issue?.title || "Nova Issue";
+    const titulo = issue?.title || "Issue";
     const urlIssue = issue?.html_url || "";
     const corpo = String(issue?.body || "");
     const linkSentry = extrairLinkSentryDoCorpo(corpo);
 
+    // Reabertura de uma issue de emergência -> vai para #🚨-emergencias
+    if (acao === "reopened" && ehEmergencia) {
+      return {
+        categoria: "emergencias",
+        grupoId: env.WHATSAPP_GRUPO_EMERGENCIAS_ID,
+        assuntoFallback: `[CONTINGÊNCIA ALERTA] 🚨 Emergência Reaberta #${numero} em ${repositorio}`,
+        texto: [
+          `🚨 *[EMERGÊNCIA REABERTA #${numero}] ${titulo}*`,
+          `• *Repositório:* \`${repositorio}\` (#${numero})`,
+          `• *GitHub Issue:* ${urlIssue}`,
+        ].join("\n"),
+      };
+    }
+
+    const cabecalhoGist = acao === "reopened"
+      ? `🔄 *[ISSUE REABERTA #${numero}] ${titulo}*`
+      : linkSentry
+        ? `🐛 *[ERRO SENTRY #${numero}] ${titulo}*`
+        : `🛠️ *[NOVA ISSUE #${numero}] ${titulo}*`;
+
     const linhas = [
-      linkSentry
-        ? "🐛 *NOVO ERRO INÉDITO (SENTRY -> GITHUB)*"
-        : "🛠️ *NOVA ISSUE / FEEDBACK REGISTRADO*",
+      cabecalhoGist,
       `• *Repositório:* \`${repositorio}\` (#${numero})`,
       `• *Título:* ${titulo}`,
       `• *GitHub Issue:* ${urlIssue}`,
@@ -318,25 +906,28 @@ function classificarWebhookGithub(
     }
 
     return {
+      categoria: "bugs",
       grupoId: env.WHATSAPP_GRUPO_BUGS_ID,
-      assuntoFallback: `[CONTINGÊNCIA WHATSAPP] 🛠️ Nova Issue #${numero} em ${repositorio}`,
+      assuntoFallback: `[CONTINGÊNCIA ALERTA] 🛠️ Issue #${numero} em ${repositorio}`,
       texto: linhas.join("\n"),
     };
   }
 
-  // 3. Novo Pull Request aberto -> Grupo 2 (Bugs & Feedbacks)
-  if (eventoGithub === "pull_request" && acao === "opened") {
+  // 3. Pull Request aberto ou reaberto -> Grupo 2 (Bugs & Feedbacks)
+  if (eventoGithub === "pull_request" && (acao === "opened" || acao === "reopened")) {
     const pr = payload?.pull_request;
     const numero = pr?.number;
-    const titulo = pr?.title || "Novo Pull Request";
+    const titulo = pr?.title || "Pull Request";
     const urlPr = pr?.html_url || "";
     const autor = pr?.user?.login || "colaborador";
+    const prefixoGist = acao === "reopened" ? "🔄 *[PR REABERTO" : "🔀 *[NOVO PR";
 
     return {
+      categoria: "bugs",
       grupoId: env.WHATSAPP_GRUPO_BUGS_ID,
-      assuntoFallback: `[CONTINGÊNCIA WHATSAPP] 🔀 Novo PR #${numero} em ${repositorio}`,
+      assuntoFallback: `[CONTINGÊNCIA ALERTA] 🔀 PR #${numero} em ${repositorio}`,
       texto: [
-        "🔀 *NOVO PULL REQUEST ABERTO*",
+        `${prefixoGist} #${numero}] ${titulo}*`,
         `• *Repositório:* \`${repositorio}\` (#${numero})`,
         `• *Título:* ${titulo}`,
         `• *Autor:* \`${autor}\``,
@@ -348,25 +939,157 @@ function classificarWebhookGithub(
   return null;
 }
 
+function obterFilaRetentativas(env: AmbienteAlertas): InterfaceFilaRetentativas | null {
+  if (env.filaRetentativas) {
+    return env.filaRetentativas;
+  }
+  if (env.FILA_RETENTATIVAS_ALERTAS) {
+    return new FilaRetentativasKv(env.FILA_RETENTATIVAS_ALERTAS);
+  }
+  return null;
+}
+
+function obterClienteGithubApp(env: AmbienteAlertas): InterfaceClienteGithubApp | null {
+  if (env.clienteGithubApp) {
+    return env.clienteGithubApp;
+  }
+  if (
+    env.ARESTA_CLIMB_BOT_GITHUB_APP_CLIENT_ID &&
+    env.ARESTA_CLIMB_BOT_GITHUB_APP_PRIVATE_KEY &&
+    env.ARESTA_CLIMB_BOT_GITHUB_APP_INSTALLATION_ID
+  ) {
+    return new ClienteGithubAppHttp();
+  }
+  return null;
+}
+
 /**
- * Entrega a notificação via WAHA e, em caso de falha, aciona o fallback por e-mail via Resend.
+ * Entrega a notificação para o canal primário configurado (Discord e/ou WAHA),
+ * criando previamente a GitHub Issue de emergência quando aplicável, e aciona
+ * fallback via Resend + fila de retentativas em caso de falha.
  */
 async function despacharNotificacaoComFallback(
   notificacao: NotificacaoClassificada,
   env: AmbienteAlertas,
 ): Promise<Response> {
-  const clienteWaha = env.clienteWaha || new ClienteWahaHttp();
-  const resultadoWaha = await clienteWaha.enviarMensagemGrupo({
-    urlBase: env.WAHA_BASE_URL,
-    chaveApi: env.WAHA_API_KEY,
-    chatId: notificacao.grupoId,
-    texto: notificacao.texto,
-    sessao: env.WAHA_SESSION,
-  });
+  const fila = obterFilaRetentativas(env);
+  const clienteGithub = obterClienteGithubApp(env);
 
-  if (resultadoWaha.sucesso) {
+  // 0. Se for uma emergência sem GitHub Issue prévia, cria automaticamente via GitHub App
+  if (notificacao.dadosIssueEmergencia && clienteGithub) {
+    const dadosIssue = notificacao.dadosIssueEmergencia;
+    const resIssue = await clienteGithub.criarIssueEmergencia({
+      clientId: env.ARESTA_CLIMB_BOT_GITHUB_APP_CLIENT_ID || "",
+      privateKey: env.ARESTA_CLIMB_BOT_GITHUB_APP_PRIVATE_KEY || "",
+      installationId: env.ARESTA_CLIMB_BOT_GITHUB_APP_INSTALLATION_ID || "",
+      repositorio: dadosIssue.repositorio,
+      titulo: dadosIssue.titulo,
+      corpo: dadosIssue.corpo,
+      labels: dadosIssue.labels,
+    });
+
+    if (resIssue.sucesso && resIssue.urlIssue) {
+      notificacao.texto += `\n• *Discussão GitHub:* ${resIssue.urlIssue} (#${resIssue.numeroIssue})`;
+    } else {
+      notificacao.texto +=
+        `\n• *Discussão GitHub:* ⚠️ Falha ao criar Issue automaticamente (${resIssue.erro || `HTTP ${resIssue.statusHttp}`}). Nova tentativa agendada.`;
+      if (fila) {
+        await fila.enfileirar({
+          id: `issue-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          tipo: "criar_issue_emergencia",
+          criadoEmIso: new Date().toISOString(),
+          tentativas: 1,
+          dadosIssue: {
+            ...dadosIssue,
+            textoAlertaBase: notificacao.texto,
+          },
+        });
+      }
+    }
+  }
+
+  const urlDiscord = notificacao.categoria === "emergencias"
+    ? env.DISCORD_WEBHOOK_EMERGENCIAS_URL
+    : env.DISCORD_WEBHOOK_BUGS_URL;
+
+  const wahaAtivo = Boolean(
+    env.WAHA_BASE_URL &&
+      env.WAHA_API_KEY &&
+      (notificacao.grupoId ||
+        (notificacao.categoria === "emergencias"
+          ? env.WHATSAPP_GRUPO_EMERGENCIAS_ID
+          : env.WHATSAPP_GRUPO_BUGS_ID)),
+  );
+  const chatIdWaha = notificacao.grupoId || (notificacao.categoria === "emergencias"
+    ? env.WHATSAPP_GRUPO_EMERGENCIAS_ID
+    : env.WHATSAPP_GRUPO_BUGS_ID);
+
+  const modoCanal = env.CANAL_ALERTAS_ATIVO || "ambos";
+  const permiteDiscord = modoCanal === "discord" || modoCanal === "ambos";
+  const permiteWaha = modoCanal === "whatsapp" || modoCanal === "ambos";
+
+  let discordSucesso = false;
+  let wahaSucesso = false;
+  const motivosFalha: string[] = [];
+
+  // 1. Tenta envio ao Discord se configurado (com gist na primeira linha e @everyone no rodapé)
+  if (permiteDiscord && urlDiscord) {
+    const textoDiscord = formatarTextoComMencaoNoRodape(notificacao.texto);
+    const clienteDiscord = env.clienteDiscord || new ClienteDiscordHttp();
+    const resultadoDiscord = await clienteDiscord.enviarMensagemWebhook({
+      urlWebhook: urlDiscord,
+      texto: textoDiscord,
+    });
+    if (resultadoDiscord.sucesso) {
+      discordSucesso = true;
+    } else {
+      motivosFalha.push(
+        `Discord falhou: ${resultadoDiscord.erro || `Status HTTP ${resultadoDiscord.statusHttp}`}`,
+      );
+      if (fila) {
+        await fila.enfileirar({
+          id: `discord-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          tipo: "enviar_notificacao_discord",
+          criadoEmIso: new Date().toISOString(),
+          tentativas: 1,
+          dadosDiscord: {
+            categoria: notificacao.categoria,
+            texto: textoDiscord,
+          },
+        });
+      }
+    }
+  }
+
+  // 2. Tenta envio ao WAHA se configurado
+  if (permiteWaha && wahaAtivo && chatIdWaha) {
+    const clienteWaha = env.clienteWaha || new ClienteWahaHttp();
+    const resultadoWaha = await clienteWaha.enviarMensagemGrupo({
+      urlBase: env.WAHA_BASE_URL!,
+      chaveApi: env.WAHA_API_KEY!,
+      chatId: chatIdWaha,
+      texto: notificacao.texto,
+      sessao: env.WAHA_SESSION,
+    });
+    if (resultadoWaha.sucesso) {
+      wahaSucesso = true;
+    } else {
+      motivosFalha.push(
+        `WAHA falhou: ${resultadoWaha.erro || `Status HTTP ${resultadoWaha.statusHttp}`}`,
+      );
+    }
+  }
+
+  // Se algum canal primário obteve sucesso, retorna 200
+  if (discordSucesso || wahaSucesso) {
+    const entregueVia = discordSucesso && wahaSucesso
+      ? "discord+whatsapp_waha"
+      : discordSucesso
+      ? "discord"
+      : "whatsapp_waha";
+
     return new Response(
-      JSON.stringify({ ok: true, entregueVia: "whatsapp_waha" }),
+      JSON.stringify({ ok: true, entregueVia }),
       {
         status: 200,
         headers: { ...CABECALHOS_PADRAO, "Content-Type": "application/json" },
@@ -374,23 +1097,26 @@ async function despacharNotificacaoComFallback(
     );
   }
 
-  // Fallback exclusivo via Resend quando o WAHA falha
+  // 3. Fallback automático via Resend quando todos os canais configurados falharem
   const clienteResend = env.clienteResend || new ClienteResendHttp();
-  const motivoFalha = resultadoWaha.erro || `Status HTTP ${resultadoWaha.statusHttp}`;
+  const motivoConsolidado = motivosFalha.length > 0
+    ? motivosFalha.join(" | ")
+    : "Nenhum canal primário (Discord ou WAHA) configurado no ambiente.";
+
   await clienteResend.enviarEmailFallback({
     chaveApi: env.RESEND_API_KEY,
     remetente: env.EMAIL_REMETENTE_ALERTA || "alerta@login.arestaclimb.com",
     destinatario: env.EMAIL_DESTINATARIO_FALLBACK || "contato@arestaclimb.com",
     assunto: notificacao.assuntoFallback,
     texto: notificacao.texto,
-    motivoFalhaWaha: motivoFalha,
+    motivoFalhaWaha: motivoConsolidado,
   });
 
   return new Response(
     JSON.stringify({
       ok: true,
       entregueVia: "resend_fallback",
-      motivoFalhaWaha: motivoFalha,
+      motivoFalhaWaha: motivoConsolidado,
     }),
     {
       status: 200,
@@ -399,21 +1125,155 @@ async function despacharNotificacaoComFallback(
   );
 }
 
-export default {
-  async fetch(requisicao: Request, env: AmbienteAlertas): Promise<Response> {
-    if (requisicao.method === "OPTIONS") {
-      return new Response(null, { status: 204, headers: CABECALHOS_PADRAO });
+/**
+ * Reprocessa itens pendentes na fila de retentativas (acionado pelo Cron Trigger `scheduled`).
+ */
+export async function processarFilaRetentativas(env: AmbienteAlertas): Promise<void> {
+  const fila = obterFilaRetentativas(env);
+  if (!fila) {
+    return;
+  }
+
+  const pendentes = await fila.listarPendentes();
+  const clienteGithub = obterClienteGithubApp(env);
+  const clienteDiscord = env.clienteDiscord || new ClienteDiscordHttp();
+
+  for (const item of pendentes) {
+    if (item.tipo === "criar_issue_emergencia" && item.dadosIssue && clienteGithub) {
+      const resIssue = await clienteGithub.criarIssueEmergencia({
+        clientId: env.ARESTA_CLIMB_BOT_GITHUB_APP_CLIENT_ID || "",
+        privateKey: env.ARESTA_CLIMB_BOT_GITHUB_APP_PRIVATE_KEY || "",
+        installationId: env.ARESTA_CLIMB_BOT_GITHUB_APP_INSTALLATION_ID || "",
+        repositorio: item.dadosIssue.repositorio,
+        titulo: item.dadosIssue.titulo,
+        corpo: item.dadosIssue.corpo,
+        labels: item.dadosIssue.labels,
+      });
+
+      if (resIssue.sucesso && resIssue.urlIssue) {
+        await fila.remover(item.id);
+        if (env.DISCORD_WEBHOOK_EMERGENCIAS_URL) {
+          await clienteDiscord.enviarMensagemWebhook({
+            urlWebhook: env.DISCORD_WEBHOOK_EMERGENCIAS_URL,
+            texto: formatarTextoComMencaoNoRodape(
+              `✅ *[ISSUE DE EMERGÊNCIA CRIADA] ${item.dadosIssue.titulo}*\n• *Discussão GitHub:* ${resIssue.urlIssue} (#${resIssue.numeroIssue})`,
+            ),
+          });
+        }
+      }
+    } else if (item.tipo === "enviar_notificacao_discord" && item.dadosDiscord) {
+      const urlDestino = item.dadosDiscord.categoria === "emergencias"
+        ? env.DISCORD_WEBHOOK_EMERGENCIAS_URL
+        : env.DISCORD_WEBHOOK_BUGS_URL;
+
+      if (urlDestino) {
+        const resDiscord = await clienteDiscord.enviarMensagemWebhook({
+          urlWebhook: urlDestino,
+          texto: formatarTextoComMencaoNoRodape(item.dadosDiscord.texto),
+        });
+        if (resDiscord.sucesso) {
+          await fila.remover(item.id);
+        }
+      }
+    }
+  }
+}
+
+export async function processarRequisicaoAlertas(
+  requisicao: Request,
+  env: AmbienteAlertas,
+): Promise<Response> {
+  if (requisicao.method === "OPTIONS") {
+    return new Response(null, { status: 204, headers: CABECALHOS_PADRAO });
+  }
+
+  const url = new URL(requisicao.url);
+  const caminho = url.pathname.replace(/\/+$/, "") || "/";
+
+  if (requisicao.method === "GET" && (caminho === "/" || caminho === "/health")) {
+    return new Response(
+      JSON.stringify({
+        status: "operacional",
+        servico: "aresta-alertas-worker",
+      }),
+      {
+        status: 200,
+        headers: { ...CABECALHOS_PADRAO, "Content-Type": "application/json" },
+      },
+    );
+  }
+
+  if (requisicao.method !== "POST") {
+    return new Response(
+      JSON.stringify({ erro: "Método não permitido. Utilize POST." }),
+      {
+        status: 405,
+        headers: { ...CABECALHOS_PADRAO, "Content-Type": "application/json" },
+      },
+    );
+  }
+
+  if (caminho === "/webhook/sentry") {
+    const assinaturaRecebida = requisicao.headers.get("sentry-hook-signature") || "";
+    const corpoBruto = await requisicao.text();
+    const assinaturaEsperada = await assinarHmacSha256Hex(
+      env.SENTRY_WEBHOOK_SECRET || "",
+      corpoBruto,
+    );
+
+    if (!assinaturaRecebida || !compararTempoConstante(assinaturaRecebida, assinaturaEsperada)) {
+      return new Response(
+        JSON.stringify({ erro: "Assinatura HMAC do Sentry inválida ou ausente." }),
+        {
+          status: 401,
+          headers: { ...CABECALHOS_PADRAO, "Content-Type": "application/json" },
+        },
+      );
     }
 
-    const url = new URL(requisicao.url);
-    const caminho = url.pathname.replace(/\/+$/, "") || "/";
+    const recurso = requisicao.headers.get("sentry-hook-resource") || "event_alert";
+    const payload = JSON.parse(corpoBruto);
+    const acaoSentry = String(payload?.action || "");
 
-    if (requisicao.method === "GET" && (caminho === "/" || caminho === "/health")) {
+    // Sincronização Bidirecional Sentry -> GitHub (resolved / archived / ignored / unresolved)
+    if (
+      recurso === "issue" &&
+      (acaoSentry === "resolved" ||
+        acaoSentry === "archived" ||
+        acaoSentry === "ignored" ||
+        acaoSentry === "unresolved")
+    ) {
+      const idIssueSentry = String(payload?.data?.issue?.id || "");
+      const clienteGithub = obterClienteGithubApp(env);
+      if (idIssueSentry && clienteGithub) {
+        const novoEstado = acaoSentry === "unresolved" ? "open" : "closed";
+        const resSync = await clienteGithub.sincronizarEstadoIssuePorIdSentry({
+          clientId: env.ARESTA_CLIMB_BOT_GITHUB_APP_CLIENT_ID || "",
+          privateKey: env.ARESTA_CLIMB_BOT_GITHUB_APP_PRIVATE_KEY || "",
+          installationId: env.ARESTA_CLIMB_BOT_GITHUB_APP_INSTALLATION_ID || "",
+          idIssueSentry,
+          novoEstado,
+        });
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            sincronizadoGithub: resSync.sucesso,
+            novoEstado,
+            issuesAtualizadas: resSync.issuesAtualizadas,
+          }),
+          {
+            status: 200,
+            headers: { ...CABECALHOS_PADRAO, "Content-Type": "application/json" },
+          },
+        );
+      }
+    }
+
+    const notificacao = classificarWebhookSentry(recurso, payload, env);
+
+    if (!notificacao) {
       return new Response(
-        JSON.stringify({
-          status: "operacional",
-          servico: "aresta-alertas-worker",
-        }),
+        JSON.stringify({ ok: true, ignorado: true }),
         {
           status: 200,
           headers: { ...CABECALHOS_PADRAO, "Content-Type": "application/json" },
@@ -421,93 +1281,104 @@ export default {
       );
     }
 
-    if (requisicao.method !== "POST") {
+    return await despacharNotificacaoComFallback(notificacao, env);
+  }
+
+  if (caminho === "/webhook/github") {
+    const cabecalhoAssinatura = requisicao.headers.get("x-hub-signature-256") || "";
+    const corpoBruto = await requisicao.text();
+    const hashEsperado = await assinarHmacSha256Hex(
+      env.GITHUB_WEBHOOK_SECRET || "",
+      corpoBruto,
+    );
+    const assinaturaEsperada = `sha256=${hashEsperado}`;
+
+    if (!cabecalhoAssinatura || !compararTempoConstante(cabecalhoAssinatura, assinaturaEsperada)) {
       return new Response(
-        JSON.stringify({ erro: "Método não permitido. Utilize POST." }),
+        JSON.stringify({ erro: "Assinatura HMAC do GitHub inválida ou ausente." }),
         {
-          status: 405,
+          status: 401,
           headers: { ...CABECALHOS_PADRAO, "Content-Type": "application/json" },
         },
       );
     }
 
-    if (caminho === "/webhook/sentry") {
-      const assinaturaRecebida = requisicao.headers.get("sentry-hook-signature") || "";
-      const corpoBruto = await requisicao.text();
-      const assinaturaEsperada = await assinarHmacSha256Hex(
-        env.SENTRY_WEBHOOK_SECRET || "",
-        corpoBruto,
-      );
+    const eventoGithub = requisicao.headers.get("x-github-event") || "";
+    const payload = JSON.parse(corpoBruto);
+    const acaoGithub = String(payload?.action || "");
 
-      if (!assinaturaRecebida || !compararTempoConstante(assinaturaRecebida, assinaturaEsperada)) {
-        return new Response(
-          JSON.stringify({ erro: "Assinatura HMAC do Sentry inválida ou ausente." }),
-          {
-            status: 401,
-            headers: { ...CABECALHOS_PADRAO, "Content-Type": "application/json" },
-          },
-        );
+    // Sincronização Bidirecional GitHub -> Sentry (quando humano fecha ou reabre issue vinculada ao Sentry)
+    if (eventoGithub === "issues" && (acaoGithub === "closed" || acaoGithub === "reopened")) {
+      const tipoSender = String(payload?.sender?.type || "");
+      const loginSender = String(payload?.sender?.login || "").toLowerCase();
+      const ehBot = tipoSender === "Bot" || loginSender.includes("aresta-climb-bot");
+
+      if (!ehBot && (env.SENTRY_API_TOKEN || env.clienteSentry)) {
+        const idSentry = extrairIdIssueSentryDoCorpo(String(payload?.issue?.body || ""));
+        if (idSentry) {
+          const clienteSentry = env.clienteSentry || new ClienteSentryHttp();
+          await clienteSentry.atualizarStatusIssue({
+            tokenApi: env.SENTRY_API_TOKEN || "",
+            idIssueSentry: idSentry,
+            novoStatus: acaoGithub === "closed" ? "resolved" : "unresolved",
+          });
+        }
       }
 
-      const recurso = requisicao.headers.get("sentry-hook-resource") || "event_alert";
-      const payload = JSON.parse(corpoBruto);
-      const notificacao = classificarWebhookSentry(recurso, payload, env);
-
-      if (!notificacao) {
+      if (acaoGithub === "closed") {
         return new Response(
-          JSON.stringify({ ok: true, ignorado: true }),
-          {
-            status: 200,
-            headers: { ...CABECALHOS_PADRAO, "Content-Type": "application/json" },
-          },
-        );
-      }
-
-      return await despacharNotificacaoComFallback(notificacao, env);
-    }
-
-    if (caminho === "/webhook/github") {
-      const cabecalhoAssinatura = requisicao.headers.get("x-hub-signature-256") || "";
-      const corpoBruto = await requisicao.text();
-      const hashEsperado = await assinarHmacSha256Hex(
-        env.GITHUB_WEBHOOK_SECRET || "",
-        corpoBruto,
-      );
-      const assinaturaEsperada = `sha256=${hashEsperado}`;
-
-      if (!cabecalhoAssinatura || !compararTempoConstante(cabecalhoAssinatura, assinaturaEsperada)) {
-        return new Response(
-          JSON.stringify({ erro: "Assinatura HMAC do GitHub inválida ou ausente." }),
-          {
-            status: 401,
-            headers: { ...CABECALHOS_PADRAO, "Content-Type": "application/json" },
-          },
-        );
-      }
-
-      const eventoGithub = requisicao.headers.get("x-github-event") || "";
-      const payload = JSON.parse(corpoBruto);
-      const notificacao = classificarWebhookGithub(eventoGithub, payload, env);
-
-      if (!notificacao) {
-        return new Response(
-          JSON.stringify({ ok: true, ignorado: true }),
+          JSON.stringify({ ok: true, sincronizadoSentry: !ehBot }),
           {
             status: 200,
             headers: { ...CABECALHOS_PADRAO, "Content-Type": "application/json" },
           },
         );
       }
-
-      return await despacharNotificacaoComFallback(notificacao, env);
     }
 
-    return new Response(
-      JSON.stringify({ erro: "Rota de webhook não encontrada." }),
-      {
-        status: 404,
-        headers: { ...CABECALHOS_PADRAO, "Content-Type": "application/json" },
-      },
-    );
+    const notificacao = classificarWebhookGithub(eventoGithub, payload, env);
+
+    if (!notificacao) {
+      return new Response(
+        JSON.stringify({ ok: true, ignorado: true }),
+        {
+          status: 200,
+          headers: { ...CABECALHOS_PADRAO, "Content-Type": "application/json" },
+        },
+      );
+    }
+
+    return await despacharNotificacaoComFallback(notificacao, env);
+  }
+
+  return new Response(
+    JSON.stringify({ erro: "Rota de webhook não encontrada." }),
+    {
+      status: 404,
+      headers: { ...CABECALHOS_PADRAO, "Content-Type": "application/json" },
+    },
+  );
+}
+
+export default Sentry.withSentry(
+  (env: AmbienteAlertas) => ({
+    dsn: env.SENTRY_DSN,
+    beforeSend(event: any) {
+      if (event.request?.headers) {
+        delete event.request.headers["authorization"];
+        delete event.request.headers["cookie"];
+        delete event.request.headers["sentry-hook-signature"];
+        delete event.request.headers["x-hub-signature-256"];
+      }
+      return event;
+    },
+  }),
+  {
+    fetch(requisicao: Request, env: AmbienteAlertas): Promise<Response> {
+      return processarRequisicaoAlertas(requisicao, env);
+    },
+    scheduled(_controller: any, env: AmbienteAlertas): Promise<void> {
+      return processarFilaRetentativas(env);
+    },
   },
-};
+);

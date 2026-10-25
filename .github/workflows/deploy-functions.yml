@@ -43,7 +43,6 @@ jobs:
       fail-fast: false
       matrix:
         function:
-          - discord-feedback
           - app-feedback
           - git-proxy
           - create-pr

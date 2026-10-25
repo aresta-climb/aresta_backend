@@ -459,6 +459,7 @@ Deno.test("Worker HTTP - deve encaminhar requisição via proxy e resolver respo
 
   const req = new Request("https://previa.arestaclimb.com/k9x2p83a/indice.binarypb");
   const promessaFetch = worker.fetch(req);
+  await new Promise((r) => setTimeout(r, 0));
 
   expect(socket.sent.length).toBe(1);
   const payload = JSON.parse(socket.sent[0]);
@@ -506,14 +507,14 @@ Deno.test("SessaoDurableObject - deve instanciar e processar requisições em su
   expect(resAdd.status).toBe(200);
 
   const resTotal1 = await doInstance.fetch(new Request("https://previa.arestaclimb.com/__registro__/total"));
-  const dataTotal1 = await resTotal1.json();
+  const dataTotal1: any = await resTotal1.json();
   expect(dataTotal1.total).toBe(1);
 
   const resRem = await doInstance.fetch(new Request("https://previa.arestaclimb.com/__registro__/remover?codigo=abc12345", { method: "POST" }));
   expect(resRem.status).toBe(200);
 
   const resTotal2 = await doInstance.fetch(new Request("https://previa.arestaclimb.com/__registro__/total"));
-  const dataTotal2 = await resTotal2.json();
+  const dataTotal2: any = await resTotal2.json();
   expect(dataTotal2.total).toBe(0);
 });
 
@@ -763,7 +764,7 @@ Deno.test("Worker HTTP - /health deve consultar Supabase quando memória do isol
   } as any);
 
   expect(res.status).toBe(200);
-  const json = await res.json();
+  const json: any = await res.json();
   expect(json.status).toBe("operacional");
   expect(json.sessoesAtivas).toBe(4);
 });
@@ -910,7 +911,7 @@ Deno.test("Worker HTTP - Aliases /sessions e /meta", async () => {
   });
   const resPost = await worker.fetch(reqPost, mockEnv);
   expect(resPost.status).toBe(201);
-  const jsonPost = await resPost.json();
+  const jsonPost: any = await resPost.json();
 
   // GET /<codigo>/meta
   const reqMeta = new Request(`https://previa.arestaclimb.com/${jsonPost.codigo}/meta`);
@@ -1044,7 +1045,7 @@ Deno.test("SessaoDurableObject - deve persistir dados de sessão no state.storag
   const reqMeta = new Request("https://previa.arestaclimb.com/dopersist/meta");
   const resMeta = await novaDoInstancia.fetch(reqMeta);
   expect(resMeta.status).toBe(200);
-  const jsonMeta = await resMeta.json();
+  const jsonMeta: any = await resMeta.json();
   expect(jsonMeta.metadados?.ipLocal).toBe("192.168.0.100");
 });
 

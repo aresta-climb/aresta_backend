@@ -18,6 +18,7 @@ import {
   InterfaceRelatorSentry,
   relatarErroSentry,
 } from "../../../supabase/functions/compartilhado/relator_sentry.ts";
+import * as Sentry from "@sentry/cloudflare";
 
 export const gerenciador = new GerenciadorSessao();
 
@@ -812,8 +813,20 @@ export class SessaoDurableObject {
   }
 }
 
-export default {
-  async fetch(request: Request, env?: ContextoWorker): Promise<Response> {
+export default Sentry.withSentry(
+  (env?: ContextoWorker) => ({
+    dsn: env?.SENTRY_DSN,
+    beforeSend(event: any) {
+      if (event.request?.headers) {
+        delete event.request.headers["authorization"];
+        delete event.request.headers["cookie"];
+        delete event.request.headers["x-api-key"];
+      }
+      return event;
+    },
+  }),
+  {
+    async fetch(request: Request, env?: ContextoWorker): Promise<Response> {
     const url = new URL(request.url);
     const pathname = url.pathname.replace(/\/+/g, "/");
 
@@ -871,4 +884,5 @@ export default {
 
     return tratarRequisicao(request, env, env?.gerenciadorPersonalizado || gerenciador);
   },
-};
+}
+);

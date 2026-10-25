@@ -3,6 +3,10 @@
   "name": "aresta-feedback-gateway",
   "main": "src/index.ts",
   "compatibility_date": "2026-08-01",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "upload_source_maps": true,
   "vars": {
     "SUPABASE_STORAGE_URL": "https://yzkhiaoqtxvvcyyuwmqg.supabase.co/storage/v1/object/public/feedback_anexos",
     "SUPABASE_DASHBOARD_URL": "https://supabase.com/dashboard/project/yzkhiaoqtxvvcyyuwmqg/editor/42715"

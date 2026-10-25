@@ -6,21 +6,33 @@ import {
   assertStringIncludes,
 } from "https://deno.land/std@0.224.0/assert/mod.ts";
 import {
+  ClienteDiscordFake,
+  ClienteGithubAppFake,
   ClienteResendFake,
+  ClienteSentryFake,
   ClienteWahaFake,
+  FilaRetentativasFake,
 } from "../src/cliente_notificacao_fake.ts";
 import worker, {
   AmbienteAlertas,
   assinarHmacSha256Hex,
+  ClienteDiscordHttp,
+  ClienteGithubAppHttp,
   ClienteResendHttp,
+  ClienteSentryHttp,
   ClienteWahaHttp,
+  FilaRetentativasKv,
+  processarFilaRetentativas,
 } from "../src/index.ts";
 
 function criarAmbientePadrao(
-  wahaFake: ClienteWahaFake,
-  resendFake: ClienteResendFake,
+  wahaFake?: ClienteWahaFake,
+  resendFake?: ClienteResendFake,
+  discordFake?: ClienteDiscordFake,
 ): AmbienteAlertas {
   return {
+    DISCORD_WEBHOOK_EMERGENCIAS_URL: "https://discord.com/api/webhooks/emergencias/token",
+    DISCORD_WEBHOOK_BUGS_URL: "https://discord.com/api/webhooks/bugs/token",
     WAHA_BASE_URL: "https://waha.arestaclimb.com",
     WAHA_API_KEY: "waha-secret-key",
     WAHA_SESSION: "default",
@@ -31,6 +43,7 @@ function criarAmbientePadrao(
     RESEND_API_KEY: "re_chave_secreta",
     EMAIL_REMETENTE_ALERTA: "alerta@login.arestaclimb.com",
     EMAIL_DESTINATARIO_FALLBACK: "contato@arestaclimb.com",
+    clienteDiscord: discordFake,
     clienteWaha: wahaFake,
     clienteResend: resendFake,
   };
@@ -401,7 +414,7 @@ Deno.test("alertas-worker: aciona fallback de e-mail via Resend para contato@are
   assertEquals(resendFake.emailsEnviados.length, 1);
   assertEquals(resendFake.emailsEnviados[0].remetente, "alerta@login.arestaclimb.com");
   assertEquals(resendFake.emailsEnviados[0].destinatario, "contato@arestaclimb.com");
-  assertStringIncludes(resendFake.emailsEnviados[0].assunto, "[CONTINGÊNCIA WHATSAPP]");
+  assertStringIncludes(resendFake.emailsEnviados[0].assunto, "[CONTINGÊNCIA ALERTA]");
   assertStringIncludes(resendFake.emailsEnviados[0].texto, "Grampo solto na via 2");
   assertStringIncludes(resendFake.emailsEnviados[0].motivoFalhaWaha, "Bad Gateway");
 });
@@ -469,4 +482,960 @@ Deno.test("ClienteWahaHttp e ClienteResendHttp: clientes HTTP reais enviam paylo
     motivoFalhaWaha: "Timeout",
   });
   assertEquals(resResendEx.sucesso, false);
+});
+
+Deno.test("alertas-worker: despacha para Webhook do Discord (com @everyone) quando apenas Discord esta configurado (WAHA em standby)", async () => {
+  const discordFake = new ClienteDiscordFake();
+  const resendFake = new ClienteResendFake();
+  const env: AmbienteAlertas = {
+    DISCORD_WEBHOOK_EMERGENCIAS_URL: "https://discord.com/api/webhooks/emergencias/token",
+    DISCORD_WEBHOOK_BUGS_URL: "https://discord.com/api/webhooks/bugs/token",
+    SENTRY_WEBHOOK_SECRET: "segredo-sentry-hmac",
+    GITHUB_WEBHOOK_SECRET: "segredo-github-hmac",
+    RESEND_API_KEY: "re_chave_secreta",
+    clienteDiscord: discordFake,
+    clienteResend: resendFake,
+  };
+
+  // 1. Alerta de Emergência (Sentry Fatal)
+  const corpoFatal = JSON.stringify({
+    action: "triggered",
+    data: {
+      event: {
+        level: "fatal",
+        title: "Crash fatal em produção",
+        web_url: "https://aresta-climb.sentry.io/issues/555/",
+      },
+    },
+  });
+  const sigFatal = await assinarHmacSha256Hex(env.SENTRY_WEBHOOK_SECRET, corpoFatal);
+
+  const resFatal = await worker.fetch(
+    new Request("https://alertas.arestaclimb.com/webhook/sentry", {
+      method: "POST",
+      headers: {
+        "sentry-hook-signature": sigFatal,
+        "sentry-hook-resource": "event_alert",
+      },
+      body: corpoFatal,
+    }),
+    env,
+  );
+  assertEquals(resFatal.status, 200);
+  const jsonFatal = await resFatal.json();
+  assertEquals(jsonFatal.entregueVia, "discord");
+  assertEquals(discordFake.mensagensEnviadas.length, 1);
+  assertEquals(discordFake.mensagensEnviadas[0].urlWebhook, env.DISCORD_WEBHOOK_EMERGENCIAS_URL);
+  assertStringIncludes(discordFake.mensagensEnviadas[0].texto, "@everyone");
+  assertStringIncludes(discordFake.mensagensEnviadas[0].texto, "Crash fatal em produção");
+
+  // 2. Alerta de Bug / Nova Issue (GitHub)
+  const corpoIssue = JSON.stringify({
+    action: "opened",
+    repository: { full_name: "aresta-climb/aresta_app" },
+    issue: {
+      number: 10,
+      title: "Erro ao abrir foto de croqui",
+      html_url: "https://github.com/aresta-climb/aresta_app/issues/10",
+    },
+  });
+  const sigIssue = await assinarHmacSha256Hex(env.GITHUB_WEBHOOK_SECRET, corpoIssue);
+
+  const resIssue = await worker.fetch(
+    new Request("https://alertas.arestaclimb.com/webhook/github", {
+      method: "POST",
+      headers: {
+        "x-github-event": "issues",
+        "x-hub-signature-256": `sha256=${sigIssue}`,
+      },
+      body: corpoIssue,
+    }),
+    env,
+  );
+  assertEquals(resIssue.status, 200);
+  const jsonIssue = await resIssue.json();
+  assertEquals(jsonIssue.entregueVia, "discord");
+  assertEquals(discordFake.mensagensEnviadas.length, 2);
+  assertEquals(discordFake.mensagensEnviadas[1].urlWebhook, env.DISCORD_WEBHOOK_BUGS_URL);
+  assertStringIncludes(discordFake.mensagensEnviadas[1].texto, "@everyone");
+  assertStringIncludes(discordFake.mensagensEnviadas[1].texto, "Erro ao abrir foto de croqui");
+  assertEquals(resendFake.emailsEnviados.length, 0);
+});
+
+Deno.test("alertas-worker: despacha simultaneamente para Discord e WAHA quando ambos estao configurados", async () => {
+  const discordFake = new ClienteDiscordFake();
+  const wahaFake = new ClienteWahaFake();
+  const resendFake = new ClienteResendFake();
+  const env = criarAmbientePadrao(wahaFake, resendFake, discordFake);
+
+  const corpoIssue = JSON.stringify({
+    action: "opened",
+    repository: { full_name: "aresta-climb/aresta_db" },
+    issue: {
+      number: 77,
+      title: "Novo setor Pedra Rachada",
+      html_url: "https://github.com/aresta-climb/aresta_db/issues/77",
+    },
+  });
+  const sig = await assinarHmacSha256Hex(env.GITHUB_WEBHOOK_SECRET, corpoIssue);
+
+  const res = await worker.fetch(
+    new Request("https://alertas.arestaclimb.com/webhook/github", {
+      method: "POST",
+      headers: {
+        "x-github-event": "issues",
+        "x-hub-signature-256": `sha256=${sig}`,
+      },
+      body: corpoIssue,
+    }),
+    env,
+  );
+  assertEquals(res.status, 200);
+  const jsonRes = await res.json();
+  assertEquals(jsonRes.entregueVia, "discord+whatsapp_waha");
+  assertEquals(discordFake.mensagensEnviadas.length, 1);
+  assertEquals(wahaFake.mensagensEnviadas.length, 1);
+  assertEquals(resendFake.emailsEnviados.length, 0);
+});
+
+Deno.test("alertas-worker: aciona fallback Resend quando Discord configurado falha e WAHA nao esta ativo", async () => {
+  const discordFake = new ClienteDiscordFake();
+  discordFake.deveFalhar = true;
+  discordFake.statusFalha = 500;
+  discordFake.mensagemFalha = "Discord API indisponível";
+
+  const resendFake = new ClienteResendFake();
+  const env: AmbienteAlertas = {
+    DISCORD_WEBHOOK_EMERGENCIAS_URL: "https://discord.com/api/webhooks/emergencias/token",
+    SENTRY_WEBHOOK_SECRET: "segredo-sentry-hmac",
+    GITHUB_WEBHOOK_SECRET: "segredo-github-hmac",
+    RESEND_API_KEY: "re_chave_secreta",
+    EMAIL_REMETENTE_ALERTA: "alerta@login.arestaclimb.com",
+    EMAIL_DESTINATARIO_FALLBACK: "contato@arestaclimb.com",
+    clienteDiscord: discordFake,
+    clienteResend: resendFake,
+  };
+
+  const corpoFatal = JSON.stringify({
+    action: "triggered",
+    data: {
+      event: {
+        level: "fatal",
+        title: "Crash do sistema",
+        web_url: "https://aresta-climb.sentry.io/issues/777/",
+      },
+    },
+  });
+  const sigFatal = await assinarHmacSha256Hex(env.SENTRY_WEBHOOK_SECRET, corpoFatal);
+
+  const res = await worker.fetch(
+    new Request("https://alertas.arestaclimb.com/webhook/sentry", {
+      method: "POST",
+      headers: {
+        "sentry-hook-signature": sigFatal,
+        "sentry-hook-resource": "event_alert",
+      },
+      body: corpoFatal,
+    }),
+    env,
+  );
+  assertEquals(res.status, 200);
+  const jsonRes = await res.json();
+  assertEquals(jsonRes.entregueVia, "resend_fallback");
+  assertEquals(resendFake.emailsEnviados.length, 1);
+  assertStringIncludes(resendFake.emailsEnviados[0].texto, "Crash do sistema");
+  assertStringIncludes(resendFake.emailsEnviados[0].motivoFalhaWaha, "Discord API indisponível");
+});
+
+Deno.test("ClienteDiscordHttp: envia webhook real formatado com @everyone, trunca textos longos e trata erros", async () => {
+  const chamadas: Array<{ url: string; corpoJson: any }> = [];
+  const fetchSucesso: typeof fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+    chamadas.push({
+      url: String(input),
+      corpoJson: JSON.parse(String(init?.body || "{}")),
+    });
+    return new Response(null, { status: 204 });
+  };
+
+  const discordHttp = new ClienteDiscordHttp(fetchSucesso);
+  const resSucesso = await discordHttp.enviarMensagemWebhook({
+    urlWebhook: "https://discord.com/api/webhooks/123/xyz",
+    texto: "🚨 Emergência teste",
+  });
+  assertEquals(resSucesso.sucesso, true);
+  assertEquals(resSucesso.statusHttp, 204);
+  assertEquals(chamadas.length, 1);
+  assertEquals(chamadas[0].url, "https://discord.com/api/webhooks/123/xyz");
+  assertStringIncludes(chamadas[0].corpoJson.content, "@everyone");
+  assertStringIncludes(chamadas[0].corpoJson.content, "Emergência teste");
+  assertEquals(chamadas[0].corpoJson.allowed_mentions.parse, ["everyone"]);
+
+  // Teste de truncamento preventivo (> 2000 chars)
+  const textoLongo = "A".repeat(2500);
+  const resLongo = await discordHttp.enviarMensagemWebhook({
+    urlWebhook: "https://discord.com/api/webhooks/123/xyz",
+    texto: textoLongo,
+  });
+  assertEquals(resLongo.sucesso, true);
+  assertEquals(chamadas[1].corpoJson.content.length <= 1990, true);
+
+  // Erro HTTP do Discord
+  const fetchErro: typeof fetch = async () => new Response("Rate limited", { status: 429 });
+  const discordErro = new ClienteDiscordHttp(fetchErro);
+  const resErro = await discordErro.enviarMensagemWebhook({
+    urlWebhook: "https://discord.com/api/webhooks/123/xyz",
+    texto: "Teste",
+  });
+  assertEquals(resErro.sucesso, false);
+  assertEquals(resErro.statusHttp, 429);
+
+  // Exceção de rede
+  const fetchExcecao: typeof fetch = async () => {
+    throw new Error("DNS resolution failed");
+  };
+  const discordExcecao = new ClienteDiscordHttp(fetchExcecao);
+  const resExcecao = await discordExcecao.enviarMensagemWebhook({
+    urlWebhook: "https://discord.com/api/webhooks/123/xyz",
+    texto: "Teste",
+  });
+  assertEquals(resExcecao.sucesso, false);
+  assertEquals(resExcecao.statusHttp, 0);
+  assertStringIncludes(resExcecao.erro || "", "DNS resolution failed");
+});
+
+Deno.test("alertas-worker: despacha exclusivamente para WAHA quando Discord nao esta configurado", async () => {
+  const wahaFake = new ClienteWahaFake();
+  const resendFake = new ClienteResendFake();
+  const env: AmbienteAlertas = {
+    WAHA_BASE_URL: "https://waha.arestaclimb.com",
+    WAHA_API_KEY: "waha-secret-key",
+    WAHA_SESSION: "sessao-customizada",
+    WHATSAPP_GRUPO_EMERGENCIAS_ID: "120363000001@g.us",
+    WHATSAPP_GRUPO_BUGS_ID: "120363000002@g.us",
+    SENTRY_WEBHOOK_SECRET: "segredo-sentry-hmac",
+    GITHUB_WEBHOOK_SECRET: "segredo-github-hmac",
+    RESEND_API_KEY: "re_chave_secreta",
+    clienteWaha: wahaFake,
+    clienteResend: resendFake,
+  };
+
+  const corpoFatal = JSON.stringify({
+    action: "triggered",
+    data: {
+      event: {
+        level: "fatal",
+        title: "Crash do sistema sem Discord",
+        web_url: "https://aresta-climb.sentry.io/issues/999/",
+      },
+    },
+  });
+  const sig = await assinarHmacSha256Hex(env.SENTRY_WEBHOOK_SECRET, corpoFatal);
+
+  const res = await worker.fetch(
+    new Request("https://alertas.arestaclimb.com/webhook/sentry", {
+      method: "POST",
+      headers: {
+        "sentry-hook-signature": sig,
+        "sentry-hook-resource": "event_alert",
+      },
+      body: corpoFatal,
+    }),
+    env,
+  );
+
+  assertEquals(res.status, 200);
+  const jsonRes = await res.json();
+  assertEquals(jsonRes.entregueVia, "whatsapp_waha");
+  assertEquals(wahaFake.mensagensEnviadas.length, 1);
+  assertEquals(wahaFake.mensagensEnviadas[0].sessao, "sessao-customizada");
+  assertEquals(resendFake.emailsEnviados.length, 0);
+});
+
+Deno.test("ClienteWahaHttp: utiliza sessao customizada quando fornecida", async () => {
+  let corpoEnviado: any = null;
+  const fetchMock: typeof fetch = async (_url: RequestInfo | URL, init?: RequestInit) => {
+    corpoEnviado = JSON.parse(String(init?.body || "{}"));
+    return new Response(JSON.stringify({ ok: true }), { status: 200 });
+  };
+
+  const wahaHttp = new ClienteWahaHttp(fetchMock);
+  const res = await wahaHttp.enviarMensagemGrupo({
+    urlBase: "https://waha.arestaclimb.com",
+    chaveApi: "key",
+    chatId: "120363@g.us",
+    texto: "teste",
+    sessao: "minha-sessao",
+  });
+
+  assertEquals(res.sucesso, true);
+  assertEquals(corpoEnviado.session, "minha-sessao");
+});
+
+Deno.test("alertas-worker: CANAL_ALERTAS_ATIVO='discord' forca envio apenas ao Discord mesmo com WAHA configurado", async () => {
+  const discordFake = new ClienteDiscordFake();
+  const wahaFake = new ClienteWahaFake();
+  const resendFake = new ClienteResendFake();
+  const env = criarAmbientePadrao(wahaFake, resendFake, discordFake);
+  env.CANAL_ALERTAS_ATIVO = "discord";
+
+  const corpoFatal = JSON.stringify({
+    action: "triggered",
+    data: {
+      event: {
+        level: "fatal",
+        title: "Crash teste canal discord",
+        web_url: "https://aresta-climb.sentry.io/issues/123/",
+      },
+    },
+  });
+  const sig = await assinarHmacSha256Hex(env.SENTRY_WEBHOOK_SECRET, corpoFatal);
+
+  const res = await worker.fetch(
+    new Request("https://alertas.arestaclimb.com/webhook/sentry", {
+      method: "POST",
+      headers: {
+        "sentry-hook-signature": sig,
+        "sentry-hook-resource": "event_alert",
+      },
+      body: corpoFatal,
+    }),
+    env,
+  );
+
+  assertEquals(res.status, 200);
+  const jsonRes = await res.json();
+  assertEquals(jsonRes.entregueVia, "discord");
+  assertEquals(discordFake.mensagensEnviadas.length, 1);
+  assertEquals(wahaFake.mensagensEnviadas.length, 0);
+  assertEquals(resendFake.emailsEnviados.length, 0);
+});
+
+Deno.test("alertas-worker: CANAL_ALERTAS_ATIVO='whatsapp' forca envio apenas ao WAHA mesmo com Discord configurado", async () => {
+  const discordFake = new ClienteDiscordFake();
+  const wahaFake = new ClienteWahaFake();
+  const resendFake = new ClienteResendFake();
+  const env = criarAmbientePadrao(wahaFake, resendFake, discordFake);
+  env.CANAL_ALERTAS_ATIVO = "whatsapp";
+
+  const corpoFatal = JSON.stringify({
+    action: "triggered",
+    data: {
+      event: {
+        level: "fatal",
+        title: "Crash teste canal whatsapp",
+        web_url: "https://aresta-climb.sentry.io/issues/124/",
+      },
+    },
+  });
+  const sig = await assinarHmacSha256Hex(env.SENTRY_WEBHOOK_SECRET, corpoFatal);
+
+  const res = await worker.fetch(
+    new Request("https://alertas.arestaclimb.com/webhook/sentry", {
+      method: "POST",
+      headers: {
+        "sentry-hook-signature": sig,
+        "sentry-hook-resource": "event_alert",
+      },
+      body: corpoFatal,
+    }),
+    env,
+  );
+
+  assertEquals(res.status, 200);
+  const jsonRes = await res.json();
+  assertEquals(jsonRes.entregueVia, "whatsapp_waha");
+  assertEquals(discordFake.mensagensEnviadas.length, 0);
+  assertEquals(wahaFake.mensagensEnviadas.length, 1);
+  assertEquals(resendFake.emailsEnviados.length, 0);
+});
+
+Deno.test("alertas-worker: posiciona o gist na primeira linha e @everyone no rodape da mensagem do Discord", async () => {
+  const discordFake = new ClienteDiscordFake();
+  const resendFake = new ClienteResendFake();
+  const env = criarAmbientePadrao(undefined, resendFake, discordFake);
+  env.CANAL_ALERTAS_ATIVO = "discord";
+
+  const corpoIssue = JSON.stringify({
+    action: "opened",
+    repository: { full_name: "aresta-climb/aresta_app" },
+    issue: {
+      number: 42,
+      title: "Falha ao carregar foto offline",
+      html_url: "https://github.com/aresta-climb/aresta_app/issues/42",
+      labels: [{ name: "bug" }],
+    },
+  });
+  const sig = await assinarHmacSha256Hex(env.GITHUB_WEBHOOK_SECRET, corpoIssue);
+
+  const res = await worker.fetch(
+    new Request("https://alertas.arestaclimb.com/webhook/github", {
+      method: "POST",
+      headers: {
+        "x-github-event": "issues",
+        "x-hub-signature-256": `sha256=${sig}`,
+      },
+      body: corpoIssue,
+    }),
+    env,
+  );
+  assertEquals(res.status, 200);
+  assertEquals(discordFake.mensagensEnviadas.length, 1);
+  const textoEnviado = discordFake.mensagensEnviadas[0].texto;
+  // A primeira linha NÃO deve começar com @everyone; deve começar com o gist
+  assertEquals(textoEnviado.startsWith("@everyone"), false);
+  // Deve terminar com @everyone no rodapé
+  assertEquals(textoEnviado.endsWith("\n\n@everyone"), true);
+  assertStringIncludes(textoEnviado.split("\n")[0], "Falha ao carregar foto offline");
+});
+
+Deno.test("alertas-worker: cria GitHub Issue automatica com label 'emergencia' para alertas do Sentry e workflow_run e inclui o link na notificacao", async () => {
+  const discordFake = new ClienteDiscordFake();
+  const githubFake = new ClienteGithubAppFake();
+  const resendFake = new ClienteResendFake();
+  const env = criarAmbientePadrao(undefined, resendFake, discordFake);
+  env.CANAL_ALERTAS_ATIVO = "discord";
+  env.ARESTA_CLIMB_BOT_GITHUB_APP_CLIENT_ID = "app-client-id";
+  env.ARESTA_CLIMB_BOT_GITHUB_APP_PRIVATE_KEY = "app-private-key";
+  env.ARESTA_CLIMB_BOT_GITHUB_APP_INSTALLATION_ID = "99999";
+  env.clienteGithubApp = githubFake;
+
+  // 1. Crash Fatal no Sentry em aresta-backend -> cria issue em aresta-climb/aresta_backend
+  const corpoFatal = JSON.stringify({
+    action: "triggered",
+    data: {
+      event: {
+        level: "fatal",
+        title: "Database connection pool exhausted",
+        web_url: "https://aresta-climb.sentry.io/issues/5001/",
+        tags: [["service", "aresta-backend"]],
+      },
+    },
+  });
+  const sigFatal = await assinarHmacSha256Hex(env.SENTRY_WEBHOOK_SECRET, corpoFatal);
+
+  const resFatal = await worker.fetch(
+    new Request("https://alertas.arestaclimb.com/webhook/sentry", {
+      method: "POST",
+      headers: {
+        "sentry-hook-signature": sigFatal,
+        "sentry-hook-resource": "event_alert",
+      },
+      body: corpoFatal,
+    }),
+    env,
+  );
+  assertEquals(resFatal.status, 200);
+  assertEquals(githubFake.issuesCriadas.length, 1);
+  assertEquals(githubFake.issuesCriadas[0].repositorio, "aresta-climb/aresta_backend");
+  assertEquals(githubFake.issuesCriadas[0].labels, ["emergencia"]);
+  assertStringIncludes(githubFake.issuesCriadas[0].corpo, "https://aresta-climb.sentry.io/issues/5001/");
+  assertEquals(discordFake.mensagensEnviadas.length, 1);
+  assertStringIncludes(
+    discordFake.mensagensEnviadas[0].texto,
+    "https://github.com/aresta-climb/aresta_backend/issues/1",
+  );
+
+  // 2. Falha de workflow_run em aresta_db -> cria issue em aresta-climb/aresta_db
+  const corpoWorkflow = JSON.stringify({
+    action: "completed",
+    repository: { full_name: "aresta-climb/aresta_db" },
+    workflow_run: {
+      name: "Compilar SQLite",
+      head_branch: "main",
+      conclusion: "failure",
+      html_url: "https://github.com/aresta-climb/aresta_db/actions/runs/777",
+      head_commit: {
+        message: "feat: atualizar setores",
+        author: { name: "Renato" },
+      },
+    },
+  });
+  const sigWf = await assinarHmacSha256Hex(env.GITHUB_WEBHOOK_SECRET, corpoWorkflow);
+
+  const resWf = await worker.fetch(
+    new Request("https://alertas.arestaclimb.com/webhook/github", {
+      method: "POST",
+      headers: {
+        "x-github-event": "workflow_run",
+        "x-hub-signature-256": `sha256=${sigWf}`,
+      },
+      body: corpoWorkflow,
+    }),
+    env,
+  );
+  assertEquals(resWf.status, 200);
+  assertEquals(githubFake.issuesCriadas.length, 2);
+  assertEquals(githubFake.issuesCriadas[1].repositorio, "aresta-climb/aresta_db");
+  assertEquals(githubFake.issuesCriadas[1].labels, ["emergencia"]);
+  assertEquals(discordFake.mensagensEnviadas.length, 2);
+  assertStringIncludes(
+    discordFake.mensagensEnviadas[1].texto,
+    "https://github.com/aresta-climb/aresta_db/issues/2",
+  );
+});
+
+Deno.test("alertas-worker: ignora issues.opened com label 'emergencia' e notifica issues/PRs reabertos no canal correspondente", async () => {
+  const discordFake = new ClienteDiscordFake();
+  const resendFake = new ClienteResendFake();
+  const env = criarAmbientePadrao(undefined, resendFake, discordFake);
+  env.CANAL_ALERTAS_ATIVO = "discord";
+
+  // 1. issues.opened COM label 'emergencia' -> deve ser ignorado (200 OK, ignorado: true)
+  const corpoIssueEmergenciaAberta = JSON.stringify({
+    action: "opened",
+    repository: { full_name: "aresta-climb/aresta_backend" },
+    issue: {
+      number: 1,
+      title: "🚨 [EMERGÊNCIA] Crash fatal",
+      html_url: "https://github.com/aresta-climb/aresta_backend/issues/1",
+      labels: [{ name: "emergencia" }],
+    },
+  });
+  const sig1 = await assinarHmacSha256Hex(env.GITHUB_WEBHOOK_SECRET, corpoIssueEmergenciaAberta);
+
+  const res1 = await worker.fetch(
+    new Request("https://alertas.arestaclimb.com/webhook/github", {
+      method: "POST",
+      headers: {
+        "x-github-event": "issues",
+        "x-hub-signature-256": `sha256=${sig1}`,
+      },
+      body: corpoIssueEmergenciaAberta,
+    }),
+    env,
+  );
+  assertEquals(res1.status, 200);
+  assertEquals((await res1.json()).ignorado, true);
+  assertEquals(discordFake.mensagensEnviadas.length, 0);
+
+  // 2. issues.reopened COM label 'emergencia' -> notifica no canal de emergencias
+  const corpoIssueEmergenciaReaberta = JSON.stringify({
+    action: "reopened",
+    repository: { full_name: "aresta-climb/aresta_backend" },
+    issue: {
+      number: 1,
+      title: "🚨 [EMERGÊNCIA] Crash fatal",
+      html_url: "https://github.com/aresta-climb/aresta_backend/issues/1",
+      labels: [{ name: "emergencia" }],
+    },
+  });
+  const sig2 = await assinarHmacSha256Hex(env.GITHUB_WEBHOOK_SECRET, corpoIssueEmergenciaReaberta);
+
+  const res2 = await worker.fetch(
+    new Request("https://alertas.arestaclimb.com/webhook/github", {
+      method: "POST",
+      headers: {
+        "x-github-event": "issues",
+        "x-hub-signature-256": `sha256=${sig2}`,
+      },
+      body: corpoIssueEmergenciaReaberta,
+    }),
+    env,
+  );
+  assertEquals(res2.status, 200);
+  assertEquals(discordFake.mensagensEnviadas.length, 1);
+  assertEquals(discordFake.mensagensEnviadas[0].urlWebhook, env.DISCORD_WEBHOOK_EMERGENCIAS_URL);
+
+  // 3. issues.reopened SEM label 'emergencia' -> notifica no canal de bugs
+  const corpoBugReaberto = JSON.stringify({
+    action: "reopened",
+    repository: { full_name: "aresta-climb/aresta_app" },
+    issue: {
+      number: 15,
+      title: "Botão desalinhado",
+      html_url: "https://github.com/aresta-climb/aresta_app/issues/15",
+      labels: [{ name: "bug" }],
+    },
+  });
+  const sig3 = await assinarHmacSha256Hex(env.GITHUB_WEBHOOK_SECRET, corpoBugReaberto);
+
+  const res3 = await worker.fetch(
+    new Request("https://alertas.arestaclimb.com/webhook/github", {
+      method: "POST",
+      headers: {
+        "x-github-event": "issues",
+        "x-hub-signature-256": `sha256=${sig3}`,
+      },
+      body: corpoBugReaberto,
+    }),
+    env,
+  );
+  assertEquals(res3.status, 200);
+  assertEquals(discordFake.mensagensEnviadas.length, 2);
+  assertEquals(discordFake.mensagensEnviadas[1].urlWebhook, env.DISCORD_WEBHOOK_BUGS_URL);
+
+  // 4. pull_request.reopened -> notifica no canal de bugs
+  const corpoPrReaberto = JSON.stringify({
+    action: "reopened",
+    repository: { full_name: "aresta-climb/aresta_db" },
+    pull_request: {
+      number: 20,
+      title: "Revisão de croqui",
+      html_url: "https://github.com/aresta-climb/aresta_db/pull/20",
+      user: { login: "escalador" },
+    },
+  });
+  const sig4 = await assinarHmacSha256Hex(env.GITHUB_WEBHOOK_SECRET, corpoPrReaberto);
+
+  const res4 = await worker.fetch(
+    new Request("https://alertas.arestaclimb.com/webhook/github", {
+      method: "POST",
+      headers: {
+        "x-github-event": "pull_request",
+        "x-hub-signature-256": `sha256=${sig4}`,
+      },
+      body: corpoPrReaberto,
+    }),
+    env,
+  );
+  assertEquals(res4.status, 200);
+  assertEquals(discordFake.mensagensEnviadas.length, 3);
+  assertEquals(discordFake.mensagensEnviadas[2].urlWebhook, env.DISCORD_WEBHOOK_BUGS_URL);
+});
+
+Deno.test("alertas-worker: sincroniza bidirecionalmente fechamento e reabertura de issues entre Sentry e GitHub com protecao anti-loop", async () => {
+  const discordFake = new ClienteDiscordFake();
+  const githubFake = new ClienteGithubAppFake();
+  const sentryFake = new ClienteSentryFake();
+  const resendFake = new ClienteResendFake();
+  const env = criarAmbientePadrao(undefined, resendFake, discordFake);
+  env.CANAL_ALERTAS_ATIVO = "discord";
+  env.SENTRY_API_TOKEN = "sntrys_token_secreto";
+  env.ARESTA_CLIMB_BOT_GITHUB_APP_CLIENT_ID = "app-id";
+  env.ARESTA_CLIMB_BOT_GITHUB_APP_PRIVATE_KEY = "key";
+  env.ARESTA_CLIMB_BOT_GITHUB_APP_INSTALLATION_ID = "123";
+  env.clienteGithubApp = githubFake;
+  env.clienteSentry = sentryFake;
+
+  // 1. GitHub -> Sentry: humano fecha issue no GitHub que tem link do Sentry -> resolve no Sentry
+  const corpoFechamentoHumano = JSON.stringify({
+    action: "closed",
+    sender: { login: "renato", type: "User" },
+    repository: { full_name: "aresta-climb/aresta_app" },
+    issue: {
+      number: 33,
+      title: "Crash no mapa",
+      body: "Erro capturado em https://aresta-climb.sentry.io/issues/987654/",
+    },
+  });
+  const sigClose = await assinarHmacSha256Hex(env.GITHUB_WEBHOOK_SECRET, corpoFechamentoHumano);
+
+  const resClose = await worker.fetch(
+    new Request("https://alertas.arestaclimb.com/webhook/github", {
+      method: "POST",
+      headers: {
+        "x-github-event": "issues",
+        "x-hub-signature-256": `sha256=${sigClose}`,
+      },
+      body: corpoFechamentoHumano,
+    }),
+    env,
+  );
+  assertEquals(resClose.status, 200);
+  assertEquals(sentryFake.atualizacoesStatus.length, 1);
+  assertEquals(sentryFake.atualizacoesStatus[0].idIssueSentry, "987654");
+  assertEquals(sentryFake.atualizacoesStatus[0].novoStatus, "resolved");
+
+  // 2. GitHub -> Sentry (Anti-loop): bot fecha issue no GitHub -> NÃO chama Sentry de volta
+  const corpoFechamentoBot = JSON.stringify({
+    action: "closed",
+    sender: { login: "aresta-climb-bot[bot]", type: "Bot" },
+    repository: { full_name: "aresta-climb/aresta_app" },
+    issue: {
+      number: 33,
+      title: "Crash no mapa",
+      body: "Erro capturado em https://aresta-climb.sentry.io/issues/987654/",
+    },
+  });
+  const sigCloseBot = await assinarHmacSha256Hex(env.GITHUB_WEBHOOK_SECRET, corpoFechamentoBot);
+
+  const resCloseBot = await worker.fetch(
+    new Request("https://alertas.arestaclimb.com/webhook/github", {
+      method: "POST",
+      headers: {
+        "x-github-event": "issues",
+        "x-hub-signature-256": `sha256=${sigCloseBot}`,
+      },
+      body: corpoFechamentoBot,
+    }),
+    env,
+  );
+  assertEquals(resCloseBot.status, 200);
+  assertEquals(sentryFake.atualizacoesStatus.length, 1); // Manteve 1, não chamou de novo
+
+  // 3. Sentry -> GitHub: issue resolvida no Sentry -> fecha issue no GitHub
+  const corpoSentryResolved = JSON.stringify({
+    action: "resolved",
+    data: {
+      issue: {
+        id: "987654",
+      },
+    },
+  });
+  const sigSentryRes = await assinarHmacSha256Hex(env.SENTRY_WEBHOOK_SECRET, corpoSentryResolved);
+
+  const resSentryRes = await worker.fetch(
+    new Request("https://alertas.arestaclimb.com/webhook/sentry", {
+      method: "POST",
+      headers: {
+        "sentry-hook-signature": sigSentryRes,
+        "sentry-hook-resource": "issue",
+      },
+      body: corpoSentryResolved,
+    }),
+    env,
+  );
+  assertEquals(resSentryRes.status, 200);
+  assertEquals(githubFake.sincronizacoesEstado.length, 1);
+  assertEquals(githubFake.sincronizacoesEstado[0].idIssueSentry, "987654");
+  assertEquals(githubFake.sincronizacoesEstado[0].novoEstado, "closed");
+
+  // 4. Sentry -> GitHub: issue marcada como unresolved no Sentry -> reabre issue no GitHub
+  const corpoSentryUnresolved = JSON.stringify({
+    action: "unresolved",
+    data: {
+      issue: {
+        id: "987654",
+      },
+    },
+  });
+  const sigSentryUnres = await assinarHmacSha256Hex(env.SENTRY_WEBHOOK_SECRET, corpoSentryUnresolved);
+
+  const resSentryUnres = await worker.fetch(
+    new Request("https://alertas.arestaclimb.com/webhook/sentry", {
+      method: "POST",
+      headers: {
+        "sentry-hook-signature": sigSentryUnres,
+        "sentry-hook-resource": "issue",
+      },
+      body: corpoSentryUnresolved,
+    }),
+    env,
+  );
+  assertEquals(resSentryUnres.status, 200);
+  assertEquals(githubFake.sincronizacoesEstado.length, 2);
+  assertEquals(githubFake.sincronizacoesEstado[1].novoEstado, "open");
+});
+
+Deno.test("alertas-worker: enfileira falhas de criacao de issue no GitHub e falhas do Discord e reprocessa no Cron Trigger (scheduled)", async () => {
+  const discordFake = new ClienteDiscordFake();
+  const githubFake = new ClienteGithubAppFake();
+  const resendFake = new ClienteResendFake();
+  const filaFake = new FilaRetentativasFake();
+
+  const env = criarAmbientePadrao(undefined, resendFake, discordFake);
+  env.CANAL_ALERTAS_ATIVO = "discord";
+  env.ARESTA_CLIMB_BOT_GITHUB_APP_CLIENT_ID = "app-id";
+  env.ARESTA_CLIMB_BOT_GITHUB_APP_PRIVATE_KEY = "key";
+  env.ARESTA_CLIMB_BOT_GITHUB_APP_INSTALLATION_ID = "123";
+  env.clienteGithubApp = githubFake;
+  env.filaRetentativas = filaFake;
+
+  // Simula outage tanto no GitHub quanto no Discord
+  githubFake.deveFalhar = true;
+  discordFake.deveFalhar = true;
+
+  const corpoFatal = JSON.stringify({
+    action: "triggered",
+    data: {
+      event: {
+        level: "fatal",
+        title: "Outage simultâneo",
+        web_url: "https://aresta-climb.sentry.io/issues/4040/",
+        tags: [["service", "arestaclimb-com"]],
+      },
+    },
+  });
+  const sigFatal = await assinarHmacSha256Hex(env.SENTRY_WEBHOOK_SECRET, corpoFatal);
+
+  const res = await worker.fetch(
+    new Request("https://alertas.arestaclimb.com/webhook/sentry", {
+      method: "POST",
+      headers: {
+        "sentry-hook-signature": sigFatal,
+        "sentry-hook-resource": "event_alert",
+      },
+      body: corpoFatal,
+    }),
+    env,
+  );
+  assertEquals(res.status, 200);
+  // Caiu para o fallback de e-mail do Resend imediatamente
+  assertEquals(resendFake.emailsEnviados.length, 1);
+  // Enfileirou 2 tarefas pendentes: criar_issue_emergencia e enviar_notificacao_discord
+  const pendentesAntes = await filaFake.listarPendentes();
+  assertEquals(pendentesAntes.length, 2);
+
+  // Agora GitHub e Discord voltam a funcionar no próximo ciclo do Cron Trigger
+  githubFake.deveFalhar = false;
+  discordFake.deveFalhar = false;
+
+  await processarFilaRetentativas(env);
+
+  // Fila deve estar vazia após sucesso no reprocessamento
+  const pendentesDepois = await filaFake.listarPendentes();
+  assertEquals(pendentesDepois.length, 0);
+  assertEquals(githubFake.issuesCriadas.length, 1);
+  assertEquals(githubFake.issuesCriadas[0].repositorio, "aresta-climb/arestaclimb.com");
+  assertEquals(discordFake.mensagensEnviadas.length, 2);
+});
+
+Deno.test("ClienteSentryHttp: envia PUT para API do Sentry e trata erros HTTP e de rede", async () => {
+  const chamadas: Array<{ url: string; init?: RequestInit }> = [];
+  const fetchSucesso: typeof fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+    chamadas.push({ url: String(input), init });
+    return new Response(JSON.stringify({ id: "987654", status: "resolved" }), { status: 200 });
+  };
+
+  const sentryHttp = new ClienteSentryHttp(fetchSucesso);
+  const resOk = await sentryHttp.atualizarStatusIssue({
+    tokenApi: "sntrys_token_123",
+    idIssueSentry: "987654",
+    novoStatus: "resolved",
+  });
+  assertEquals(resOk.sucesso, true);
+  assertEquals(resOk.statusHttp, 200);
+  assertEquals(chamadas[0].url, "https://sentry.io/api/0/issues/987654/");
+
+  const fetchErro: typeof fetch = async () => new Response("Forbidden", { status: 403 });
+  const resErro = await new ClienteSentryHttp(fetchErro).atualizarStatusIssue({
+    tokenApi: "invalido",
+    idIssueSentry: "987654",
+    novoStatus: "unresolved",
+  });
+  assertEquals(resErro.sucesso, false);
+  assertEquals(resErro.statusHttp, 403);
+
+  const fetchExcecao: typeof fetch = async () => {
+    throw new Error("Network failure");
+  };
+  const resExcecao = await new ClienteSentryHttp(fetchExcecao).atualizarStatusIssue({
+    tokenApi: "token",
+    idIssueSentry: "987654",
+    novoStatus: "resolved",
+  });
+  assertEquals(resExcecao.sucesso, false);
+  assertEquals(resExcecao.statusHttp, 0);
+});
+
+Deno.test("FilaRetentativasKv: armazena, lista e remove itens usando a interface de KVNamespace", async () => {
+  const mapaKv = new Map<string, string>();
+  const kvSimulado = {
+    async put(chave: string, valor: string): Promise<void> {
+      mapaKv.set(chave, valor);
+    },
+    async get(chave: string): Promise<string | null> {
+      return mapaKv.get(chave) ?? null;
+    },
+    async delete(chave: string): Promise<void> {
+      mapaKv.delete(chave);
+    },
+    async list(): Promise<{ keys: Array<{ name: string }> }> {
+      return {
+        keys: Array.from(mapaKv.keys()).map((name) => ({ name })),
+      };
+    },
+  };
+
+  const filaKv = new FilaRetentativasKv(kvSimulado as any);
+  await filaKv.enfileirar({
+    id: "ret-1",
+    tipo: "enviar_notificacao_discord",
+    criadoEmIso: "2026-10-25T12:00:00Z",
+    tentativas: 1,
+    dadosDiscord: {
+      categoria: "emergencias",
+      texto: "🚨 Teste KV",
+    },
+  });
+
+  const pendentes = await filaKv.listarPendentes();
+  assertEquals(pendentes.length, 1);
+  assertEquals(pendentes[0].id, "ret-1");
+
+  await filaKv.remover("ret-1");
+  assertEquals((await filaKv.listarPendentes()).length, 0);
+});
+
+Deno.test("ClienteGithubAppHttp: assina JWT RS256 (PKCS#8 e PKCS#1), obtem installation token, cria issue e sincroniza estado", async () => {
+  // Gera um par de chaves RSA real de 2048 bits via Web Crypto para testar sem mocks criptográficos
+  const parChaves = await crypto.subtle.generateKey(
+    {
+      name: "RSASSA-PKCS1-v1_5",
+      modulusLength: 2048,
+      publicExponent: new Uint8Array([1, 0, 1]),
+      hash: "SHA-256",
+    },
+    true,
+    ["sign", "verify"],
+  );
+  const pkcs8Buffer = await crypto.subtle.exportKey("pkcs8", parChaves.privateKey);
+  const pkcs8Bytes = new Uint8Array(pkcs8Buffer);
+  let binario = "";
+  for (let i = 0; i < pkcs8Bytes.length; i++) {
+    binario += String.fromCharCode(pkcs8Bytes[i]);
+  }
+  const pemPkcs8 = `-----BEGIN PRIVATE KEY-----\n${btoa(binario)}\n-----END PRIVATE KEY-----`;
+
+  const chamadasUrl: string[] = [];
+  const fetchSimulado: typeof fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    chamadasUrl.push(`${init?.method || "GET"} ${url}`);
+
+    if (url.endsWith("/access_tokens")) {
+      return new Response(JSON.stringify({ token: "ghs_instalacao_token_real" }), { status: 201 });
+    }
+    if (url.endsWith("/repos/aresta-climb/aresta_backend/issues") && init?.method === "POST") {
+      return new Response(
+        JSON.stringify({
+          number: 77,
+          html_url: "https://github.com/aresta-climb/aresta_backend/issues/77",
+        }),
+        { status: 201 },
+      );
+    }
+    if (url.includes("/search/issues")) {
+      return new Response(
+        JSON.stringify({
+          items: [
+            {
+              number: 77,
+              repository_url: "https://api.github.com/repos/aresta-climb/aresta_backend",
+            },
+          ],
+        }),
+        { status: 200 },
+      );
+    }
+    if (url.endsWith("/repos/aresta-climb/aresta_backend/issues/77") && init?.method === "PATCH") {
+      return new Response(JSON.stringify({ number: 77, state: "closed" }), { status: 200 });
+    }
+    return new Response("Not Found", { status: 404 });
+  };
+
+  const githubHttp = new ClienteGithubAppHttp(fetchSimulado);
+
+  const resCriacao = await githubHttp.criarIssueEmergencia({
+    clientId: "Iv1.123456",
+    privateKey: pemPkcs8,
+    installationId: "55555",
+    repositorio: "aresta-climb/aresta_backend",
+    titulo: "🚨 [EMERGÊNCIA] Teste Real RSA",
+    corpo: "Corpo da issue",
+    labels: ["emergencia"],
+  });
+  assertEquals(resCriacao.sucesso, true);
+  assertEquals(resCriacao.numeroIssue, 77);
+  assertEquals(resCriacao.urlIssue, "https://github.com/aresta-climb/aresta_backend/issues/77");
+
+  const resSync = await githubHttp.sincronizarEstadoIssuePorIdSentry({
+    clientId: "Iv1.123456",
+    privateKey: pemPkcs8,
+    installationId: "55555",
+    idIssueSentry: "5001",
+    novoEstado: "closed",
+  });
+  assertEquals(resSync.sucesso, true);
+  assertEquals(resSync.issuesAtualizadas, 1);
+  assertEquals(chamadasUrl.length, 5);
 });
