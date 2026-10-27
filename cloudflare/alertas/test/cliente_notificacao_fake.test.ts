@@ -185,9 +185,33 @@ Deno.test("ClienteGithubAppFake: registra criacao e sincronizacao de issues e pe
   assertEquals(resFalhaSync.sucesso, false);
   assertEquals(resFalhaSync.statusHttp, 503);
 
+  const resFalhaSteps = await githubFake.obterStepsFalhosWorkflowRun({
+    clientId: "client-id",
+    privateKey: "private-key",
+    installationId: "12345",
+    repositorio: "aresta-climb/aresta_db",
+    runId: 500,
+  });
+  assertEquals(resFalhaSteps.sucesso, false);
+  assertEquals(resFalhaSteps.statusHttp, 503);
+
+  githubFake.limpar();
+  githubFake.definirStepsFalhosWorkflowRun(500, ["Run Validator"]);
+  const resStepsOk = await githubFake.obterStepsFalhosWorkflowRun({
+    clientId: "client-id",
+    privateKey: "private-key",
+    installationId: "12345",
+    repositorio: "aresta-climb/aresta_db",
+    runId: 500,
+  });
+  assertEquals(resStepsOk.sucesso, true);
+  assertEquals(resStepsOk.nomesStepsFalhos, ["Run Validator"]);
+  assertEquals(githubFake.consultasStepsWorkflow.length, 1);
+
   githubFake.limpar();
   assertEquals(githubFake.issuesCriadas.length, 0);
   assertEquals(githubFake.sincronizacoesEstado.length, 0);
+  assertEquals(githubFake.consultasStepsWorkflow.length, 0);
   assertEquals(githubFake.deveFalhar, false);
 });
 

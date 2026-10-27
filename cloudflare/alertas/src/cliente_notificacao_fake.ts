@@ -235,6 +235,27 @@ export interface ResultadoSincronizarEstadoIssueGithub {
 }
 
 /**
+ * Parâmetros para consulta de steps que falharam em uma execução de workflow (`workflow_run`) no GitHub Actions.
+ */
+export interface OpcoesObterStepsWorkflowGithub {
+  clientId: string;
+  privateKey: string;
+  installationId: string;
+  repositorio: string;
+  runId: number | string;
+}
+
+/**
+ * Resultado da consulta de steps que falharam em um `workflow_run`.
+ */
+export interface ResultadoObterStepsWorkflowGithub {
+  sucesso: boolean;
+  statusHttp: number;
+  nomesStepsFalhos: string[];
+  erro?: string;
+}
+
+/**
  * Contrato de fronteira para o cliente do GitHub App (`Aresta Climb Bot`).
  */
 export interface InterfaceClienteGithubApp {
@@ -242,6 +263,9 @@ export interface InterfaceClienteGithubApp {
   sincronizarEstadoIssuePorIdSentry(
     opcoes: OpcoesSincronizarEstadoIssueGithub,
   ): Promise<ResultadoSincronizarEstadoIssueGithub>;
+  obterStepsFalhosWorkflowRun?(
+    opcoes: OpcoesObterStepsWorkflowGithub,
+  ): Promise<ResultadoObterStepsWorkflowGithub>;
 }
 
 /**
@@ -250,9 +274,15 @@ export interface InterfaceClienteGithubApp {
 export class ClienteGithubAppFake implements InterfaceClienteGithubApp {
   public readonly issuesCriadas: OpcoesCriarIssueGithub[] = [];
   public readonly sincronizacoesEstado: OpcoesSincronizarEstadoIssueGithub[] = [];
+  public readonly consultasStepsWorkflow: OpcoesObterStepsWorkflowGithub[] = [];
+  private readonly stepsFalhosPorRunId = new Map<string, string[]>();
   public deveFalhar = false;
   public statusFalha = 503;
   public mensagemFalha = "API do GitHub indisponível";
+
+  definirStepsFalhosWorkflowRun(runId: number | string, nomesSteps: string[]): void {
+    this.stepsFalhosPorRunId.set(String(runId), [...nomesSteps]);
+  }
 
   async criarIssueEmergencia(opcoes: OpcoesCriarIssueGithub): Promise<ResultadoCriarIssueGithub> {
     if (this.deveFalhar) {
@@ -295,9 +325,32 @@ export class ClienteGithubAppFake implements InterfaceClienteGithubApp {
     };
   }
 
+  async obterStepsFalhosWorkflowRun(
+    opcoes: OpcoesObterStepsWorkflowGithub,
+  ): Promise<ResultadoObterStepsWorkflowGithub> {
+    if (this.deveFalhar) {
+      return {
+        sucesso: false,
+        statusHttp: this.statusFalha,
+        nomesStepsFalhos: [],
+        erro: this.mensagemFalha,
+      };
+    }
+
+    this.consultasStepsWorkflow.push({ ...opcoes });
+    const steps = this.stepsFalhosPorRunId.get(String(opcoes.runId)) ?? [];
+    return {
+      sucesso: true,
+      statusHttp: 200,
+      nomesStepsFalhos: [...steps],
+    };
+  }
+
   limpar(): void {
     this.issuesCriadas.length = 0;
     this.sincronizacoesEstado.length = 0;
+    this.consultasStepsWorkflow.length = 0;
+    this.stepsFalhosPorRunId.clear();
     this.deveFalhar = false;
     this.statusFalha = 503;
     this.mensagemFalha = "API do GitHub indisponível";

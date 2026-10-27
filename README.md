@@ -95,3 +95,12 @@ Conforme estabelecido em nossos [Princípios de Engenharia](AGENTS.md), seguimos
 ```bash
 deno test -A --config supabase/functions/deno.json supabase/functions/ cloudflare/alertas/test/ cloudflare/app-links/test/ cloudflare/catalogo/test/ cloudflare/feedback/test/ cloudflare/previa/test/
 ```
+
+---
+
+## 💜 Apoio Open Source — Sentry
+
+[![Monitorado com Sentry](https://img.shields.io/badge/Monitorado_com-Sentry-362D59?style=for-the-badge&logo=sentry&logoColor=white)](https://sentry.io/?utm_source=github&utm_medium=referral)
+
+O ecossistema **Aresta Climb** conta com o apoio oficial do **[Sentry](https://sentry.io/?utm_source=github&utm_medium=referral)** através do seu programa de incentivo a projetos Open Source (**Sponsored Business Plan**), garantindo monitoramento de erros, alertas de anomalias e estabilidade em tempo real nas Supabase Edge Functions, nos Cloudflare Workers, no aplicativo móvel e no Editor Desktop.
+

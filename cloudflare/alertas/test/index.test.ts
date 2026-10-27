@@ -1142,7 +1142,7 @@ Deno.test("alertas-worker: cria GitHub Issue automatica com label 'emergencia' p
     githubFake.issuesCriadas[1].repositorio,
     "aresta-climb/aresta_db",
   );
-  assertEquals(githubFake.issuesCriadas[1].labels, ["emergencia"]);
+  assertEquals(githubFake.issuesCriadas[1].labels, ["bug"]);
   assertEquals(discordFake.mensagensEnviadas.length, 2);
   assertStringIncludes(
     discordFake.mensagensEnviadas[1].texto,
@@ -1652,6 +1652,25 @@ Deno.test("ClienteGithubAppHttp: assina JWT RS256 (PKCS#8 e PKCS#1), obtem insta
         status: 200,
       });
     }
+    if (
+      url.endsWith("/repos/aresta-climb/aresta_db/actions/runs/900/jobs") &&
+      init?.method === "GET"
+    ) {
+      return new Response(
+        JSON.stringify({
+          jobs: [
+            {
+              steps: [
+                { name: "Setup uv e Python", conclusion: "success" },
+                { name: "Run Validator", conclusion: "failure" },
+                { name: "Erro Interno no Script de Validação", conclusion: "skipped" },
+              ],
+            },
+          ],
+        }),
+        { status: 200 },
+      );
+    }
     return new Response("Not Found", { status: 404 });
   };
 
@@ -1682,7 +1701,17 @@ Deno.test("ClienteGithubAppHttp: assina JWT RS256 (PKCS#8 e PKCS#1), obtem insta
   });
   assertEquals(resSync.sucesso, true);
   assertEquals(resSync.issuesAtualizadas, 1);
-  assertEquals(chamadasUrl.length, 5);
+
+  const resJobs = await githubHttp.obterStepsFalhosWorkflowRun({
+    clientId: "Iv1.123456",
+    privateKey: pemPkcs8,
+    installationId: "55555",
+    repositorio: "aresta-climb/aresta_db",
+    runId: 900,
+  });
+  assertEquals(resJobs.sucesso, true);
+  assertEquals(resJobs.nomesStepsFalhos, ["Run Validator"]);
+  assertEquals(chamadasUrl.length, 7);
 });
 
 Deno.test("alertas-worker: serve icones WebP comprimidos em /icones/emergencia.webp e /icones/feedback_bugs.webp", async () => {
@@ -2065,7 +2094,7 @@ Deno.test("alertas-worker: roteia falha de check_run de deploy (Cloudflare Pages
   assertEquals(discordFake.mensagensEnviadas.length, 1);
   assertEquals(
     discordFake.mensagensEnviadas[0].urlWebhook,
-    env.DISCORD_WEBHOOK_EMERGENCIAS_URL,
+    env.DISCORD_WEBHOOK_BUGS_URL,
   );
   assertStringIncludes(
     discordFake.mensagensEnviadas[0].texto,
@@ -2188,7 +2217,7 @@ Deno.test("alertas-worker: roteia falha de commit status de deploy (Vercel) e wo
   assertEquals(discordFake.mensagensEnviadas.length, 1);
   assertEquals(
     discordFake.mensagensEnviadas[0].urlWebhook,
-    env.DISCORD_WEBHOOK_EMERGENCIAS_URL,
+    env.DISCORD_WEBHOOK_BUGS_URL,
   );
   assertStringIncludes(
     discordFake.mensagensEnviadas[0].texto,
@@ -2429,4 +2458,277 @@ Deno.test("alertas-worker: cria GitHub Issue com label 'bug' para issue.created 
   );
   assertEquals(ntfyFake.notificacoesEnviadas[1].prioridade, 5);
   assertEquals(ntfyFake.notificacoesEnviadas[1].acoes?.length, 3);
+});
+
+
+Deno.test("alertas-worker: classifica deploy.yml e erro interno de pr-*.yml do aresta_db como Emergencias, ignora recusa legitima de pr-*.yml e classifica demais workflows como Bugs", async () => {
+  const discordFake = new ClienteDiscordFake();
+  const ntfyFake = new ClienteNtfyFake();
+  const githubFake = new ClienteGithubAppFake();
+  const resendFake = new ClienteResendFake();
+  const env = criarAmbientePadrao(undefined, resendFake, discordFake);
+  env.CANAL_ALERTAS_ATIVO = "discord";
+  env.NTFY_TOPICO_BUGS = "aresta-bugs-topico-oficial";
+  env.NTFY_TOPICO_EMERGENCIAS = "aresta-emergencias-topico-oficial";
+  env.ARESTA_CLIMB_BOT_GITHUB_APP_CLIENT_ID = "app-id";
+  env.ARESTA_CLIMB_BOT_GITHUB_APP_PRIVATE_KEY = "key";
+  env.ARESTA_CLIMB_BOT_GITHUB_APP_INSTALLATION_ID = "123";
+  env.clienteNtfy = ntfyFake;
+  env.clienteGithubApp = githubFake;
+
+  // 1. Falha de workflow geral (ex: build_editor_linux.yml em aresta_db na main) -> Bug (issue 'bug' + #bugs + ntfy prioridade 3)
+  const corpoWfGeral = JSON.stringify({
+    action: "completed",
+    repository: { full_name: "aresta-climb/aresta_db" },
+    workflow_run: {
+      id: 1001,
+      name: "Build Editor Linux",
+      path: ".github/workflows/build_editor_linux.yml",
+      head_branch: "main",
+      conclusion: "failure",
+      html_url: "https://github.com/aresta-climb/aresta_db/actions/runs/1001",
+      head_commit: {
+        message: "chore: atualizar dependencias linux",
+        author: { name: "Renato" },
+      },
+    },
+  });
+  const sigWfGeral = await assinarHmacSha256Hex(
+    env.GITHUB_WEBHOOK_SECRET,
+    corpoWfGeral,
+  );
+  const resWfGeral = await worker.fetch(
+    new Request("https://alertas.arestaclimb.com/webhook/github", {
+      method: "POST",
+      headers: {
+        "x-github-event": "workflow_run",
+        "x-hub-signature-256": `sha256=${sigWfGeral}`,
+      },
+      body: corpoWfGeral,
+    }),
+    env,
+  );
+  assertEquals(resWfGeral.status, 200);
+  assertEquals(githubFake.issuesCriadas.length, 1);
+  assertEquals(githubFake.issuesCriadas[0].labels, ["bug"]);
+  assertEquals(discordFake.mensagensEnviadas.length, 1);
+  assertEquals(
+    discordFake.mensagensEnviadas[0].urlWebhook,
+    env.DISCORD_WEBHOOK_BUGS_URL,
+  );
+  assertEquals(ntfyFake.notificacoesEnviadas.length, 1);
+  assertEquals(ntfyFake.notificacoesEnviadas[0].prioridade, 3);
+
+  // 2. Falha no deploy.yml do aresta_db -> Emergência (issue 'emergencia' + #emergencias + ntfy prioridade 5)
+  const corpoDeployDb = JSON.stringify({
+    action: "completed",
+    repository: { full_name: "aresta-climb/aresta_db" },
+    workflow_run: {
+      id: 1002,
+      name: "Deploy para Cloudflare R2 e D1",
+      path: ".github/workflows/deploy.yml",
+      head_branch: "main",
+      conclusion: "failure",
+      html_url: "https://github.com/aresta-climb/aresta_db/actions/runs/1002",
+      head_commit: {
+        message: "feat: publicar novos croquis",
+        author: { name: "Renato" },
+      },
+    },
+  });
+  const sigDeployDb = await assinarHmacSha256Hex(
+    env.GITHUB_WEBHOOK_SECRET,
+    corpoDeployDb,
+  );
+  const resDeployDb = await worker.fetch(
+    new Request("https://alertas.arestaclimb.com/webhook/github", {
+      method: "POST",
+      headers: {
+        "x-github-event": "workflow_run",
+        "x-hub-signature-256": `sha256=${sigDeployDb}`,
+      },
+      body: corpoDeployDb,
+    }),
+    env,
+  );
+  assertEquals(resDeployDb.status, 200);
+  assertEquals(githubFake.issuesCriadas.length, 2);
+  assertEquals(githubFake.issuesCriadas[1].labels, ["emergencia"]);
+  assertEquals(discordFake.mensagensEnviadas.length, 2);
+  assertEquals(
+    discordFake.mensagensEnviadas[1].urlWebhook,
+    env.DISCORD_WEBHOOK_EMERGENCIAS_URL,
+  );
+  assertEquals(ntfyFake.notificacoesEnviadas.length, 2);
+  assertEquals(ntfyFake.notificacoesEnviadas[1].prioridade, 5);
+
+  // 3. Falha em pr-db-validator.yml apenas no step 'Run Validator' (recusa legítima de PR) -> Ignorado!
+  githubFake.definirStepsFalhosWorkflowRun(1003, ["Run Validator"]);
+  const corpoPrRecusaLegitima = JSON.stringify({
+    action: "completed",
+    repository: { full_name: "aresta-climb/aresta_db" },
+    workflow_run: {
+      id: 1003,
+      name: "Validador do Database (PR)",
+      path: ".github/workflows/pr-db-validator.yml",
+      head_branch: "submissao/croqui-cipo",
+      conclusion: "failure",
+      html_url: "https://github.com/aresta-climb/aresta_db/actions/runs/1003",
+      head_commit: {
+        message: "submissao de croqui com erro de schema",
+        author: { name: "Colaborador" },
+      },
+    },
+  });
+  const sigPrRecusa = await assinarHmacSha256Hex(
+    env.GITHUB_WEBHOOK_SECRET,
+    corpoPrRecusaLegitima,
+  );
+  const resPrRecusa = await worker.fetch(
+    new Request("https://alertas.arestaclimb.com/webhook/github", {
+      method: "POST",
+      headers: {
+        "x-github-event": "workflow_run",
+        "x-hub-signature-256": `sha256=${sigPrRecusa}`,
+      },
+      body: corpoPrRecusaLegitima,
+    }),
+    env,
+  );
+  assertEquals(resPrRecusa.status, 200);
+  assertEquals((await resPrRecusa.json()).ignorado, true);
+  assertEquals(githubFake.issuesCriadas.length, 2);
+  assertEquals(discordFake.mensagensEnviadas.length, 2);
+
+  // 4. Falha em pr-db-validator.yml com step 'Erro Interno no Script de Validação' (exit code >= 2) ou 'Generate Github App Token' -> Emergência!
+  githubFake.definirStepsFalhosWorkflowRun(1004, [
+    "Run Validator",
+    "Erro Interno no Script de Validação",
+  ]);
+  const corpoPrErroInterno = JSON.stringify({
+    action: "completed",
+    repository: { full_name: "aresta-climb/aresta_db" },
+    workflow_run: {
+      id: 1004,
+      name: "Validador do Database (PR)",
+      path: ".github/workflows/pr-db-validator.yml",
+      head_branch: "submissao/croqui-cipo",
+      conclusion: "failure",
+      html_url: "https://github.com/aresta-climb/aresta_db/actions/runs/1004",
+      head_commit: {
+        message: "submissao de croqui",
+        author: { name: "Colaborador" },
+      },
+    },
+  });
+  const sigPrErroInterno = await assinarHmacSha256Hex(
+    env.GITHUB_WEBHOOK_SECRET,
+    corpoPrErroInterno,
+  );
+  const resPrErroInterno = await worker.fetch(
+    new Request("https://alertas.arestaclimb.com/webhook/github", {
+      method: "POST",
+      headers: {
+        "x-github-event": "workflow_run",
+        "x-hub-signature-256": `sha256=${sigPrErroInterno}`,
+      },
+      body: corpoPrErroInterno,
+    }),
+    env,
+  );
+  assertEquals(resPrErroInterno.status, 200);
+  assertEquals(githubFake.issuesCriadas.length, 3);
+  assertEquals(githubFake.issuesCriadas[2].labels, ["emergencia"]);
+  assertEquals(discordFake.mensagensEnviadas.length, 3);
+  assertEquals(
+    discordFake.mensagensEnviadas[2].urlWebhook,
+    env.DISCORD_WEBHOOK_EMERGENCIAS_URL,
+  );
+  assertEquals(ntfyFake.notificacoesEnviadas.length, 3);
+  assertEquals(ntfyFake.notificacoesEnviadas[2].prioridade, 5);
+});
+
+Deno.test("alertas-worker: enfileira criacao de issue de bug nao-fatal do Sentry na FILA_RETENTATIVAS_ALERTAS e notifica Discord e ntfy imediatamente em caso de outage do GitHub", async () => {
+  const discordFake = new ClienteDiscordFake();
+  const ntfyFake = new ClienteNtfyFake();
+  const githubFake = new ClienteGithubAppFake();
+  const resendFake = new ClienteResendFake();
+  const filaFake = new FilaRetentativasFake();
+
+  const env = criarAmbientePadrao(undefined, resendFake, discordFake);
+  env.CANAL_ALERTAS_ATIVO = "discord";
+  env.NTFY_TOPICO_BUGS = "aresta-bugs-topico-oficial";
+  env.ARESTA_CLIMB_BOT_GITHUB_APP_CLIENT_ID = "app-id";
+  env.ARESTA_CLIMB_BOT_GITHUB_APP_PRIVATE_KEY = "key";
+  env.ARESTA_CLIMB_BOT_GITHUB_APP_INSTALLATION_ID = "123";
+  env.clienteNtfy = ntfyFake;
+  env.clienteGithubApp = githubFake;
+  env.filaRetentativas = filaFake;
+
+  // Simula outage no GitHub
+  githubFake.deveFalhar = true;
+
+  const corpoIssueNaoFatal = JSON.stringify({
+    action: "created",
+    data: {
+      issue: {
+        id: "7899999999",
+        title: "HttpException: Connection closed before full header was received",
+        level: "error",
+        web_url: "https://aresta-climb.sentry.io/issues/7899999999/",
+        project: {
+          id: "4512313384239104",
+          slug: "aresta-backend",
+          name: "aresta-backend",
+        },
+      },
+    },
+  });
+  const sigSentry = await assinarHmacSha256Hex(
+    env.SENTRY_WEBHOOK_SECRET,
+    corpoIssueNaoFatal,
+  );
+
+  const res = await worker.fetch(
+    new Request("https://alertas.arestaclimb.com/webhook/sentry", {
+      method: "POST",
+      headers: {
+        "sentry-hook-signature": sigSentry,
+        "sentry-hook-resource": "issue",
+      },
+      body: corpoIssueNaoFatal,
+    }),
+    env,
+  );
+  assertEquals(res.status, 200);
+
+  // Mesmo com o GitHub fora do ar, notificou imediatamente no Discord (#bugs) e no ntfy (prioridade 3)
+  assertEquals(discordFake.mensagensEnviadas.length, 1);
+  assertEquals(
+    discordFake.mensagensEnviadas[0].urlWebhook,
+    env.DISCORD_WEBHOOK_BUGS_URL,
+  );
+  assertEquals(ntfyFake.notificacoesEnviadas.length, 1);
+  assertEquals(
+    ntfyFake.notificacoesEnviadas[0].topico,
+    "aresta-bugs-topico-oficial",
+  );
+  assertEquals(ntfyFake.notificacoesEnviadas[0].prioridade, 3);
+
+  // E enfileirou a criação da issue 'bug' na fila KV de retentativas
+  const pendentes = await filaFake.listarPendentes();
+  assertEquals(pendentes.length, 1);
+  assertEquals(pendentes[0].tipo, "criar_issue_emergencia");
+  assertEquals(pendentes[0].dadosIssue?.labels, ["bug"]);
+  assertEquals(
+    pendentes[0].dadosIssue?.repositorio,
+    "aresta-climb/aresta_backend",
+  );
+
+  // Quando o GitHub volta no Cron Trigger, a issue é criada e removida da fila
+  githubFake.deveFalhar = false;
+  await processarFilaRetentativas(env);
+  assertEquals((await filaFake.listarPendentes()).length, 0);
+  assertEquals(githubFake.issuesCriadas.length, 1);
+  assertEquals(githubFake.issuesCriadas[0].labels, ["bug"]);
 });
