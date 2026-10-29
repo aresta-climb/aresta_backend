@@ -638,9 +638,8 @@ export class ClienteGithubAppHttp implements InterfaceClienteGithubApp {
         opcoes.installationId,
       );
 
-      const estadoBusca = opcoes.novoEstado === "closed" ? "is:open" : "is:closed";
       const query = encodeURIComponent(
-        `org:aresta-climb is:issue ${estadoBusca} "sentry.io/issues/${opcoes.idIssueSentry}"`,
+        `org:aresta-climb is:issue in:body "issues/${opcoes.idIssueSentry}"`,
       );
       const resBusca = await this.fetchImpl(
         `https://api.github.com/search/issues?q=${query}`,
@@ -661,17 +660,21 @@ export class ClienteGithubAppHttp implements InterfaceClienteGithubApp {
           sucesso: false,
           statusHttp: resBusca.status,
           issuesAtualizadas: 0,
+          issuesEncontradas: 0,
           erro: `HTTP ${resBusca.status}: ${detalhe}`,
         };
       }
 
       const dadosBusca = (await resBusca.json()) as {
-        items?: Array<{ number: number; repository_url: string }>;
+        items?: Array<{ number: number; repository_url: string; state?: string }>;
       };
       const itens = Array.isArray(dadosBusca.items) ? dadosBusca.items : [];
       let atualizadas = 0;
 
       for (const item of itens) {
+        if (item.state && item.state === opcoes.novoEstado) {
+          continue;
+        }
         const urlIssueApi = `${item.repository_url}/issues/${item.number}`;
         const resPatch = await this.fetchImpl(urlIssueApi, {
           method: "PATCH",
@@ -695,6 +698,7 @@ export class ClienteGithubAppHttp implements InterfaceClienteGithubApp {
         sucesso: true,
         statusHttp: 200,
         issuesAtualizadas: atualizadas,
+        issuesEncontradas: itens.length,
       };
     } catch (erro: unknown) {
       const msg = erro instanceof Error ? erro.message : String(erro);
@@ -702,6 +706,7 @@ export class ClienteGithubAppHttp implements InterfaceClienteGithubApp {
         sucesso: false,
         statusHttp: 0,
         issuesAtualizadas: 0,
+        issuesEncontradas: 0,
         erro: msg,
       };
     }
@@ -944,11 +949,11 @@ function classificarWebhookSentry(
     };
   }
 
-  // 2a. Nova Issue Fatal no Sentry (recurso === "issue" && acao === "created" && level === "fatal")
+  // 2a. Issue Fatal no Sentry (recurso === "issue" && (acao === "created" || acao === "unresolved") && level === "fatal")
   const issueSentry = payload?.data?.issue;
   if (
     recurso === "issue" &&
-    acao === "created" &&
+    (acao === "created" || acao === "unresolved") &&
     issueSentry &&
     String(issueSentry.level || "").toLowerCase() === "fatal"
   ) {
@@ -1897,9 +1902,58 @@ export async function processarRequisicaoAlertas(
     const payload = JSON.parse(corpoBruto);
     const acaoSentry = String(payload?.action || "");
 
-    // Abertura automática de GitHub Issue (label 'bug') quando uma nova issue não-fatal surge no Sentry
-    if (recurso === "issue" && acaoSentry === "created") {
-      const issueSentry = payload?.data?.issue || {};
+    // Sincronização Bidirecional Sentry -> GitHub (resolved / archived / ignored / unresolved)
+    if (
+      recurso === "issue" &&
+      (acaoSentry === "resolved" ||
+        acaoSentry === "archived" ||
+        acaoSentry === "ignored" ||
+        acaoSentry === "unresolved")
+    ) {
+      const idIssueSentry = String(payload?.data?.issue?.id || "");
+      const clienteGithub = obterClienteGithubApp(env);
+      if (idIssueSentry && clienteGithub) {
+        const novoEstado = acaoSentry === "unresolved" ? "open" : "closed";
+        const resSync = await clienteGithub.sincronizarEstadoIssuePorIdSentry({
+          clientId: env.ARESTA_CLIMB_BOT_GITHUB_APP_CLIENT_ID || "",
+          privateKey: env.ARESTA_CLIMB_BOT_GITHUB_APP_PRIVATE_KEY || "",
+          installationId: env.ARESTA_CLIMB_BOT_GITHUB_APP_INSTALLATION_ID || "",
+          idIssueSentry,
+          novoEstado,
+        });
+        const issuesEncontradas = resSync.issuesEncontradas ?? resSync.issuesAtualizadas;
+        // Se for fechamento (resolved/archived/ignored) ou se a issue já existia no GitHub
+        // (e foi reaberta ou já estava aberta), encerramos a sincronização.
+        // Se for 'unresolved' (ex: regressão) e nenhuma issue existir no GitHub (issuesEncontradas === 0),
+        // prosseguimos para criar uma nova Issue automaticamente ('bug' ou 'emergencia').
+        if (acaoSentry !== "unresolved" || !resSync.sucesso || issuesEncontradas > 0) {
+          return new Response(
+            JSON.stringify({
+              ok: true,
+              sincronizadoGithub: resSync.sucesso,
+              novoEstado,
+              issuesAtualizadas: resSync.issuesAtualizadas,
+              issuesEncontradas,
+            }),
+            {
+              status: 200,
+              headers: { ...CABECALHOS_PADRAO, "Content-Type": "application/json" },
+            },
+          );
+        }
+      }
+    }
+
+    // Abertura automática de GitHub Issue (label 'bug') quando uma issue não-fatal surge ('created')
+    // ou regride sem issue prévia no GitHub ('unresolved')
+    const issueSentryPayload = payload?.data?.issue;
+    if (
+      recurso === "issue" &&
+      (acaoSentry === "created" || acaoSentry === "unresolved") &&
+      issueSentryPayload &&
+      (issueSentryPayload.id || issueSentryPayload.title)
+    ) {
+      const issueSentry = issueSentryPayload;
       const nivelIssue = String(issueSentry.level || "error").toLowerCase();
       if (nivelIssue !== "fatal") {
         const idIssueSentry = String(issueSentry.id || "");
@@ -1978,40 +2032,6 @@ export async function processarRequisicaoAlertas(
 
           return await despacharNotificacaoComFallback(notificacaoBugFallback, env);
         }
-      }
-    }
-
-    // Sincronização Bidirecional Sentry -> GitHub (resolved / archived / ignored / unresolved)
-    if (
-      recurso === "issue" &&
-      (acaoSentry === "resolved" ||
-        acaoSentry === "archived" ||
-        acaoSentry === "ignored" ||
-        acaoSentry === "unresolved")
-    ) {
-      const idIssueSentry = String(payload?.data?.issue?.id || "");
-      const clienteGithub = obterClienteGithubApp(env);
-      if (idIssueSentry && clienteGithub) {
-        const novoEstado = acaoSentry === "unresolved" ? "open" : "closed";
-        const resSync = await clienteGithub.sincronizarEstadoIssuePorIdSentry({
-          clientId: env.ARESTA_CLIMB_BOT_GITHUB_APP_CLIENT_ID || "",
-          privateKey: env.ARESTA_CLIMB_BOT_GITHUB_APP_PRIVATE_KEY || "",
-          installationId: env.ARESTA_CLIMB_BOT_GITHUB_APP_INSTALLATION_ID || "",
-          idIssueSentry,
-          novoEstado,
-        });
-        return new Response(
-          JSON.stringify({
-            ok: true,
-            sincronizadoGithub: resSync.sucesso,
-            novoEstado,
-            issuesAtualizadas: resSync.issuesAtualizadas,
-          }),
-          {
-            status: 200,
-            headers: { ...CABECALHOS_PADRAO, "Content-Type": "application/json" },
-          },
-        );
       }
     }
 

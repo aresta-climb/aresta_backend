@@ -231,6 +231,7 @@ export interface ResultadoSincronizarEstadoIssueGithub {
   sucesso: boolean;
   statusHttp: number;
   issuesAtualizadas: number;
+  issuesEncontradas?: number;
   erro?: string;
 }
 
@@ -276,12 +277,23 @@ export class ClienteGithubAppFake implements InterfaceClienteGithubApp {
   public readonly sincronizacoesEstado: OpcoesSincronizarEstadoIssueGithub[] = [];
   public readonly consultasStepsWorkflow: OpcoesObterStepsWorkflowGithub[] = [];
   private readonly stepsFalhosPorRunId = new Map<string, string[]>();
+  private readonly resultadosSincronizacaoPorSentryId = new Map<
+    string,
+    { issuesEncontradas: number; issuesAtualizadas: number }
+  >();
   public deveFalhar = false;
   public statusFalha = 503;
   public mensagemFalha = "API do GitHub indisponível";
 
   definirStepsFalhosWorkflowRun(runId: number | string, nomesSteps: string[]): void {
     this.stepsFalhosPorRunId.set(String(runId), [...nomesSteps]);
+  }
+
+  definirResultadoSincronizacaoPorIdSentry(
+    idIssueSentry: string,
+    resultado: { issuesEncontradas: number; issuesAtualizadas: number },
+  ): void {
+    this.resultadosSincronizacaoPorSentryId.set(String(idIssueSentry), { ...resultado });
   }
 
   async criarIssueEmergencia(opcoes: OpcoesCriarIssueGithub): Promise<ResultadoCriarIssueGithub> {
@@ -317,11 +329,17 @@ export class ClienteGithubAppFake implements InterfaceClienteGithubApp {
     }
 
     this.sincronizacoesEstado.push({ ...opcoes });
+    const configurado = this.resultadosSincronizacaoPorSentryId.get(
+      String(opcoes.idIssueSentry),
+    );
+    const issuesEncontradas = configurado ? configurado.issuesEncontradas : 1;
+    const issuesAtualizadas = configurado ? configurado.issuesAtualizadas : 1;
 
     return {
       sucesso: true,
       statusHttp: 200,
-      issuesAtualizadas: 1,
+      issuesAtualizadas,
+      issuesEncontradas,
     };
   }
 
@@ -351,6 +369,7 @@ export class ClienteGithubAppFake implements InterfaceClienteGithubApp {
     this.sincronizacoesEstado.length = 0;
     this.consultasStepsWorkflow.length = 0;
     this.stepsFalhosPorRunId.clear();
+    this.resultadosSincronizacaoPorSentryId.clear();
     this.deveFalhar = false;
     this.statusFalha = 503;
     this.mensagemFalha = "API do GitHub indisponível";

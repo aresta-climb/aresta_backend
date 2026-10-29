@@ -1636,6 +1636,7 @@ Deno.test("ClienteGithubAppHttp: assina JWT RS256 (PKCS#8 e PKCS#1), obtem insta
           items: [
             {
               number: 77,
+              state: "open",
               repository_url:
                 "https://api.github.com/repos/aresta-climb/aresta_backend",
             },
@@ -1700,7 +1701,24 @@ Deno.test("ClienteGithubAppHttp: assina JWT RS256 (PKCS#8 e PKCS#1), obtem insta
     novoEstado: "closed",
   });
   assertEquals(resSync.sucesso, true);
+  assertEquals(resSync.issuesEncontradas, 1);
   assertEquals(resSync.issuesAtualizadas, 1);
+  const chamadaBusca = chamadasUrl.find((c) => c.includes("/search/issues"))!;
+  const queryDecodificada = decodeURIComponent(chamadaBusca.split("?q=")[1] || "");
+  assertStringIncludes(queryDecodificada, 'in:body "issues/5001"');
+  assertEquals(queryDecodificada.includes("sentry.io/issues/"), false);
+
+  // Quando a issue encontrada já está no mesmo estado ('open'), não envia PATCH redundante
+  const resSyncJaAberta = await githubHttp.sincronizarEstadoIssuePorIdSentry({
+    clientId: "Iv1.123456",
+    privateKey: pemPkcs8,
+    installationId: "55555",
+    idIssueSentry: "5001",
+    novoEstado: "open",
+  });
+  assertEquals(resSyncJaAberta.sucesso, true);
+  assertEquals(resSyncJaAberta.issuesEncontradas, 1);
+  assertEquals(resSyncJaAberta.issuesAtualizadas, 0);
 
   const resJobs = await githubHttp.obterStepsFalhosWorkflowRun({
     clientId: "Iv1.123456",
@@ -1711,7 +1729,7 @@ Deno.test("ClienteGithubAppHttp: assina JWT RS256 (PKCS#8 e PKCS#1), obtem insta
   });
   assertEquals(resJobs.sucesso, true);
   assertEquals(resJobs.nomesStepsFalhos, ["Run Validator"]);
-  assertEquals(chamadasUrl.length, 7);
+  assertEquals(chamadasUrl.length, 9);
 });
 
 Deno.test("alertas-worker: serve icones WebP comprimidos em /icones/emergencia.webp e /icones/feedback_bugs.webp", async () => {
@@ -2731,4 +2749,185 @@ Deno.test("alertas-worker: enfileira criacao de issue de bug nao-fatal do Sentry
   assertEquals((await filaFake.listarPendentes()).length, 0);
   assertEquals(githubFake.issuesCriadas.length, 1);
   assertEquals(githubFake.issuesCriadas[0].labels, ["bug"]);
+});
+
+Deno.test("alertas-worker: ao receber issue.unresolved (regressao no Sentry), reabre issue fechada existente ou cria nova Issue ('bug' ou 'emergencia') se nenhuma existir no GitHub", async () => {
+  const discordFake = new ClienteDiscordFake();
+  const ntfyFake = new ClienteNtfyFake();
+  const githubFake = new ClienteGithubAppFake();
+  const resendFake = new ClienteResendFake();
+  const env = criarAmbientePadrao(undefined, resendFake, discordFake);
+  env.CANAL_ALERTAS_ATIVO = "discord";
+  env.NTFY_TOPICO_BUGS = "aresta-bugs-topico-oficial";
+  env.NTFY_TOPICO_EMERGENCIAS = "aresta-emergencias-topico-oficial";
+  env.ARESTA_CLIMB_BOT_GITHUB_APP_CLIENT_ID = "app-id";
+  env.ARESTA_CLIMB_BOT_GITHUB_APP_PRIVATE_KEY = "key";
+  env.ARESTA_CLIMB_BOT_GITHUB_APP_INSTALLATION_ID = "123";
+  env.clienteNtfy = ntfyFake;
+  env.clienteGithubApp = githubFake;
+
+  // 1. Cenário A (ex: ARESTA-APP-7): Issue já existe fechada no GitHub -> reabre (issuesEncontradas: 1, issuesAtualizadas: 1) e NÃO cria duplicata
+  githubFake.definirResultadoSincronizacaoPorIdSentry("7817750322", {
+    issuesEncontradas: 1,
+    issuesAtualizadas: 1,
+  });
+  const corpoRegressaoComIssueFechada = JSON.stringify({
+    action: "unresolved",
+    data: {
+      issue: {
+        id: "7817750322",
+        title: "FirebaseException: [firebase_app_check/unknown] Error returned from API. code: 403 body: App attestation failed.",
+        level: "error",
+        substatus: "regressed",
+        web_url: "https://aresta-climb.sentry.io/issues/7817750322/",
+        project: { slug: "aresta-app" },
+      },
+    },
+  });
+  const sig1 = await assinarHmacSha256Hex(
+    env.SENTRY_WEBHOOK_SECRET,
+    corpoRegressaoComIssueFechada,
+  );
+  const res1 = await worker.fetch(
+    new Request("https://alertas.arestaclimb.com/webhook/sentry", {
+      method: "POST",
+      headers: {
+        "sentry-hook-signature": sig1,
+        "sentry-hook-resource": "issue",
+      },
+      body: corpoRegressaoComIssueFechada,
+    }),
+    env,
+  );
+  assertEquals(res1.status, 200);
+  const json1 = await res1.json();
+  assertEquals(json1.sincronizadoGithub, true);
+  assertEquals(json1.issuesAtualizadas, 1);
+  assertEquals(githubFake.issuesCriadas.length, 0);
+
+  // 2. Cenário B (Anti-duplicata): Issue já existe ABERTA no GitHub (issuesEncontradas: 1, issuesAtualizadas: 0) -> NÃO cria duplicata
+  githubFake.definirResultadoSincronizacaoPorIdSentry("7817755115", {
+    issuesEncontradas: 1,
+    issuesAtualizadas: 0,
+  });
+  const corpoUnresolvedJaAberta = JSON.stringify({
+    action: "unresolved",
+    data: {
+      issue: {
+        id: "7817755115",
+        title: "FirebaseException: [firebase_app_check/unknown] Too many attempts.",
+        level: "error",
+        web_url: "https://aresta-climb.sentry.io/issues/7817755115/",
+        project: { slug: "aresta-app" },
+      },
+    },
+  });
+  const sig2 = await assinarHmacSha256Hex(
+    env.SENTRY_WEBHOOK_SECRET,
+    corpoUnresolvedJaAberta,
+  );
+  const res2 = await worker.fetch(
+    new Request("https://alertas.arestaclimb.com/webhook/sentry", {
+      method: "POST",
+      headers: {
+        "sentry-hook-signature": sig2,
+        "sentry-hook-resource": "issue",
+      },
+      body: corpoUnresolvedJaAberta,
+    }),
+    env,
+  );
+  assertEquals(res2.status, 200);
+  const json2 = await res2.json();
+  assertEquals(json2.sincronizadoGithub, true);
+  assertEquals(json2.issuesAtualizadas, 0);
+  assertEquals(githubFake.issuesCriadas.length, 0);
+
+  // 3. Cenário C (ex: ARESTA-APP-3): Issue não-fatal regride no Sentry e NÃO possui Issue no GitHub (issuesEncontradas: 0) -> cria nova Issue com label 'bug'
+  githubFake.definirResultadoSincronizacaoPorIdSentry("7810000003", {
+    issuesEncontradas: 0,
+    issuesAtualizadas: 0,
+  });
+  const corpoRegressaoSemIssue = JSON.stringify({
+    action: "unresolved",
+    data: {
+      issue: {
+        id: "7810000003",
+        title: "_Exception: Exception: HTTP Status 403 - Resposta: {\"error\":\"Acesso negado: Token de atestação do App Check ausente.\"}",
+        level: "error",
+        substatus: "regressed",
+        web_url: "https://aresta-climb.sentry.io/issues/7810000003/",
+        project: { slug: "aresta-app" },
+      },
+    },
+  });
+  const sig3 = await assinarHmacSha256Hex(
+    env.SENTRY_WEBHOOK_SECRET,
+    corpoRegressaoSemIssue,
+  );
+  const res3 = await worker.fetch(
+    new Request("https://alertas.arestaclimb.com/webhook/sentry", {
+      method: "POST",
+      headers: {
+        "sentry-hook-signature": sig3,
+        "sentry-hook-resource": "issue",
+      },
+      body: corpoRegressaoSemIssue,
+    }),
+    env,
+  );
+  assertEquals(res3.status, 200);
+  const json3 = await res3.json();
+  assertEquals(json3.issueBugCriada, true);
+  assertEquals(githubFake.issuesCriadas.length, 1);
+  assertEquals(githubFake.issuesCriadas[0].repositorio, "aresta-climb/aresta_app");
+  assertEquals(githubFake.issuesCriadas[0].labels, ["bug"]);
+  assertStringIncludes(
+    githubFake.issuesCriadas[0].corpo,
+    "https://aresta-climb.sentry.io/issues/7810000003/",
+  );
+
+  // 4. Cenário D: Issue FATAL regride no Sentry e NÃO possui Issue no GitHub (issuesEncontradas: 0) -> cria nova Issue 'emergencia' e notifica Discord + ntfy
+  githubFake.definirResultadoSincronizacaoPorIdSentry("7810000999", {
+    issuesEncontradas: 0,
+    issuesAtualizadas: 0,
+  });
+  const corpoRegressaoFatalSemIssue = JSON.stringify({
+    action: "unresolved",
+    data: {
+      issue: {
+        id: "7810000999",
+        title: "FatalCrash: Native segmentation fault",
+        level: "fatal",
+        substatus: "regressed",
+        web_url: "https://aresta-climb.sentry.io/issues/7810000999/",
+        project: { slug: "aresta-app" },
+      },
+    },
+  });
+  const sig4 = await assinarHmacSha256Hex(
+    env.SENTRY_WEBHOOK_SECRET,
+    corpoRegressaoFatalSemIssue,
+  );
+  const res4 = await worker.fetch(
+    new Request("https://alertas.arestaclimb.com/webhook/sentry", {
+      method: "POST",
+      headers: {
+        "sentry-hook-signature": sig4,
+        "sentry-hook-resource": "issue",
+      },
+      body: corpoRegressaoFatalSemIssue,
+    }),
+    env,
+  );
+  assertEquals(res4.status, 200);
+  assertEquals(githubFake.issuesCriadas.length, 2);
+  assertEquals(githubFake.issuesCriadas[1].labels, ["emergencia"]);
+  assertEquals(discordFake.mensagensEnviadas.length, 1);
+  assertEquals(
+    discordFake.mensagensEnviadas[0].urlWebhook,
+    env.DISCORD_WEBHOOK_EMERGENCIAS_URL,
+  );
+  assertEquals(ntfyFake.notificacoesEnviadas.length, 1);
+  assertEquals(ntfyFake.notificacoesEnviadas[0].prioridade, 5);
 });

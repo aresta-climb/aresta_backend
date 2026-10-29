@@ -155,8 +155,24 @@ Deno.test("ClienteGithubAppFake: registra criacao e sincronizacao de issues e pe
   assertEquals(resSync.sucesso, true);
   assertEquals(resSync.statusHttp, 200);
   assertEquals(resSync.issuesAtualizadas, 1);
+  assertEquals(resSync.issuesEncontradas, 1);
   assertEquals(githubFake.sincronizacoesEstado.length, 1);
   assertEquals(githubFake.sincronizacoesEstado[0].novoEstado, "closed");
+
+  githubFake.definirResultadoSincronizacaoPorIdSentry("40404", {
+    issuesEncontradas: 0,
+    issuesAtualizadas: 0,
+  });
+  const resSyncSemIssue = await githubFake.sincronizarEstadoIssuePorIdSentry({
+    clientId: "client-id",
+    privateKey: "private-key",
+    installationId: "12345",
+    idIssueSentry: "40404",
+    novoEstado: "open",
+  });
+  assertEquals(resSyncSemIssue.sucesso, true);
+  assertEquals(resSyncSemIssue.issuesEncontradas, 0);
+  assertEquals(resSyncSemIssue.issuesAtualizadas, 0);
 
   githubFake.deveFalhar = true;
   githubFake.statusFalha = 503;
