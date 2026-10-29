@@ -14,7 +14,7 @@ Este repositório contém a infraestrutura de backend e as Edge Functions do **A
    - `feedback` (`feedback.arestaclimb.com`): Proxy com cache imutável para anexos de feedback e redirecionamento para diagnóstico no Supabase.
    - `app-links` (`aresta.cc`): Verificação de Android App Links / iOS Universal Links (`.well-known`), páginas HTML SSR com preview OpenGraph, fallback para lojas e telemetria Umami (`utm_source` / `utm_medium`).
    - `previa` (`previa.arestaclimb.com`): Proxy de artefatos de prévia de Pull Requests e túnel WebSocket do Editor Desktop.
-   - `alertas` (`alertas.arestaclimb.com`): Roteador central de webhooks assinados (Sentry e GitHub) para dois grupos da Comunidade no WhatsApp via WAHA (`NOWEB` em GCP `e2-micro`) com fallback automático de e-mail via Resend (`contato@arestaclimb.com`). Consulte o guia completo em `../aresta_app/docs/guia_configuracao_observabilidade_e_alertas.md`.
+   - `alertas` (`alertas.arestaclimb.com`): Roteador central de webhooks assinados (Sentry e GitHub) para notificações push móveis imediatas via `ntfy` (`ntfy.arestaclimb.com` em GCP `e2-micro`), mural visual somente-leitura no Discord e grupos do WhatsApp via WAHA (`NOWEB` em *standby*), com fallback automático de e-mail via Resend (`contato@arestaclimb.com`) e fila de retentativas no Cloudflare KV. Consulte o guia completo em `../aresta_app/docs/guia_configuracao_observabilidade_e_alertas.md`.
 
 ---
 
@@ -22,7 +22,8 @@ Este repositório contém a infraestrutura de backend e as Edge Functions do **A
 
 ```text
 cloudflare/
-├── alertas/              # Worker roteador de alertas WhatsApp WAHA + fallback Resend (alertas.arestaclimb.com)
+├── alertas/              # Worker roteador de alertas ntfy + Discord + WAHA + fallback Resend (alertas.arestaclimb.com)
+│   └── infra/            # Docker Compose da VM GCP e2-micro (ntfy + WAHA + Cloudflare Tunnel)
 ├── app-links/            # Worker de App Links, OpenGraph SSR e Umami (aresta.cc)
 ├── catalogo/             # Worker de Delta Sync do catálogo SQLite (catalogo.arestaclimb.com)
 ├── feedback/             # Worker de proxy de anexos de feedback (feedback.arestaclimb.com)

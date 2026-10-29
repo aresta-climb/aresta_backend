@@ -16,14 +16,27 @@ export class GerenciadorSessao {
 
   public formatarCodigo(codigo: string): string {
     const norm = this.normalizarCodigo(codigo);
-    if (norm.length === 8) {
+    if (norm.length >= 8) {
       return `${norm.substring(0, 4)}-${norm.substring(4)}`;
     }
     return norm;
   }
 
+  public extrairNumeroPullRequest(codigo: string): number | null {
+    const norm = this.normalizarCodigo(codigo);
+    if (norm.length < 8) return null;
+    const match = /^pr0*([1-9]\d*)$/.exec(norm);
+    if (!match) return null;
+    return parseInt(match[1], 10);
+  }
+
+  public ehCodigoPullRequest(codigo: string): boolean {
+    return this.extrairNumeroPullRequest(codigo) !== null;
+  }
+
   /**
-   * Gera um código de sessão Base36 aleatório seguro e garantidamente único.
+   * Gera um código de sessão Base36 aleatório seguro e garantidamente único,
+   * evitando o prefixo reservado "pr" de Pull Requests.
    */
   public gerarCodigoUnico(tamanho = 8): string {
     let codigo = "";
@@ -35,7 +48,7 @@ export class GerenciadorSessao {
         .map((b) => CARACTERES_BASE36[b % CARACTERES_BASE36.length])
         .join("");
       tentativas++;
-    } while (this.sessoes.has(codigo) && tentativas < 100);
+    } while ((this.sessoes.has(codigo) || codigo.startsWith("pr")) && tentativas < 100);
 
     return codigo;
   }

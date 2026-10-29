@@ -40,6 +40,7 @@ export interface ContextoWorker {
   SESSAO_DO?: any;
   validarJwt?: typeof validarTokenJwt;
   gerenciadorPersonalizado?: GerenciadorSessao;
+  executarFetchServing?: typeof fetch;
 }
 
 export function criarRespostaJson(dados: any, status = 200, cabecalhosAdicionais: Record<string, string> = {}): Response {
@@ -255,11 +256,15 @@ export async function tratarRequisicao(
               appIDs: ["Z74K7R3WU7.app.escalada.croquis"],
               components: [
                 {
+                  "/": "/resumo/*",
+                  exclude: true,
+                },
+                {
                   "/": "/*",
                 },
               ],
               appID: "Z74K7R3WU7.app.escalada.croquis",
-              paths: ["/*"],
+              paths: ["NOT /resumo/*", "/*"],
             },
           ],
         },
@@ -271,6 +276,13 @@ export async function tratarRequisicao(
       const sessaoId = url.searchParams.get("sessao") || url.searchParams.get("session");
       if (!sessaoId) {
         return criarRespostaJson({ erro: "Parâmetro 'sessao' obrigatório." }, 400);
+      }
+
+      if (gerenciadorAtivo.normalizarCodigo(sessaoId).startsWith("pr")) {
+        return criarRespostaJson(
+          { erro: "Códigos iniciados com 'pr' são reservados para instâncias de Pull Request." },
+          400,
+        );
       }
 
       // Validação de autenticação obrigatória para o túnel do editor
@@ -371,8 +383,85 @@ export async function tratarRequisicao(
       return criarRespostaJson({ erro: "Rota não encontrada" }, 404);
     }
 
+    const fetchServing = env?.executarFetchServing || fetch;
+
+    // 5.1. Relatório Visual HTML de Pull Request: GET /resumo/<codigo_pr>
+    if (partes[0] === "resumo" && partes.length >= 2) {
+      const numeroPrResumo = gerenciadorAtivo.extrairNumeroPullRequest(partes[1]);
+      if (numeroPrResumo === null) {
+        return criarRespostaJson({ erro: "Código de Pull Request inválido." }, 400);
+      }
+      const urlResumoR2 = `https://serving.arestaclimb.com/pr/${numeroPrResumo}/resumo.html`;
+      const respResumo = await fetchServing(urlResumoR2);
+      if (!respResumo.ok) {
+        return new Response(
+          `<!DOCTYPE html><html lang="pt-BR"><body><h1>Resumo da PR #${numeroPrResumo} não encontrado (404)</h1></body></html>`,
+          {
+            status: 404,
+            headers: {
+              "content-type": "text/html; charset=utf-8",
+              "access-control-allow-origin": "*",
+            },
+          },
+        );
+      }
+      return new Response(respResumo.body, {
+        status: 200,
+        headers: {
+          "content-type": "text/html; charset=utf-8",
+          "access-control-allow-origin": "*",
+        },
+      });
+    }
+
     const codigoSessao = gerenciadorAtivo.normalizarCodigo(partes[0]);
     const subcaminho = partes.slice(1).join("/");
+    const numeroPr = gerenciadorAtivo.extrairNumeroPullRequest(codigoSessao);
+
+    // 5.2. Proxy Stateless para Instâncias de Pull Request (pr*)
+    if (numeroPr !== null && subcaminho) {
+      if (subcaminho === "info" || subcaminho === "meta") {
+        return criarRespostaJson({
+          codigo: codigoSessao,
+          metadados: {},
+          local_url: null,
+        });
+      }
+      if (subcaminho === "events" || subcaminho === "eventos") {
+        return criarRespostaJson(
+          { erro: "Instâncias de Pull Request não utilizam WebSocket de eventos." },
+          404,
+        );
+      }
+
+      const urlArtefatoR2 = `https://serving.arestaclimb.com/pr/${numeroPr}/${subcaminho}`;
+      const cabecalhosUpstream: Record<string, string> = {};
+      const ifNoneMatch = request.headers.get("if-none-match");
+      if (ifNoneMatch) {
+        cabecalhosUpstream["if-none-match"] = ifNoneMatch;
+      }
+
+      const respArtefato = await fetchServing(urlArtefatoR2, {
+        method: request.method,
+        headers: cabecalhosUpstream,
+      });
+
+      const cabecalhosSaida: Record<string, string> = {
+        "access-control-allow-origin": "*",
+        "access-control-allow-methods": "GET, HEAD, OPTIONS",
+      };
+      const contentType = respArtefato.headers.get("content-type");
+      if (contentType) cabecalhosSaida["content-type"] = contentType;
+      const etag = respArtefato.headers.get("etag");
+      if (etag) cabecalhosSaida["etag"] = etag;
+      const cacheControl = respArtefato.headers.get("cache-control");
+      if (cacheControl) cabecalhosSaida["cache-control"] = cacheControl;
+
+      return new Response(respArtefato.body, {
+        status: respArtefato.status,
+        headers: cabecalhosSaida,
+      });
+    }
 
     // 6. Conexão WebSocket para Ouvintes (Live Reload): /<codigo>/events
     if (subcaminho === "events" || subcaminho === "eventos") {
@@ -527,6 +616,7 @@ export async function tratarRequisicao(
     </div>
 
     <a href="aresta://previa/${codigoFormatado}" class="btn-abrir">Abrir no Aplicativo Aresta</a>
+    ${numeroPr !== null ? `<a href="/resumo/${codigoFormatado}" class="btn-abrir" style="margin-top: 10px; background-color: #3b82f6;">Ver Resumo de Alterações da PR #${numeroPr}</a>` : ""}
     <button class="btn-copiar" id="btn-copiar" onclick="copiarCodigo()">Copiar Código</button>
 
     <div class="rodape">
@@ -842,21 +932,24 @@ export default Sentry.withSentry(
       });
     }
 
-    // Rotas globais / health / well-known
+    // Rotas globais / health / well-known / resumo de PR
+    const gmAtivo = env?.gerenciadorPersonalizado || gerenciador;
     if (
       pathname === "/" ||
       pathname === "/health" ||
-      pathname.startsWith("/.well-known/")
+      pathname.startsWith("/.well-known/") ||
+      pathname.startsWith("/resumo/")
     ) {
-      return tratarRequisicao(request, env, env?.gerenciadorPersonalizado || gerenciador);
+      return tratarRequisicao(request, env, gmAtivo);
     }
 
     // Encaminha requisições com código de sessão para o Durable Object correspondente
+    // (exceto códigos reservados de Pull Request 'pr*', que são 100% stateless)
     if (env?.SESSAO_DO) {
       let codigoSessao: string | null = null;
 
       if (pathname === "/sessoes" || pathname === "/sessions") {
-        const codigo = (env?.gerenciadorPersonalizado || gerenciador).gerarCodigoUnico();
+        const codigo = gmAtivo.gerarCodigoUnico();
         const urlModificada = new URL(request.url);
         urlModificada.searchParams.set("codigo_reservado", codigo);
         const id = env.SESSAO_DO.idFromName(codigo);
@@ -875,14 +968,16 @@ export default Sentry.withSentry(
       }
 
       if (codigoSessao) {
-        const codigoNormalizado = (env?.gerenciadorPersonalizado || gerenciador).normalizarCodigo(codigoSessao);
-        const id = env.SESSAO_DO.idFromName(codigoNormalizado);
-        const stub = env.SESSAO_DO.get(id);
-        return stub.fetch(request);
+        const codigoNormalizado = gmAtivo.normalizarCodigo(codigoSessao);
+        if (!codigoNormalizado.startsWith("pr")) {
+          const id = env.SESSAO_DO.idFromName(codigoNormalizado);
+          const stub = env.SESSAO_DO.get(id);
+          return stub.fetch(request);
+        }
       }
     }
 
-    return tratarRequisicao(request, env, env?.gerenciadorPersonalizado || gerenciador);
+    return tratarRequisicao(request, env, gmAtivo);
   },
 }
 );

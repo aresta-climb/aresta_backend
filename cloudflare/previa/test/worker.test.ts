@@ -1083,6 +1083,155 @@ Deno.test("Worker HTTP - reporta exceção inesperada ao Sentry via RelatorSentr
   expect(relatorFake.eventos[0].mensagem).toBe("Falha inesperada no JWKS");
 });
 
+// -----------------------------------------------------------------------------
+// Testes de Instâncias Semi-Permanentes de Pull Request (pr*)
+// -----------------------------------------------------------------------------
+
+Deno.test("GerenciadorSessao - suporta códigos >= 8 caracteres, extrai número de PR e bloqueia prefixo 'pr' em gerarCodigoUnico", () => {
+  const gm = new GerenciadorSessao();
+
+  expect(gm.formatarCodigo("pr000042")).toBe("pr00-0042");
+  expect(gm.formatarCodigo("pr1234567")).toBe("pr12-34567");
+  expect(gm.extrairNumeroPullRequest("pr00-0042")).toBe(42);
+  expect(gm.extrairNumeroPullRequest("PR12-34567")).toBe(1234567);
+  expect(gm.extrairNumeroPullRequest("pr000000")).toBeNull();
+  expect(gm.extrairNumeroPullRequest("k9x2-p83a")).toBeNull();
+
+  for (let i = 0; i < 50; i++) {
+    const gerado = gm.gerarCodigoUnico();
+    expect(gerado.startsWith("pr")).toBe(false);
+  }
+});
+
+Deno.test("Worker HTTP - rejeita conexão /ws para códigos reservados 'pr*' sem acionar Durable Object", async () => {
+  let doAcionado = false;
+  const mockEnv = {
+    SESSAO_DO: {
+      idFromName: () => {
+        doAcionado = true;
+        return "id";
+      },
+      get: () => {
+        doAcionado = true;
+        return { fetch: () => new Response("erro") };
+      },
+    },
+  };
+
+  const reqWs = new Request("https://previa.arestaclimb.com/ws?sessao=pr00-0042", {
+    headers: { Upgrade: "websocket" },
+  });
+  const res = await worker.fetch(reqWs, mockEnv as any);
+  expect(res.status).toBe(400);
+  expect(doAcionado).toBe(false);
+});
+
+Deno.test("Worker HTTP - roteia /<codigo_pr>/* e /resumo/<codigo_pr> de forma stateless para serving.arestaclimb.com/pr/<id>/*", async () => {
+  let doAcionado = false;
+  const urlsBuscadas: string[] = [];
+
+  const mockFetchServing: typeof fetch = async (input, init) => {
+    const urlStr = input.toString();
+    urlsBuscadas.push(urlStr);
+    if (urlStr === "https://serving.arestaclimb.com/pr/42/indice.binarypb") {
+      expect(new Headers(init?.headers).get("if-none-match")).toBe('"etag-123"');
+      return new Response(new Uint8Array([8, 1]), {
+        status: 200,
+        headers: {
+          "content-type": "application/x-protobuf",
+          etag: '"etag-123"',
+        },
+      });
+    }
+    if (urlStr === "https://serving.arestaclimb.com/pr/1234567/cipo/compilado.binarypb") {
+      return new Response(new Uint8Array([8, 2]), {
+        status: 200,
+        headers: { "content-type": "application/x-protobuf" },
+      });
+    }
+    if (urlStr === "https://serving.arestaclimb.com/pr/42/resumo.html") {
+      return new Response("<!DOCTYPE html><html>Resumo PR 42</html>", {
+        status: 200,
+        headers: { "content-type": "text/html; charset=utf-8" },
+      });
+    }
+    return new Response("Not Found", { status: 404 });
+  };
+
+  const mockEnv = {
+    executarFetchServing: mockFetchServing,
+    SESSAO_DO: {
+      idFromName: () => {
+        doAcionado = true;
+        return "id";
+      },
+      get: () => {
+        doAcionado = true;
+        return { fetch: () => new Response("erro") };
+      },
+    },
+  };
+
+  // 1. Landing page da PR inclui botão para /resumo/pr00-0042
+  const resLanding = await worker.fetch(new Request("https://previa.arestaclimb.com/pr00-0042"), mockEnv as any);
+  expect(resLanding.status).toBe(200);
+  const htmlLanding = await resLanding.text();
+  expect(htmlLanding).toContain("/resumo/pr00-0042");
+
+  // 2. Metadados (/info e /meta) e rejeição de /events
+  const resMeta = await worker.fetch(new Request("https://previa.arestaclimb.com/pr00-0042/meta"), mockEnv as any);
+  expect(resMeta.status).toBe(200);
+  const jsonMeta: any = await resMeta.json();
+  expect(jsonMeta.codigo).toBe("pr000042");
+  expect(jsonMeta.local_url).toBeNull();
+
+  const resEvents = await worker.fetch(
+    new Request("https://previa.arestaclimb.com/pr00-0042/events", { headers: { Upgrade: "websocket" } }),
+    mockEnv as any,
+  );
+  expect(resEvents.status).toBe(404);
+
+  // 3. Download de artefatos compilados (6 dígitos e >6 dígitos unbounded)
+  const resIndice = await worker.fetch(
+    new Request("https://previa.arestaclimb.com/pr00-0042/indice.binarypb", {
+      headers: { "If-None-Match": '"etag-123"' },
+    }),
+    mockEnv as any,
+  );
+  expect(resIndice.status).toBe(200);
+  expect(resIndice.headers.get("etag")).toBe('"etag-123"');
+  expect(resIndice.headers.get("access-control-allow-origin")).toBe("*");
+
+  const resUnbounded = await worker.fetch(
+    new Request("https://previa.arestaclimb.com/pr12-34567/cipo/compilado.binarypb"),
+    mockEnv as any,
+  );
+  expect(resUnbounded.status).toBe(200);
+
+  // 4. Rota GET /resumo/<codigo_pr>
+  const resResumo = await worker.fetch(new Request("https://previa.arestaclimb.com/resumo/pr00-0042"), mockEnv as any);
+  expect(resResumo.status).toBe(200);
+  expect(resResumo.headers.get("content-type")).toContain("text/html");
+  expect(await resResumo.text()).toContain("Resumo PR 42");
+
+  // 5. Resumo 404 quando PR já foi limpa
+  const resResumo404 = await worker.fetch(new Request("https://previa.arestaclimb.com/resumo/pr00-0099"), mockEnv as any);
+  expect(resResumo404.status).toBe(404);
+
+  // Nenhuma dessas chamadas deve ter instanciado Durable Object
+  expect(doAcionado).toBe(false);
+});
+
+Deno.test("Worker HTTP - /.well-known/apple-app-site-association exclui /resumo/* dos Universal Links", async () => {
+  const res = await worker.fetch(new Request("https://previa.arestaclimb.com/.well-known/apple-app-site-association"));
+  expect(res.status).toBe(200);
+  const json: any = await res.json();
+  const detail = json.applinks.details[0];
+  expect(detail.paths).toContain("NOT /resumo/*");
+  expect(detail.components).toContainEqual({ "/": "/resumo/*", exclude: true });
+});
+
+
 
 
 

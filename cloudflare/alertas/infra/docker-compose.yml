@@ -1,0 +1,50 @@
+# SPDX-FileCopyrightText: Copyright (C) 2026 Aresta Climb Contributors
+# SPDX-License-Identifier: MPL-2.0
+
+services:
+  ntfy:
+    image: binwiederhier/ntfy:latest
+    container_name: ntfy
+    restart: always
+    command:
+      - serve
+    environment:
+      - TZ=America/Sao_Paulo
+      - NTFY_BASE_URL=https://ntfy.arestaclimb.com
+      - NTFY_UPSTREAM_BASE_URL=https://ntfy.sh
+      - NTFY_BEHIND_PROXY=true
+      - NTFY_WEB_ROOT=disable
+      - NTFY_AUTH_FILE=/var/cache/ntfy/user.db
+      - NTFY_AUTH_DEFAULT_ACCESS=read-only
+      - NTFY_CACHE_FILE=/var/cache/ntfy/cache.db
+      - NTFY_CACHE_DURATION=48h
+      - NTFY_ATTACHMENT_CACHE_DIR=/var/cache/ntfy/attachments
+    volumes:
+      - ./ntfy-cache:/var/cache/ntfy
+    expose:
+      - "80"
+
+  waha:
+    image: devlikeapro/waha:noweb
+    container_name: waha
+    restart: always
+    environment:
+      - WHATSAPP_DEFAULT_ENGINE=NOWEB
+      - WAHA_API_KEY=${WAHA_API_KEY}
+      - WAHA_DASHBOARD_ENABLED=true
+      - WAHA_DASHBOARD_USERNAME=${WAHA_DASHBOARD_USERNAME}
+      - WAHA_DASHBOARD_PASSWORD=${WAHA_DASHBOARD_PASSWORD}
+      - WHATSAPP_RESTART_ALL_SESSIONS=true
+    volumes:
+      - ./waha-sessions:/app/.sessions
+    expose:
+      - "3000"
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: cloudflared
+    restart: always
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN}
+    depends_on:
+      - ntfy
+      - waha
