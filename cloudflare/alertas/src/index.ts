@@ -2126,6 +2126,10 @@ export async function processarRequisicaoAlertas(
   );
 }
 
+export interface ContextoExecucaoAlertas {
+  waitUntil(promessa: Promise<unknown>): void;
+}
+
 export default Sentry.withSentry(
   (env: AmbienteAlertas) => ({
     dsn: env.SENTRY_DSN,
@@ -2140,8 +2144,14 @@ export default Sentry.withSentry(
     },
   }),
   {
-    fetch(requisicao: Request, env: AmbienteAlertas): Promise<Response> {
-      return processarRequisicaoAlertas(requisicao, env);
+    fetch(
+      requisicao: Request,
+      env: AmbienteAlertas,
+      ctx?: ContextoExecucaoAlertas,
+    ): Promise<Response> {
+      const promessa = processarRequisicaoAlertas(requisicao, env);
+      ctx?.waitUntil?.(promessa);
+      return promessa;
     },
     scheduled(_controller: any, env: AmbienteAlertas): Promise<void> {
       return processarFilaRetentativas(env);

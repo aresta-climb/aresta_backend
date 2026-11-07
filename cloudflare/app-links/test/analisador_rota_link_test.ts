@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { assertEquals } from "https://deno.land/std@0.192.0/testing/asserts.ts";
-import { analisarRotaLink } from "../src/analisador_rota_link.ts";
+import {
+  analisarRotaLink,
+  extrairSlugThumbnailOg,
+} from "../src/analisador_rota_link.ts";
 
 const UID_VALIDO = "AbCdEfGh123456";
 
@@ -131,4 +134,23 @@ Deno.test("analisador_rota_link: retorna null para UIDs fora do padrao de 14 car
   for (const urlTexto of urlsInvalidas) {
     assertEquals(analisarRotaLink(new URL(urlTexto)), null);
   }
+});
+
+Deno.test("analisador_rota_link: extrairSlugThumbnailOg extrai id_slug valido de /og/<slug>.webp e rejeita caminhos invalidos", () => {
+  assertEquals(
+    extrairSlugThumbnailOg("/og/br_mg_serra_do_cipo.webp"),
+    "br_mg_serra_do_cipo"
+  );
+  assertEquals(
+    extrairSlugThumbnailOg("/og/br_mg_igarape_pedra_grande_2026.webp"),
+    "br_mg_igarape_pedra_grande_2026"
+  );
+
+  assertEquals(extrairSlugThumbnailOg("/og/"), null);
+  assertEquals(extrairSlugThumbnailOg("/og/.webp"), null);
+  assertEquals(extrairSlugThumbnailOg("/og/MAIUSCULA.webp"), null);
+  assertEquals(extrairSlugThumbnailOg("/og/br-mg-hifen.webp"), null);
+  assertEquals(extrairSlugThumbnailOg("/og/../segredo.webp"), null);
+  assertEquals(extrairSlugThumbnailOg("/og/br_mg_cipo.png"), null);
+  assertEquals(extrairSlugThumbnailOg("/thumbnails/br_mg_cipo.webp"), null);
 });

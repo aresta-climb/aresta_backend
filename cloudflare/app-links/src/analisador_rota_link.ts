@@ -10,6 +10,21 @@ import { MetadadosRotaLink } from "../../../aresta_api/openapi/generated/ts/app_
 const REGEX_UID_CANONICO = /^[A-Za-z0-9]{14}$/;
 
 /**
+ * Expressão regular para validar rotas de miniatura OpenGraph (`/og/<id_slug>.webp`),
+ * aceitando exclusivamente identificadores em snake_case minúsculo alfanumérico.
+ */
+const REGEX_ROTA_THUMBNAIL_OG = /^\/og\/([a-z0-9_]+)\.webp$/;
+
+/**
+ * Extrai o `id_slug` do croqui a partir de um caminho `/og/<id_slug>.webp`.
+ * Retorna `null` se o caminho não corresponder ao formato esperado.
+ */
+export function extrairSlugThumbnailOg(caminho: string): string | null {
+  const correspondencia = caminho.match(REGEX_ROTA_THUMBNAIL_OG);
+  return correspondencia ? correspondencia[1] : null;
+}
+
+/**
  * Configuração derivada de cada prefixo curto suportado em `aresta.cc`.
  */
 interface ConfiguracaoPrefixo {

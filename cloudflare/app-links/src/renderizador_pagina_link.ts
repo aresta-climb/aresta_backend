@@ -6,7 +6,7 @@ import {
   ResumoEntidadeLink,
 } from "../../../aresta_api/openapi/generated/ts/app_links.ts";
 
-const URL_CDN_THUMBNAILS = "https://serving.arestaclimb.com/v4/thumbnails";
+const URL_BASE_THUMBNAILS_OG = "https://aresta.cc/og";
 const URL_IMAGEM_PADRAO_OG = "https://arestaclimb.com/og.png";
 const URL_LOGO_APP = "https://arestaclimb.com/assets/logo_app.png";
 const URL_SITE_PRINCIPAL = "https://arestaclimb.com";
@@ -413,9 +413,13 @@ export function renderizarPaginaEntidade(
   const descricaoOg = escaparHtml(
     construirDescricaoOpenGraph(entidade, rota.abrir_mapa)
   );
-  const imagemOg = entidade.id_slug
-    ? `${URL_CDN_THUMBNAILS}/${encodeURIComponent(entidade.id_slug)}.webp`
+  const possuiThumbnailPropria = Boolean(entidade.id_slug);
+  const imagemOg = possuiThumbnailPropria
+    ? `${URL_BASE_THUMBNAILS_OG}/${encodeURIComponent(entidade.id_slug)}.webp`
     : URL_IMAGEM_PADRAO_OG;
+  const tipoImagemOg = possuiThumbnailPropria ? "image/webp" : "image/png";
+  const larguraImagemOg = possuiThumbnailPropria ? "600" : "1200";
+  const alturaImagemOg = possuiThumbnailPropria ? "600" : "630";
 
   const sufixoCaminho = rota.prefixo
     ? `${rota.prefixo}/${rota.uid}`
@@ -529,23 +533,30 @@ export function renderizarPaginaEntidade(
   return `<!DOCTYPE html>
 <html lang="pt-BR" data-theme="dark">
 <head>
-  ${SCRIPT_INICIALIZACAO_TEMA}
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="apple-itunes-app" content="app-id=6776467893, app-argument=${escaparHtml(urlCanonico)}">
-  <link rel="icon" type="image/svg+xml" href="https://arestaclimb.com/favicon.svg">
   <title>${tituloOg}</title>
   <meta name="description" content="${descricaoOg}">
   <meta property="og:type" content="website">
+  <meta property="og:locale" content="pt_BR">
   <meta property="og:site_name" content="Aresta Croquis de Escalada">
   <meta property="og:title" content="${tituloOg}">
   <meta property="og:description" content="${descricaoOg}">
-  <meta property="og:image" content="${escaparHtml(imagemOg)}">
   <meta property="og:url" content="${escaparHtml(urlCanonico)}">
+  <meta property="og:image" content="${escaparHtml(imagemOg)}">
+  <meta property="og:image:secure_url" content="${escaparHtml(imagemOg)}">
+  <meta property="og:image:type" content="${tipoImagemOg}">
+  <meta property="og:image:width" content="${larguraImagemOg}">
+  <meta property="og:image:height" content="${alturaImagemOg}">
+  <meta property="og:image:alt" content="${tituloOg}">
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="${tituloOg}">
   <meta name="twitter:description" content="${descricaoOg}">
   <meta name="twitter:image" content="${escaparHtml(imagemOg)}">
+  <meta name="twitter:image:alt" content="${tituloOg}">
+  <meta name="apple-itunes-app" content="app-id=6776467893, app-argument=${escaparHtml(urlCanonico)}">
+  <link rel="icon" type="image/svg+xml" href="https://arestaclimb.com/favicon.svg">
+  ${SCRIPT_INICIALIZACAO_TEMA}
   <script defer src="${URL_SCRIPT_UMAMI}" data-website-id="${ID_WEBSITE_UMAMI}"></script>
   <style>${ESTILOS_BASE_DESIGN_SYSTEM}
     .pagina-main {

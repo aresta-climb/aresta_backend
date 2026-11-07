@@ -7,10 +7,14 @@ import {
 } from "https://deno.land/std@0.192.0/testing/asserts.ts";
 import workerDefault, {
   CABECALHO_CACHE_PAGINA_LINK,
+  CABECALHO_CACHE_THUMBNAIL_OG,
   CABECALHO_CACHE_WELL_KNOWN,
+  ClienteThumbnailHttp,
+  criarOpcoesSentry,
   processarRequisicao,
 } from "../src/index.ts";
 import { BancoD1Fake } from "./banco_d1_fake.ts";
+import { ClienteThumbnailFake } from "./cliente_thumbnail_fake.ts";
 import { RelatorSentryFake } from "../../../supabase/functions/compartilhado/relator_sentry_fake.ts";
 
 function criarBancoComVia(): BancoD1Fake {
@@ -163,7 +167,15 @@ Deno.test("worker app-links: GET /s/<uid> resolve entidade no D1 e retorna HTML 
   );
   assertStringIncludes(
     html,
-    "https://serving.arestaclimb.com/v4/thumbnails/br_mg_serra_do_cipo.webp"
+    "https://aresta.cc/og/br_mg_serra_do_cipo.webp"
+  );
+  assertStringIncludes(
+    html,
+    '<meta property="og:image:width" content="600">'
+  );
+  assertStringIncludes(
+    html,
+    '<meta property="og:image:height" content="600">'
   );
   assertStringIncludes(
     html,
@@ -173,6 +185,148 @@ Deno.test("worker app-links: GET /s/<uid> resolve entidade no D1 e retorna HTML 
   assertStringIncludes(html, "Esportiva");
   assertStringIncludes(html, '"utm_source":"compartilhamento"');
   assertStringIncludes(html, '"utm_medium":"social"');
+});
+
+Deno.test("worker app-links: GET e HEAD /og/<id_slug>.webp servem miniatura com cache de 7 dias na borda, 404 quando ausente e 502 com Sentry em falha", async () => {
+  const clienteThumb = new ClienteThumbnailFake();
+  const bytesWebp = new Uint8Array([82, 73, 70, 70, 87, 69, 66, 80]);
+  clienteThumb.inserirThumbnail("br_mg_serra_do_cipo", bytesWebp);
+
+  const resGet = await processarRequisicao(
+    new Request("https://aresta.cc/og/br_mg_serra_do_cipo.webp"),
+    { clienteThumbnail: clienteThumb }
+  );
+  assertEquals(resGet.status, 200);
+  assertEquals(resGet.headers.get("Content-Type"), "image/webp");
+  assertEquals(resGet.headers.get("Cache-Control"), CABECALHO_CACHE_THUMBNAIL_OG);
+  assertEquals(new Uint8Array(await resGet.arrayBuffer()), bytesWebp);
+
+  const resHead = await processarRequisicao(
+    new Request("https://aresta.cc/og/br_mg_serra_do_cipo.webp", {
+      method: "HEAD",
+    }),
+    { clienteThumbnail: clienteThumb }
+  );
+  assertEquals(resHead.status, 200);
+  assertEquals(resHead.headers.get("Content-Type"), "image/webp");
+  assertEquals(await resHead.text(), "");
+
+  const res404 = await processarRequisicao(
+    new Request("https://aresta.cc/og/croqui_inexistente.webp"),
+    { clienteThumbnail: clienteThumb }
+  );
+  assertEquals(res404.status, 404);
+  assertEquals(
+    res404.headers.get("Cache-Control"),
+    "public, max-age=300, s-maxage=86400"
+  );
+
+  const relatorFake = new RelatorSentryFake();
+  clienteThumb.configurarFalha("Falha na CDN de thumbnails");
+  const res502 = await processarRequisicao(
+    new Request("https://aresta.cc/og/br_mg_serra_do_cipo.webp"),
+    {
+      clienteThumbnail: clienteThumb,
+      SENTRY_DSN: "https://pub@o1.ingest.sentry.io/1",
+      relatorSentry: relatorFake,
+    }
+  );
+  assertEquals(res502.status, 502);
+  assertEquals(res502.headers.get("Cache-Control"), "no-store");
+  assertStringIncludes(await res502.text(), "Falha na CDN de thumbnails");
+  assertEquals(relatorFake.eventos.length, 1);
+
+  const clienteComErroLiteral: ClienteThumbnailFake = {
+    obterThumbnail() {
+      return Promise.reject("erro_rede_literal");
+    },
+  } as unknown as ClienteThumbnailFake;
+  const res502Literal = await processarRequisicao(
+    new Request("https://aresta.cc/og/br_mg_serra_do_cipo.webp"),
+    {
+      clienteThumbnail: clienteComErroLiteral,
+      SENTRY_DSN: "https://pub@o1.ingest.sentry.io/1",
+      relatorSentry: relatorFake,
+    }
+  );
+  assertEquals(res502Literal.status, 502);
+  assertStringIncludes(await res502Literal.text(), "erro_rede_literal");
+});
+
+Deno.test("ClienteThumbnailHttp: busca miniatura na CDN serving.arestaclimb.com respeitando metodo GET/HEAD e content-type", async () => {
+  let urlRequisitada = "";
+  let metodoRequisitado = "";
+
+  const fetchSimulado: typeof fetch = (
+    input: RequestInfo | URL,
+    init?: RequestInit
+  ): Promise<Response> => {
+    urlRequisitada = String(input);
+    metodoRequisitado = init?.method || "GET";
+    if (urlRequisitada.endsWith("/nao_existe.webp")) {
+      return Promise.resolve(new Response("Not Found", { status: 404 }));
+    }
+    return Promise.resolve(
+      new Response(
+        metodoRequisitado === "HEAD" ? null : new Uint8Array([1, 2, 3]),
+        {
+          status: 200,
+          headers: { "Content-Type": "image/webp" },
+        }
+      )
+    );
+  };
+
+  const cliente = new ClienteThumbnailHttp(fetchSimulado);
+  const resOk = await cliente.obterThumbnail("br_mg_serra_do_cipo", "GET");
+  assertEquals(
+    urlRequisitada,
+    "https://serving.arestaclimb.com/v4/thumbnails/br_mg_serra_do_cipo.webp"
+  );
+  assertEquals(metodoRequisitado, "GET");
+  assertEquals(resOk.status, 200);
+  assertEquals(resOk.contentType, "image/webp");
+
+  const resHead = await cliente.obterThumbnail("br_mg_serra_do_cipo", "HEAD");
+  assertEquals(metodoRequisitado, "HEAD");
+  assertEquals(resHead.status, 200);
+  assertEquals(resHead.corpo, null);
+
+  const fetchSemContentType: typeof fetch = (): Promise<Response> =>
+    Promise.resolve(new Response(new Uint8Array([9]), { status: 200 }));
+  const clienteSemHeader = new ClienteThumbnailHttp(fetchSemContentType);
+  const resPadrao = await clienteSemHeader.obterThumbnail("slug", "GET");
+  assertEquals(resPadrao.contentType, "image/webp");
+
+  const fetchOriginal = globalThis.fetch;
+  globalThis.fetch = fetchSemContentType;
+  try {
+    const resDefault = await processarRequisicao(
+      new Request("https://aresta.cc/og/br_mg_serra_do_cipo.webp")
+    );
+    assertEquals(resDefault.status, 200);
+  } finally {
+    globalThis.fetch = fetchOriginal;
+  }
+
+  const opcoesSentry = criarOpcoesSentry({
+    SENTRY_DSN: "https://pub@o1.ingest.sentry.io/1",
+  });
+  const eventoComHeaders = opcoesSentry.beforeSend({
+    request: {
+      headers: {
+        authorization: "Bearer segredo",
+        cookie: "sessao=123",
+        "x-api-key": "chave",
+        "user-agent": "WhatsApp/2.24",
+      },
+    },
+  } as never);
+  assertEquals(eventoComHeaders?.request?.headers, {
+    "user-agent": "WhatsApp/2.24",
+  });
+  const eventoSemHeaders = opcoesSentry.beforeSend({ type: undefined } as never);
+  assertEquals(eventoSemHeaders, { type: undefined });
 });
 
 Deno.test("worker app-links: GET /<uid> para UID inexistente no D1 (cache 24h) ou rota invalida (cache 1 ano) retorna 404 com pagina HTML amigavel", async () => {

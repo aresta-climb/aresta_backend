@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import {
+  assert,
   assertEquals,
   assertStringIncludes,
 } from "https://deno.land/std@0.192.0/testing/asserts.ts";
@@ -45,10 +46,36 @@ Deno.test("renderizador_pagina_link: gera meta tags OpenGraph completas e thumbn
     html,
     '<meta property="og:title" content="Rapa Nui (7b) — Serra do Cipó | Aresta">'
   );
+  assertStringIncludes(html, '<meta property="og:locale" content="pt_BR">');
   assertStringIncludes(
     html,
-    '<meta property="og:image" content="https://serving.arestaclimb.com/v4/thumbnails/br_mg_serra_do_cipo.webp">'
+    '<meta property="og:image" content="https://aresta.cc/og/br_mg_serra_do_cipo.webp">'
   );
+  assertStringIncludes(
+    html,
+    '<meta property="og:image:secure_url" content="https://aresta.cc/og/br_mg_serra_do_cipo.webp">'
+  );
+  assertStringIncludes(
+    html,
+    '<meta property="og:image:type" content="image/webp">'
+  );
+  assertStringIncludes(html, '<meta property="og:image:width" content="600">');
+  assertStringIncludes(html, '<meta property="og:image:height" content="600">');
+  assertStringIncludes(
+    html,
+    '<meta property="og:image:alt" content="Rapa Nui (7b) — Serra do Cipó | Aresta">'
+  );
+  assertStringIncludes(
+    html,
+    '<meta name="twitter:image:alt" content="Rapa Nui (7b) — Serra do Cipó | Aresta">'
+  );
+
+  // Meta tags OpenGraph devem vir antes de qualquer <script> ou <style> no <head>
+  const idxOgImage = html.indexOf('<meta property="og:image:height"');
+  const idxPrimeiroScript = html.indexOf("<script>");
+  const idxPrimeiroStyle = html.indexOf("<style>");
+  assert(idxOgImage > 0 && idxOgImage < idxPrimeiroScript);
+  assert(idxOgImage < idxPrimeiroStyle);
   assertStringIncludes(html, "Vale da Lua");
   assertStringIncludes(html, "Grupo: Cipó");
   assertStringIncludes(html, "Santana do Riacho - MG");
@@ -142,6 +169,22 @@ Deno.test("renderizador_pagina_link: gera titulo OpenGraph adequado para croqui,
   assertStringIncludes(
     htmlCroqui,
     '<meta property="og:image" content="https://arestaclimb.com/og.png">'
+  );
+  assertStringIncludes(
+    htmlCroqui,
+    '<meta property="og:image:secure_url" content="https://arestaclimb.com/og.png">'
+  );
+  assertStringIncludes(
+    htmlCroqui,
+    '<meta property="og:image:type" content="image/png">'
+  );
+  assertStringIncludes(
+    htmlCroqui,
+    '<meta property="og:image:width" content="1200">'
+  );
+  assertStringIncludes(
+    htmlCroqui,
+    '<meta property="og:image:height" content="630">'
   );
   assertStringIncludes(htmlCroqui, 'href="aresta://aresta.cc/CROQUI12345678"');
   assertStringIncludes(htmlCroqui, "Santana do Riacho");

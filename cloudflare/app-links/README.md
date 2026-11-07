@@ -7,14 +7,16 @@ Worker em borda (Cloudflare Worker + Cloudflare D1) responsável por atender o d
 ## 🎯 Arquitetura, UI Responsiva, Cache na CDN e Telemetria Umami
 
 1. **Resolução Instantânea via Cloudflare D1 (`aresta-catalogo`)**:
-   - O Worker compartilha o binding `DB` do banco D1 `aresta-catalogo` (alimentado pelo `sincronizar_d1_lib.py` no `aresta_db`), consultando as tabelas `catalogo_croquis` e `catalogo_aresta` para montar o resumo hierárquico da entidade (`croqui`, `grupo`, `setor` ou `escalada`).
+   - O Worker compartilha o binding `DB` do banco D1 `aresta-catalogo` (alimentado pelo `sincronizar_d1_lib.py` no `aresta_db`), consultando em uma única query unificada (`UNION ALL`) as tabelas `catalogo_croquis` e `catalogo_aresta` para montar o resumo hierárquico da entidade (`croqui`, `grupo`, `setor` ou `escalada`) em um único round-trip.
 2. **Design System Light/Dark Mode e Layout Mobile-First**:
    - As páginas HTML SSR (`200 OK` e `404 Not Found`) compartilham os tokens visuais de `arestaclimb.com` (Arenito, Terracota, Sálvia e Obsidian) com detecção automática de `prefers-color-scheme`, persistência em `localStorage('aresta-theme')`, botão `#themeToggle` e cabeçalho com a logo oficial (`logo_app.png`).
    - **Mobile-First (inspirado na `PicoPage` do aplicativo)**: exibe a miniatura `600x600` (`1:1`) em largura total sem cortes (`aspect-ratio: 1 / 1`), com gradiente inferior fundindo ao fundo, título sobreposto, subtítulo em verde-musgo, banner de download estilo `BannerModoOnline` com os selos clássicos `.store-badge` (contendo os ícones SVG oficiais da Apple App Store e Google Play), link discreto *"Já tem o Aresta instalado? Abrir no aplicativo →"* (visível exclusivamente no mobile + meta tag `apple-itunes-app` para iOS) e cards de contexto estilo `PicoMenuCard`.
    - **Desktop (`@media (min-width: 820px)`)**: transforma o contêiner em um Card de 2 Colunas com a miniatura `1:1` à esquerda (sem cortes) e as informações e botões das lojas à direita (ocultando o link `aresta://`).
    - **Normalização de Metadados**: capitaliza a modalidade (`Boulder`, `Esportiva`, `Tradicional`, `Multienfiada`, `Highline`), usa etiqueta específica para `Boulder` e `Highline`, e remove os prefixos redundantes `"Setor "` e `"Grupo "` (`"Setor Tramontina"` $\rightarrow$ `"Setor: Tramontina"`).
-3. **Cache na Borda da Cloudflare CDN + Telemetria Umami no Cliente**:
-   - As páginas HTML SSR de entidades emitem `Cache-Control: public, max-age=3600, s-maxage=86400` (1 hora no navegador, 24 horas na CDN da Cloudflare), reduzindo drasticamente leituras no D1 e invocações do Worker.
+3. **Preview OpenGraph Instantâneo no WhatsApp, Cache na Borda da Cloudflare CDN e Telemetria Umami**:
+   - As meta tags OpenGraph (`og:locale`, `og:title`, `og:description`, `og:image`, `og:image:secure_url`, `og:image:type`, `og:image:width`, `og:image:height`, `og:image:alt`) são emitidas no topo imediato do `<head>` antes de qualquer `<script>` ou `<style>`, informando as dimensões exatas (`600x600` para miniaturas WebP e `1200x630` para o fallback `og.png`) para evitar o scraping assíncrono em segundo plano da Meta/WhatsApp no primeiro compartilhamento.
+   - As miniaturas são servidas sob o mesmo domínio em `/og/<id_slug>.webp` (`Cache-Control: public, max-age=86400, s-maxage=604800, stale-while-revalidate=86400`), reutilizando a mesma conexão HTTP/2 / TLS aberta pelo crawler no domínio `aresta.cc`.
+   - As páginas HTML SSR de entidades emitem `Cache-Control: public, max-age=14400, s-maxage=604800, stale-while-revalidate=86400` (4 horas no navegador, 7 dias na CDN da Cloudflare + 24 horas de revalidação em background), reduzindo leituras no D1 e invocações do Worker.
    - Mesmo quando o HTML é entregue diretamente pelo cache da CDN da Cloudflare, o navegador do visitante executa o script oficial do Umami (`https://analytics.arestaclimb.com/script.js`) e dispara o evento customizado `app-link-acesso`, registrando `uid`, `tipo`, `id_slug`, `abrir_mapa`, `origem_link`, `utm_source` e `utm_medium`.
 4. **Mapeamento Automático de Prefixos para UTM**:
    - `/s/<uid>`, `/sm/<uid>`, `/ms/<uid>` $\rightarrow$ `utm_source: "compartilhamento"`, `utm_medium: "social"`
@@ -31,6 +33,7 @@ Worker em borda (Cloudflare Worker + Cloudflare D1) responsável por atender o d
 | `/health` | `GET` | Healthcheck operacional (`200 OK`, `Cache-Control: no-store`). |
 | `/.well-known/assetlinks.json` | `GET` | Declaração Digital Asset Links para Android App Links (`app.escalada.croquis`). |
 | `/.well-known/apple-app-site-association` | `GET` | Declaração AASA para iOS Universal Links (`Z74K7R3WU7.app.escalada.croquis`). |
+| `/og/<id_slug>.webp` | `GET`, `HEAD` | Proxy de miniatura OpenGraph `600x600` WebP sob o domínio `aresta.cc` com cache de 7 dias na borda. |
 | `/<uid>` | `GET` | Página HTML SSR com OpenGraph e fallback de lojas para o UID de 14 caracteres. |
 | `/<prefixo>/<uid>` | `GET` | Página HTML SSR com suporte aos prefixos `m`, `s`, `sm`, `ms`, `q`, `qm` e `mq`. |
 

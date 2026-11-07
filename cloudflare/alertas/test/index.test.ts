@@ -2931,3 +2931,62 @@ Deno.test("alertas-worker: ao receber issue.unresolved (regressao no Sentry), re
   assertEquals(ntfyFake.notificacoesEnviadas.length, 1);
   assertEquals(ntfyFake.notificacoesEnviadas[0].prioridade, 5);
 });
+
+Deno.test("alertas-worker: registra a promessa de processamento em ctx.waitUntil no fetch para evitar cancelamento prematuro (clientDisconnected do Sentry) antes do envio ao ntfy", async () => {
+  const discordFake = new ClienteDiscordFake();
+  const ntfyFake = new ClienteNtfyFake();
+  const githubFake = new ClienteGithubAppFake();
+  const resendFake = new ClienteResendFake();
+  const env = criarAmbientePadrao(undefined, resendFake, discordFake);
+  env.CANAL_ALERTAS_ATIVO = "discord";
+  env.NTFY_TOPICO_EMERGENCIAS = "emergencias";
+  env.ARESTA_CLIMB_BOT_GITHUB_APP_CLIENT_ID = "app-id";
+  env.ARESTA_CLIMB_BOT_GITHUB_APP_PRIVATE_KEY = "key";
+  env.ARESTA_CLIMB_BOT_GITHUB_APP_INSTALLATION_ID = "123";
+  env.clienteNtfy = ntfyFake;
+  env.clienteGithubApp = githubFake;
+
+  const promessasWaitUntil: Promise<unknown>[] = [];
+  const ctx = {
+    waitUntil(p: Promise<unknown>) {
+      promessasWaitUntil.push(p);
+    },
+  };
+
+  const corpoFatal = JSON.stringify({
+    action: "triggered",
+    data: {
+      event: {
+        level: "fatal",
+        title: "TypeError: Null check operator used on a null value",
+        web_url: "https://aresta-climb.sentry.io/issues/7820513537/",
+        tags: [["service", "aresta-app"]],
+      },
+    },
+  });
+  const sigFatal = await assinarHmacSha256Hex(
+    env.SENTRY_WEBHOOK_SECRET,
+    corpoFatal,
+  );
+
+  const res = await worker.fetch(
+    new Request("https://alertas.arestaclimb.com/webhook/sentry", {
+      method: "POST",
+      headers: {
+        "sentry-hook-signature": sigFatal,
+        "sentry-hook-resource": "event_alert",
+      },
+      body: corpoFatal,
+    }),
+    env,
+    ctx,
+  );
+
+  assertEquals(res.status, 200);
+  assertEquals(promessasWaitUntil.length >= 1, true);
+  await Promise.all(promessasWaitUntil);
+  assertEquals(discordFake.mensagensEnviadas.length, 1);
+  assertEquals(ntfyFake.notificacoesEnviadas.length, 1);
+  assertEquals(ntfyFake.notificacoesEnviadas[0].topico, "emergencias");
+});
+

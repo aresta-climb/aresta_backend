@@ -73,11 +73,12 @@ Deno.test("resolvedor_entidade_d1: resolve UID de um croqui diretamente em catal
   });
 });
 
-Deno.test("resolvedor_entidade_d1: resolve UID de uma escalada com JOIN de croqui, setor pai e grupo pai", async () => {
+Deno.test("resolvedor_entidade_d1: resolve UID de uma escalada com JOIN de croqui, setor pai e grupo pai em uma unica consulta SQL", async () => {
   const banco = criarBancoPopulado();
 
   const resumo = await resolverEntidadePorUid(banco, "ESCALA12345678");
 
+  assertEquals(banco.totalConsultasExecutadas, 1);
   assertEquals(resumo, {
     uid: "ESCALA12345678",
     tipo: "escalada",

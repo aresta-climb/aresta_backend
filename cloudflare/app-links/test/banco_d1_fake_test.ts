@@ -64,6 +64,26 @@ Deno.test("banco_d1_fake: insere e consulta registros de catalogo_croquis e cata
   assertEquals(entidades.results[0].uid, "ESCALA12345678");
   assertEquals(entidades.results[0].nome, "Rapa Nui");
   assertEquals(entidades.results[0].setor_nome, "Vale da Lua");
+
+  const unificadoCroqui = await banco
+    .prepare(
+      "SELECT croqui_uid FROM catalogo_croquis WHERE croqui_uid = ? UNION ALL SELECT uid FROM catalogo_aresta WHERE uid = ?"
+    )
+    .bind("CROQUI12345678")
+    .all<{ uid: string; tipo: string; croqui_nome: string }>();
+  assertEquals(unificadoCroqui.results[0].uid, "CROQUI12345678");
+  assertEquals(unificadoCroqui.results[0].tipo, "croqui");
+  assertEquals(unificadoCroqui.results[0].croqui_nome, "Serra do Cipó");
+
+  const unificadoEntidade = await banco
+    .prepare(
+      "SELECT croqui_uid FROM catalogo_croquis WHERE croqui_uid = ? UNION ALL SELECT uid FROM catalogo_aresta WHERE uid = ?"
+    )
+    .bind("ESCALA12345678")
+    .all<{ uid: string; tipo: string; nome: string }>();
+  assertEquals(unificadoEntidade.results[0].uid, "ESCALA12345678");
+  assertEquals(unificadoEntidade.results[0].tipo, "escalada");
+  assertEquals(unificadoEntidade.results[0].nome, "Rapa Nui");
 });
 
 Deno.test("banco_d1_fake: retorna lista vazia para croquis, entidades inexistentes, orfas ou queries desconhecidas", async () => {
@@ -94,6 +114,15 @@ Deno.test("banco_d1_fake: retorna lista vazia para croquis, entidades inexistent
     .all<{ cidade: string | null; estado: string | null }>();
   assertEquals(croquiSemCidade.results[0].cidade, null);
   assertEquals(croquiSemCidade.results[0].estado, null);
+
+  const unificadoSemCidade = await banco
+    .prepare(
+      "SELECT * FROM catalogo_croquis WHERE croqui_uid = ? UNION ALL SELECT * FROM catalogo_aresta WHERE uid = ?"
+    )
+    .bind("CROQUI_SEM_CID")
+    .all<{ cidade: string | null; estado: string | null }>();
+  assertEquals(unificadoSemCidade.results[0].cidade, null);
+  assertEquals(unificadoSemCidade.results[0].estado, null);
 
   const croquiInexistente = await banco
     .prepare("SELECT * FROM catalogo_croquis WHERE croqui_uid = ?")

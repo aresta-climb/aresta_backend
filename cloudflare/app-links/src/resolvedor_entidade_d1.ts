@@ -18,17 +18,9 @@ export interface BancoD1 {
   prepare(query: string): DeclaracaoPreparadaD1;
 }
 
-interface LinhaCroquiQuery {
-  croqui_uid: string;
-  id_slug: string;
-  nome: string;
-  cidade: string | null;
-  estado: string | null;
-}
-
 interface LinhaEntidadeQuery {
   uid: string;
-  tipo: "grupo" | "setor" | "escalada";
+  tipo: "croqui" | "grupo" | "setor" | "escalada";
   nome: string;
   croqui_uid: string;
   id_slug: string;
@@ -41,25 +33,29 @@ interface LinhaEntidadeQuery {
   grupo_nome: string | null;
 }
 
-const SQL_BUSCAR_CROQUI_POR_UID = `
+const SQL_BUSCAR_ENTIDADE_OU_CROQUI_POR_UID = `
 SELECT
-  croqui_uid,
-  id_slug,
-  TRIM(nome) AS nome,
-  TRIM(cidade) AS cidade,
-  TRIM(estado) AS estado
-FROM catalogo_croquis
-WHERE croqui_uid = ?
-LIMIT 1
-`.trim();
-
-const SQL_BUSCAR_ENTIDADE_POR_UID = `
+  c.croqui_uid AS uid,
+  'croqui' AS tipo,
+  TRIM(c.nome) AS nome,
+  c.croqui_uid AS croqui_uid,
+  c.id_slug AS id_slug,
+  TRIM(c.nome) AS croqui_nome,
+  TRIM(c.cidade) AS cidade,
+  TRIM(c.estado) AS estado,
+  NULL AS escalada_grau,
+  NULL AS escalada_tipo,
+  NULL AS setor_nome,
+  NULL AS grupo_nome
+FROM catalogo_croquis c
+WHERE c.croqui_uid = ?1
+UNION ALL
 SELECT
-  e.uid,
-  e.tipo,
+  e.uid AS uid,
+  e.tipo AS tipo,
   TRIM(e.nome) AS nome,
-  e.croqui_uid,
-  c.id_slug,
+  e.croqui_uid AS croqui_uid,
+  c.id_slug AS id_slug,
   TRIM(c.nome) AS croqui_nome,
   TRIM(c.cidade) AS cidade,
   TRIM(c.estado) AS estado,
@@ -71,15 +67,16 @@ FROM catalogo_aresta e
 JOIN catalogo_croquis c ON c.croqui_uid = e.croqui_uid
 LEFT JOIN catalogo_aresta s ON s.uid = e.setor_uid
 LEFT JOIN catalogo_aresta g ON g.uid = e.grupo_uid
-WHERE e.uid = ?
+WHERE e.uid = ?1
   AND e.tipo IN ('grupo', 'setor', 'escalada')
 LIMIT 1
 `.trim();
 
 /**
  * Resolve um UID canônico de 14 caracteres no banco Cloudflare D1 (`aresta-catalogo`),
- * consultando primeiro a tabela `catalogo_croquis` e, caso não seja um croqui,
- * consultando `catalogo_aresta` com `JOIN` para croqui, setor pai e grupo pai.
+ * consultando em uma única query unificada (`UNION ALL`) as tabelas `catalogo_croquis`
+ * e `catalogo_aresta` (com `JOIN` para croqui, setor pai e grupo pai) para minimizar
+ * a latência de round-trip na borda.
  *
  * Retorna `null` caso o UID não pertença a nenhum croqui, grupo, setor ou escalada.
  */
@@ -87,31 +84,8 @@ export async function resolverEntidadePorUid(
   db: BancoD1,
   uid: string
 ): Promise<ResumoEntidadeLink | null> {
-  const resultadoCroqui = await db
-    .prepare(SQL_BUSCAR_CROQUI_POR_UID)
-    .bind(uid)
-    .all<LinhaCroquiQuery>();
-
-  if (resultadoCroqui.results.length > 0) {
-    const croqui = resultadoCroqui.results[0];
-    return {
-      uid: croqui.croqui_uid,
-      tipo: "croqui",
-      nome: croqui.nome,
-      croqui_uid: croqui.croqui_uid,
-      id_slug: croqui.id_slug,
-      croqui_nome: croqui.nome,
-      cidade: croqui.cidade || null,
-      estado: croqui.estado || null,
-      escalada_grau: null,
-      escalada_tipo: null,
-      setor_nome: null,
-      grupo_nome: null,
-    };
-  }
-
   const resultadoEntidade = await db
-    .prepare(SQL_BUSCAR_ENTIDADE_POR_UID)
+    .prepare(SQL_BUSCAR_ENTIDADE_OU_CROQUI_POR_UID)
     .bind(uid)
     .all<LinhaEntidadeQuery>();
 

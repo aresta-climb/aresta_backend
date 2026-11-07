@@ -21,6 +21,7 @@ export class BancoD1Fake implements BancoD1 {
   private readonly croquis = new Map<string, LinhaCatalogoCroquis>();
   private readonly entidades = new Map<string, LinhaCatalogoAresta>();
   private mensagemFalhaAtiva: string | null = null;
+  public totalConsultasExecutadas = 0;
 
   /**
    * Configura ou limpa uma falha determinística de I/O que será lançada em `all()`.
@@ -68,26 +69,47 @@ export class BancoD1Fake implements BancoD1 {
     query: string,
     parametros: unknown[]
   ): Promise<{ results: T[] }> {
+    this.totalConsultasExecutadas += 1;
+
     if (this.mensagemFalhaAtiva !== null) {
       return Promise.reject(new Error(this.mensagemFalhaAtiva));
     }
 
     const sqlNormalizado = query.replace(/\s+/g, " ").trim().toLowerCase();
     const uidParametro = String(parametros[0] ?? "");
+    const ehUnionAll = sqlNormalizado.includes("union all");
 
     if (sqlNormalizado.includes("from catalogo_croquis")) {
       const croqui = this.croquis.get(uidParametro);
-      if (!croqui) {
+      if (croqui) {
+        const nomeLimpo = croqui.nome.trim();
+        const linha = (ehUnionAll
+          ? {
+              uid: croqui.croqui_uid,
+              tipo: "croqui",
+              nome: nomeLimpo,
+              croqui_uid: croqui.croqui_uid,
+              id_slug: croqui.id_slug,
+              croqui_nome: nomeLimpo,
+              cidade: croqui.cidade ? croqui.cidade.trim() : null,
+              estado: croqui.estado ? croqui.estado.trim() : null,
+              escalada_grau: null,
+              escalada_tipo: null,
+              setor_nome: null,
+              grupo_nome: null,
+            }
+          : {
+              croqui_uid: croqui.croqui_uid,
+              id_slug: croqui.id_slug,
+              nome: nomeLimpo,
+              cidade: croqui.cidade ? croqui.cidade.trim() : null,
+              estado: croqui.estado ? croqui.estado.trim() : null,
+            }) as unknown as T;
+        return Promise.resolve({ results: [linha] });
+      }
+      if (!ehUnionAll) {
         return Promise.resolve({ results: [] });
       }
-      const linha = {
-        croqui_uid: croqui.croqui_uid,
-        id_slug: croqui.id_slug,
-        nome: croqui.nome.trim(),
-        cidade: croqui.cidade ? croqui.cidade.trim() : null,
-        estado: croqui.estado ? croqui.estado.trim() : null,
-      } as unknown as T;
-      return Promise.resolve({ results: [linha] });
     }
 
     if (sqlNormalizado.includes("from catalogo_aresta")) {

@@ -9,7 +9,10 @@ import {
   ROTA_OBTER_ROBOTS_TXT,
   ROTA_VERIFICAR_SAUDE_APP_LINKS,
 } from "../../../aresta_api/openapi/generated/ts/app_links.ts";
-import { analisarRotaLink } from "./analisador_rota_link.ts";
+import {
+  analisarRotaLink,
+  extrairSlugThumbnailOg,
+} from "./analisador_rota_link.ts";
 import {
   renderizarPaginaEntidade,
   renderizarPaginaNaoEncontrada,
@@ -23,12 +26,63 @@ import {
 } from "../../../supabase/functions/compartilhado/relator_sentry.ts";
 
 /**
+ * Resposta de uma busca de miniatura OpenGraph.
+ */
+export interface RespostaThumbnailOg {
+  status: number;
+  corpo: BodyInit | null;
+  contentType: string;
+}
+
+/**
+ * Contrato de fronteira para busca de miniaturas OpenGraph na CDN do Aresta.
+ */
+export interface ClienteThumbnailOg {
+  obterThumbnail(idSlug: string, metodo: string): Promise<RespostaThumbnailOg>;
+}
+
+const URL_ORIGEM_THUMBNAILS = "https://serving.arestaclimb.com/v4/thumbnails";
+const TTL_BORDA_UM_ANO_SEGUNDOS = 31536000;
+const TTL_BORDA_SETE_DIAS_SEGUNDOS = 604800;
+const TTL_BORDA_UM_DIA_SEGUNDOS = 86400;
+
+/**
+ * Implementação HTTP real que busca a miniatura na CDN `serving.arestaclimb.com`.
+ */
+export class ClienteThumbnailHttp implements ClienteThumbnailOg {
+  constructor(private readonly fetchFn: typeof fetch = globalThis.fetch) {}
+
+  async obterThumbnail(
+    idSlug: string,
+    metodo: string
+  ): Promise<RespostaThumbnailOg> {
+    const url = `${URL_ORIGEM_THUMBNAILS}/${encodeURIComponent(idSlug)}.webp`;
+    const resposta = await this.fetchFn(url, {
+      method: metodo,
+      ...({
+        cf: {
+          cacheTtl: TTL_BORDA_SETE_DIAS_SEGUNDOS,
+          cacheEverything: true,
+        },
+      } as RequestInit),
+    });
+
+    return {
+      status: resposta.status,
+      corpo: metodo === "HEAD" ? null : resposta.body,
+      contentType: resposta.headers.get("Content-Type") || "image/webp",
+    };
+  }
+}
+
+/**
  * Interface com os bindings de ambiente do Worker `aresta-app-links` (`aresta.cc`).
  */
 export interface AmbienteAppLinks {
   DB?: BancoD1;
   SENTRY_DSN?: string;
   relatorSentry?: InterfaceRelatorSentry;
+  clienteThumbnail?: ClienteThumbnailOg;
 }
 
 const URL_SITE_PRINCIPAL = "https://arestaclimb.com";
@@ -41,9 +95,6 @@ export const cabecalhosCors = {
   "Access-Control-Allow-Headers": "Content-Type",
 };
 
-const TTL_BORDA_UM_ANO_SEGUNDOS = 31536000;
-const TTL_BORDA_UM_DIA_SEGUNDOS = 86400;
-
 /**
  * Cabeçalho de cache para arquivos `.well-known` (24 horas no navegador, 1 ano na borda da Cloudflare).
  */
@@ -51,10 +102,16 @@ export const CABECALHO_CACHE_WELL_KNOWN =
   `public, max-age=86400, s-maxage=${TTL_BORDA_UM_ANO_SEGUNDOS}`;
 
 /**
- * Cabeçalho de cache para páginas HTML SSR de App Links (1 hora no navegador, 24 horas na borda da Cloudflare).
+ * Cabeçalho de cache para páginas HTML SSR de App Links (4 horas no navegador, 7 dias na borda da Cloudflare + 24h stale-while-revalidate).
  */
 export const CABECALHO_CACHE_PAGINA_LINK =
-  `public, max-age=3600, s-maxage=${TTL_BORDA_UM_DIA_SEGUNDOS}`;
+  `public, max-age=14400, s-maxage=${TTL_BORDA_SETE_DIAS_SEGUNDOS}, stale-while-revalidate=${TTL_BORDA_UM_DIA_SEGUNDOS}`;
+
+/**
+ * Cabeçalho de cache para miniaturas OpenGraph `/og/<id_slug>.webp` (24 horas no navegador, 7 dias na borda da Cloudflare + 24h stale-while-revalidate).
+ */
+export const CABECALHO_CACHE_THUMBNAIL_OG =
+  `public, max-age=86400, s-maxage=${TTL_BORDA_SETE_DIAS_SEGUNDOS}, stale-while-revalidate=${TTL_BORDA_UM_DIA_SEGUNDOS}`;
 
 const CONTEUDO_ASSETLINKS_ANDROID = [
   {
@@ -202,6 +259,56 @@ export async function processarRequisicao(
     });
   }
 
+  const slugThumbnailOg = extrairSlugThumbnailOg(caminho);
+  if (slugThumbnailOg) {
+    const clienteThumb = env.clienteThumbnail ?? new ClienteThumbnailHttp();
+    try {
+      const resultadoThumb = await clienteThumb.obterThumbnail(
+        slugThumbnailOg,
+        req.method
+      );
+      if (resultadoThumb.status !== 200) {
+        return new Response("Miniatura não encontrada", {
+          status: 404,
+          headers: {
+            ...cabecalhosCors,
+            "Content-Type": "text/plain; charset=utf-8",
+            "Cache-Control": `public, max-age=300, s-maxage=${TTL_BORDA_UM_DIA_SEGUNDOS}`,
+          },
+        });
+      }
+
+      return new Response(resultadoThumb.corpo, {
+        status: 200,
+        headers: {
+          ...cabecalhosCors,
+          "Content-Type": resultadoThumb.contentType,
+          "Cache-Control": CABECALHO_CACHE_THUMBNAIL_OG,
+        },
+      });
+    } catch (erro: unknown) {
+      await relatarErroSentry(
+        erro,
+        {
+          dsn: env.SENTRY_DSN,
+          servico: "cloudflare-app-links",
+          requisicao: req,
+          contextoExecucao: ctx,
+        },
+        env.relatorSentry
+      );
+      const mensagem = erro instanceof Error ? erro.message : String(erro);
+      return new Response(`Erro ao buscar miniatura: ${mensagem}`, {
+        status: 502,
+        headers: {
+          ...cabecalhosCors,
+          "Content-Type": "text/plain; charset=utf-8",
+          "Cache-Control": "no-store",
+        },
+      });
+    }
+  }
+
   const metadadosRota = analisarRotaLink(url);
   if (!metadadosRota) {
     return responderHtml(
@@ -267,10 +374,14 @@ export async function processarRequisicao(
   }
 }
 
-export default Sentry.withSentry(
-  (env: AmbienteAppLinks) => ({
+/**
+ * Constrói a configuração do Sentry para o Worker `aresta-app-links`,
+ * removendo cabeçalhos sensíveis (`authorization`, `cookie`, `x-api-key`).
+ */
+export function criarOpcoesSentry(env: AmbienteAppLinks) {
+  return {
     dsn: env.SENTRY_DSN,
-    beforeSend(event) {
+    beforeSend(event: Sentry.ErrorEvent) {
       if (event.request?.headers) {
         delete event.request.headers["authorization"];
         delete event.request.headers["cookie"];
@@ -278,14 +389,15 @@ export default Sentry.withSentry(
       }
       return event;
     },
-  }),
-  {
-    fetch(
-      req: Request,
-      env: AmbienteAppLinks,
-      ctx?: ContextoExecucaoAssincrona
-    ): Promise<Response> {
-      return processarRequisicao(req, env, ctx);
-    },
-  }
-);
+  };
+}
+
+export default Sentry.withSentry(criarOpcoesSentry, {
+  fetch(
+    req: Request,
+    env: AmbienteAppLinks,
+    ctx?: ContextoExecucaoAssincrona
+  ): Promise<Response> {
+    return processarRequisicao(req, env, ctx);
+  },
+});
