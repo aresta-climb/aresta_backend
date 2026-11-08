@@ -46,8 +46,8 @@ jobs:
       - name: Push Database Migrations
         if: github.event_name != 'pull_request'
         run: |
-          supabase link --project-ref "$PROJECT_ID" --password "$SUPABASE_DB_PASSWORD"
-          supabase db push --password "$SUPABASE_DB_PASSWORD"
+          supabase link --project-ref "$PROJECT_ID"
+          supabase db push --remote --password "$SUPABASE_DB_PASSWORD" --yes
 
   deploy:
     name: Testar e Deploy (${{ matrix.function }})
@@ -100,7 +100,7 @@ jobs:
 
       - name: Deploy ${{ matrix.function }} function
         if: github.event_name != 'pull_request'
-        run: supabase functions deploy ${{ matrix.function }} --project-ref $PROJECT_ID
+        run: supabase functions deploy ${{ matrix.function }} --remote="$PROJECT_ID" --yes
 
   test-cloudflare:
     name: Testar Cloudflare Worker (${{ matrix.worker }})

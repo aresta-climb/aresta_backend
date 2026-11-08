@@ -211,18 +211,26 @@ Deno.test("validador_cabecalhos_spdx: workflow deploy-functions.yml testa migrac
     "O workflow não deve restringir paths no push para garantir que todos os testes rodem a cada commit.",
   );
 
-  // Deve testar migrações antes de supabase db push
+  // Deve testar migrações antes de supabase db push compatível com Supabase CLI v3+
   const idxTesteMigracao = conteudoWorkflow.indexOf("escopo migracoes SQL");
-  const idxDbPush = conteudoWorkflow.indexOf("supabase db push");
+  const idxDbPush = conteudoWorkflow.indexOf(
+    'supabase db push --remote --password "$SUPABASE_DB_PASSWORD" --yes',
+  );
   assert(idxTesteMigracao > 0 && idxDbPush > idxTesteMigracao);
+  assert(
+    !conteudoWorkflow.includes('supabase link --project-ref "$PROJECT_ID" --password'),
+    "supabase link não deve receber --password no Supabase CLI v3+.",
+  );
 
   // Deve manter deploy independente de falha em migrate-database e fail-fast: false
   assertStringIncludes(conteudoWorkflow, "if: always() && !cancelled()");
   assertStringIncludes(conteudoWorkflow, "fail-fast: false");
 
-  // Deve testar cada Edge Function antes do supabase functions deploy
+  // Deve testar cada Edge Function antes do supabase functions deploy compatível com Supabase CLI v3+
   const idxTesteFunction = conteudoWorkflow.indexOf("escopo function ${{ matrix.function }}");
-  const idxDeployFunction = conteudoWorkflow.indexOf("supabase functions deploy ${{ matrix.function }}");
+  const idxDeployFunction = conteudoWorkflow.indexOf(
+    'supabase functions deploy ${{ matrix.function }} --remote="$PROJECT_ID" --yes',
+  );
   assert(idxTesteFunction > 0 && idxDeployFunction > idxTesteFunction);
 
   // Deve testar todos os 5 Cloudflare Workers
@@ -230,4 +238,19 @@ Deno.test("validador_cabecalhos_spdx: workflow deploy-functions.yml testa migrac
     assertStringIncludes(conteudoWorkflow, `- ${worker}`);
   }
   assertStringIncludes(conteudoWorkflow, 'cloudflare/${{ matrix.worker }}/test/');
+
+  // Deve manter supabase/config.toml sem chaves depreciadas no Supabase CLI v3+
+  const conteudoConfigToml = await Deno.readTextFile(
+    `${RAIZ_REPOSITORIO}/supabase/config.toml`,
+  );
+  assert(
+    !conteudoConfigToml.includes("# Allow/disallow new user signups via email to your project.\r\nenable_signup") &&
+      !conteudoConfigToml.includes("# Allow/disallow new user signups via email to your project.\nenable_signup"),
+    "auth.email deve usar enabled em vez de enable_signup no Supabase CLI v3+.",
+  );
+  assert(
+    !conteudoConfigToml.includes("# Allow/disallow new user signups via SMS to your project.\r\nenable_signup") &&
+      !conteudoConfigToml.includes("# Allow/disallow new user signups via SMS to your project.\nenable_signup"),
+    "auth.sms deve usar enabled em vez de enable_signup no Supabase CLI v3+.",
+  );
 });
