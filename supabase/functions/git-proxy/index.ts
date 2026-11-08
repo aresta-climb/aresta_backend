@@ -6,8 +6,11 @@ import {
   ROTA_GIT_PROXY_INFO_REFS,
   ROTA_GIT_PROXY_RECEIVE_PACK,
 } from "../../../aresta_api/openapi/generated/ts/colaboracao.ts";
-import { extrairComandosGit } from "../compartilhado/analisador_pkt_line.ts";
-import { validarNomeBranch, extrairNomeSimplesBranch } from "../compartilhado/validador_regras_branch.ts";
+import {
+  extrairComandosGit,
+  extrairErrosResultadoReceivePack,
+} from "../compartilhado/analisador_pkt_line.ts";
+import { validarNomeBranch } from "../compartilhado/validador_regras_branch.ts";
 import {
   validarTokenJwt,
   obterRegistroBranch,
@@ -111,12 +114,12 @@ async function executarFluxoGitProxy(
   }
 
   const urlRequisicao = new URL(requisicao.url);
-  const tokenBot = contexto?.tokenBot || (await obterTokenAutenticacaoGithub());
-  const credencialGithub = `Basic ${btoa(`x-access-token:${tokenBot}`)}`;
   const funcaoFetchGithub = contexto?.executarFetchGithub || fetch;
 
   // 1. Rota GET /info/refs?service=git-receive-pack
   if (requisicao.method === "GET") {
+    const tokenBot = contexto?.tokenBot || (await obterTokenAutenticacaoGithub());
+    const credencialGithub = `Basic ${btoa(`x-access-token:${tokenBot}`)}`;
     const urlGithub = `${URL_REPOSITORIO_GITHUB}${SUFIXO_INFO_REFS}${urlRequisicao.search}`;
     const respostaGithub = await funcaoFetchGithub(urlGithub, {
       method: "GET",
@@ -168,6 +171,7 @@ async function executarFluxoGitProxy(
     const funcaoVerificarExiste = contexto?.verificarBranchExisteNoGithub || verificarBranchExisteNoGithub;
     const funcaoObterRegistro = contexto?.obterRegistroBranch || obterRegistroBranch;
     const funcaoRegistrarNova = contexto?.registrarNovaBranch || registrarNovaBranch;
+    const branchesParaRegistrar: string[] = [];
 
     for (const cmd of comandos) {
       const validacao = validarNomeBranch(cmd.nomeReferencia);
@@ -191,25 +195,7 @@ async function executarFluxoGitProxy(
           });
         }
 
-        const registroCriado = await funcaoRegistrarNova({
-          branchName: nomeSimplesBranch,
-          authorId: usuario.idUsuario,
-          authorEmail: usuario.email,
-          authorName: usuario.nomeCompleto,
-        });
-        if (!registroCriado) {
-          await relatarErroSentry(
-            new Error(`Falha ao registrar nova branch '${nomeSimplesBranch}' em sugestoes_branches no Supabase`),
-            {
-              dsn: obterDsnSentryPadrao(contexto?.sentryDsn),
-              servico: "supabase-git-proxy",
-              requisicao,
-              tags: { etapa: "registrar_nova_branch" },
-              extras: { branch: nomeSimplesBranch },
-            },
-            contexto?.relatorSentry,
-          );
-        }
+        branchesParaRegistrar.push(nomeSimplesBranch);
       } else {
         // Atualização de branch existente
         const registro = await funcaoObterRegistro(nomeSimplesBranch);
@@ -230,7 +216,10 @@ async function executarFluxoGitProxy(
       }
     }
 
-    // Encaminha o tráfego via streaming para o GitHub com credenciais do Bot
+    const tokenBot = contexto?.tokenBot || (await obterTokenAutenticacaoGithub());
+    const credencialGithub = `Basic ${btoa(`x-access-token:${tokenBot}`)}`;
+
+    // Encaminha o tráfego para o GitHub com credenciais do Bot
     const urlGithub = `${URL_REPOSITORIO_GITHUB}${SUFIXO_RECEIVE_PACK}`;
     const respostaGithub = await funcaoFetchGithub(urlGithub, {
       method: "POST",
@@ -241,6 +230,8 @@ async function executarFluxoGitProxy(
       },
       body: bufferCompleto,
     });
+
+    const bytesResposta = new Uint8Array(await respostaGithub.arrayBuffer());
 
     if (
       respostaGithub.status >= 500 ||
@@ -259,10 +250,49 @@ async function executarFluxoGitProxy(
       );
     }
 
+    const errosReceivePack = extrairErrosResultadoReceivePack(bytesResposta);
+    if (errosReceivePack.length > 0) {
+      await relatarErroSentry(
+        new Error(`Rejeição no git-receive-pack do GitHub: ${errosReceivePack.join("; ")}`),
+        {
+          dsn: obterDsnSentryPadrao(contexto?.sentryDsn),
+          servico: "supabase-git-proxy",
+          requisicao,
+          tags: { etapa: "git_receive_pack_ref" },
+          extras: { branches: branchesParaRegistrar, erros: errosReceivePack },
+        },
+        contexto?.relatorSentry,
+      );
+    } else if (respostaGithub.ok) {
+      for (const nomeSimplesBranch of branchesParaRegistrar) {
+        const registroCriado = await funcaoRegistrarNova({
+          branchName: nomeSimplesBranch,
+          authorId: usuario.idUsuario,
+          authorEmail: usuario.email,
+          authorName: usuario.nomeCompleto,
+        });
+        if (!registroCriado) {
+          await relatarErroSentry(
+            new Error(
+              `Falha ao registrar nova branch '${nomeSimplesBranch}' em sugestoes_branches no Supabase`,
+            ),
+            {
+              dsn: obterDsnSentryPadrao(contexto?.sentryDsn),
+              servico: "supabase-git-proxy",
+              requisicao,
+              tags: { etapa: "registrar_nova_branch" },
+              extras: { branch: nomeSimplesBranch },
+            },
+            contexto?.relatorSentry,
+          );
+        }
+      }
+    }
+
     const cabecalhosResposta = new Headers(respostaGithub.headers);
     Object.entries(CABECALHOS_CORS).forEach(([c, v]) => cabecalhosResposta.set(c, v));
 
-    return new Response(respostaGithub.body, {
+    return new Response(bytesResposta, {
       status: respostaGithub.status,
       headers: cabecalhosResposta,
     });

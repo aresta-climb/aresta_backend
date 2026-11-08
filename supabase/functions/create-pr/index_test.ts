@@ -489,4 +489,40 @@ Deno.test("create-pr: reporta ao Sentry quando falha inspecionar branch no GitHu
   assertEquals(resMetadados.status, 200);
   assertEquals(relatorFake.eventos.length, 1);
   assertEquals(relatorFake.eventos[0].tags.etapa, "atualizar_metadados_pr");
+
+  // 3. Branch nao encontrada no GitHub (404 Not Found no compareCommits) -> mensagem explicita
+  relatorFake.limpar();
+  const reqBranchAusente = new Request("http://localhost/create-pr", {
+    method: "POST",
+    headers: {
+      "Authorization": "Bearer token-valido",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      branch: "edicao-lapinha-bf4b154e",
+      title: "Título",
+    }),
+  });
+
+  const resBranchAusente = await processarRequisicaoCreatePr(reqBranchAusente, {
+    validarJwt: async () => ({
+      idUsuario: "user-123",
+      email: "autor@teste.com",
+      nomeCompleto: "Autor",
+    }),
+    obterArquivosModificadosBranch: () =>
+      Promise.reject(
+        new Error("Not Found - https://docs.github.com/rest/commits/commits#compare-two-commits"),
+      ),
+    sentryDsn: "https://pub@o1.ingest.sentry.io/1",
+    relatorSentry: relatorFake,
+  });
+
+  assertEquals(resBranchAusente.status, 400);
+  const corpoAusente = await resBranchAusente.json();
+  assertStringIncludes(
+    corpoAusente.erro,
+    "A branch 'edicao-lapinha-bf4b154e' não foi encontrada no GitHub",
+  );
+  assertStringIncludes(corpoAusente.erro, "git push");
 });

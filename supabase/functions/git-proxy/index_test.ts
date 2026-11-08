@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Aresta Contributors
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
+import { criarLinhaPktLine } from "../compartilhado/analisador_pkt_line.ts";
 import { processarRequisicaoGitProxy } from "./index.ts";
 
 function criarPayloadPktLine(comando: string): Uint8Array {
@@ -100,7 +101,8 @@ Deno.test("git-proxy: POST /git-receive-pack rejeita payload sem comandos valido
 });
 
 Deno.test("git-proxy: POST /git-receive-pack rejeita branch invalida com 403", async () => {
-  const linhaComando = "0000000000000000000000000000000000000000 8a3f5b0000000000000000000000000000000000 refs/heads/main\0report-status\n";
+  const linhaComando =
+    "0000000000000000000000000000000000000000 8a3f5b0000000000000000000000000000000000 refs/heads/main\0report-status\n";
   const payload = criarPayloadPktLine(linhaComando);
 
   const requisicao = new Request("http://localhost/git-proxy/git-receive-pack", {
@@ -125,7 +127,8 @@ Deno.test("git-proxy: POST /git-receive-pack rejeita branch invalida com 403", a
 });
 
 Deno.test("git-proxy: POST /git-receive-pack rejeita criacao de branch existente com 409", async () => {
-  const linhaComando = "0000000000000000000000000000000000000000 8a3f5b0000000000000000000000000000000000 refs/heads/sugestao-ja-existe\0report-status\n";
+  const linhaComando =
+    "0000000000000000000000000000000000000000 8a3f5b0000000000000000000000000000000000 refs/heads/sugestao-ja-existe\0report-status\n";
   const payload = criarPayloadPktLine(linhaComando);
 
   const requisicao = new Request("http://localhost/git-proxy/git-receive-pack", {
@@ -152,7 +155,8 @@ Deno.test("git-proxy: POST /git-receive-pack rejeita criacao de branch existente
 });
 
 Deno.test("git-proxy: POST /git-receive-pack rejeita atualizacao por outro autor com 403", async () => {
-  const linhaComando = "7c2d1e0000000000000000000000000000000000 8a3f5b0000000000000000000000000000000000 refs/heads/sugestao-outro-autor\0report-status\n";
+  const linhaComando =
+    "7c2d1e0000000000000000000000000000000000 8a3f5b0000000000000000000000000000000000 refs/heads/sugestao-outro-autor\0report-status\n";
   const payload = criarPayloadPktLine(linhaComando);
 
   const requisicao = new Request("http://localhost/git-proxy/git-receive-pack", {
@@ -190,7 +194,8 @@ Deno.test("git-proxy: POST /git-receive-pack cria nova branch com sucesso e enca
   let branchRegistrada: any = null;
   let streamEncaminhado = false;
 
-  const linhaComando = "0000000000000000000000000000000000000000 8a3f5b0000000000000000000000000000000000 refs/heads/sugestao-lapinha-nova\0report-status\n";
+  const linhaComando =
+    "0000000000000000000000000000000000000000 8a3f5b0000000000000000000000000000000000 refs/heads/sugestao-lapinha-nova\0report-status\n";
   const payload = criarPayloadPktLine(linhaComando);
 
   const requisicao = new Request("http://localhost/git-proxy/git-receive-pack", {
@@ -216,7 +221,9 @@ Deno.test("git-proxy: POST /git-receive-pack cria nova branch com sucesso e enca
     },
     executarFetchGithub: async () => {
       streamEncaminhado = true;
-      return new Response("0008NAK\n", { status: 200 });
+      return new Response("000eunpack ok\n0023ok refs/heads/sugestao-lapinha-nova\n0000", {
+        status: 200,
+      });
     },
     tokenBot: "bot-token-secreto",
   };
@@ -232,7 +239,8 @@ Deno.test("git-proxy: POST /git-receive-pack cria nova branch com sucesso e enca
 Deno.test("git-proxy: POST /git-receive-pack atualiza branch existente do mesmo autor com sucesso", async () => {
   let streamEncaminhado = false;
 
-  const linhaComando = "7c2d1e0000000000000000000000000000000000 8a3f5b0000000000000000000000000000000000 refs/heads/sugestao-lapinha-existente\0report-status\n";
+  const linhaComando =
+    "7c2d1e0000000000000000000000000000000000 8a3f5b0000000000000000000000000000000000 refs/heads/sugestao-lapinha-existente\0report-status\n";
   const payload = criarPayloadPktLine(linhaComando);
 
   const requisicao = new Request("http://localhost/git-proxy/git-receive-pack", {
@@ -262,7 +270,9 @@ Deno.test("git-proxy: POST /git-receive-pack atualiza branch existente do mesmo 
     }),
     executarFetchGithub: async () => {
       streamEncaminhado = true;
-      return new Response("0008NAK\n", { status: 200 });
+      return new Response("000eunpack ok\n0028ok refs/heads/sugestao-lapinha-existente\n0000", {
+        status: 200,
+      });
     },
     tokenBot: "bot-token-secreto",
   };
@@ -294,7 +304,8 @@ Deno.test("git-proxy: POST /git-receive-pack cria nova branch com prefixo edicao
   let branchRegistrada: any = null;
   let streamEncaminhado = false;
 
-  const linhaComando = "0000000000000000000000000000000000000000 8a3f5b0000000000000000000000000000000000 refs/heads/edicao-lapinha-nova\0report-status\n";
+  const linhaComando =
+    "0000000000000000000000000000000000000000 8a3f5b0000000000000000000000000000000000 refs/heads/edicao-lapinha-nova\0report-status\n";
   const payload = criarPayloadPktLine(linhaComando);
 
   const requisicao = new Request("http://localhost/git-proxy/git-receive-pack", {
@@ -320,7 +331,9 @@ Deno.test("git-proxy: POST /git-receive-pack cria nova branch com prefixo edicao
     },
     executarFetchGithub: async () => {
       streamEncaminhado = true;
-      return new Response("0008NAK\n", { status: 200 });
+      return new Response("000eunpack ok\n0021ok refs/heads/edicao-lapinha-nova\n0000", {
+        status: 200,
+      });
     },
     tokenBot: "bot-token-secreto",
   };
@@ -354,7 +367,6 @@ Deno.test("git-proxy: captura excecao inesperada, retorna 500 e reporta ao Sentr
   assertEquals(relatorFake.eventos[0].mensagem, "Falha inesperada ao validar JWT");
 });
 
-
 Deno.test("git-proxy: reporta ao Sentry quando GitHub retorna erro 5xx/401/403 ou falha registro no Supabase", async () => {
   const { RelatorSentryFake } = await import("../compartilhado/relator_sentry_fake.ts");
   const relatorFake = new RelatorSentryFake();
@@ -381,12 +393,14 @@ Deno.test("git-proxy: reporta ao Sentry quando GitHub retorna erro 5xx/401/403 o
   assertEquals(relatorFake.eventos[0].servico, "supabase-git-proxy");
   assertEquals(relatorFake.eventos[0].tags.etapa, "info_refs");
 
-  // 2. POST /git-receive-pack com falha ao registrar nova branch no Supabase e status 500 do GitHub
+  // 2. POST /git-receive-pack com status 500 do GitHub -> reporta git_receive_pack e NÃO registra branch
   relatorFake.limpar();
-  const linhaComando = "0000000000000000000000000000000000000000 8a3f5b0000000000000000000000000000000000 refs/heads/edicao-lapinha-sentry\0report-status\n";
+  let tentouRegistrarEmErro500 = false;
+  const linhaComando =
+    "0000000000000000000000000000000000000000 8a3f5b0000000000000000000000000000000000 refs/heads/edicao-lapinha-sentry\0report-status\n";
   const payload = criarPayloadPktLine(linhaComando);
 
-  const reqReceivePack = new Request("http://localhost/git-proxy/git-receive-pack", {
+  const reqReceivePack500 = new Request("http://localhost/git-proxy/git-receive-pack", {
     method: "POST",
     headers: {
       "Authorization": "Bearer token-jwt-valido",
@@ -395,7 +409,41 @@ Deno.test("git-proxy: reporta ao Sentry quando GitHub retorna erro 5xx/401/403 o
     body: payload as unknown as BodyInit,
   });
 
-  const resReceive = await processarRequisicaoGitProxy(reqReceivePack, {
+  const resReceive500 = await processarRequisicaoGitProxy(reqReceivePack500, {
+    validarJwt: async () => ({
+      idUsuario: "user-123",
+      email: "autor@teste.com",
+      nomeCompleto: "Autor",
+    }),
+    verificarBranchExisteNoGithub: async () => false,
+    obterRegistroBranch: async () => null,
+    registrarNovaBranch: async () => {
+      tentouRegistrarEmErro500 = true;
+      return null;
+    },
+    executarFetchGithub: async () => new Response("Internal Server Error", { status: 500 }),
+    tokenBot: "bot-token",
+    sentryDsn: "https://pub@o1.ingest.sentry.io/1",
+    relatorSentry: relatorFake,
+  });
+
+  assertEquals(resReceive500.status, 500);
+  assertEquals(tentouRegistrarEmErro500, false);
+  assertEquals(relatorFake.eventos.length, 1);
+  assertEquals(relatorFake.eventos[0].tags.etapa, "git_receive_pack");
+
+  // 3. POST /git-receive-pack com sucesso no GitHub mas falha ao registrar no Supabase -> reporta registrar_nova_branch
+  relatorFake.limpar();
+  const reqReceivePackFalhaBanco = new Request("http://localhost/git-proxy/git-receive-pack", {
+    method: "POST",
+    headers: {
+      "Authorization": "Bearer token-jwt-valido",
+      "Content-Type": "application/x-git-receive-pack-request",
+    },
+    body: payload as unknown as BodyInit,
+  });
+
+  const resReceiveBanco = await processarRequisicaoGitProxy(reqReceivePackFalhaBanco, {
     validarJwt: async () => ({
       idUsuario: "user-123",
       email: "autor@teste.com",
@@ -404,14 +452,69 @@ Deno.test("git-proxy: reporta ao Sentry quando GitHub retorna erro 5xx/401/403 o
     verificarBranchExisteNoGithub: async () => false,
     obterRegistroBranch: async () => null,
     registrarNovaBranch: async () => null,
-    executarFetchGithub: async () => new Response("Internal Server Error", { status: 500 }),
+    executarFetchGithub: async () =>
+      new Response("000eunpack ok\n0023ok refs/heads/edicao-lapinha-sentry\n0000", { status: 200 }),
     tokenBot: "bot-token",
     sentryDsn: "https://pub@o1.ingest.sentry.io/1",
     relatorSentry: relatorFake,
   });
 
-  assertEquals(resReceive.status, 500);
-  assertEquals(relatorFake.eventos.length, 2);
+  assertEquals(resReceiveBanco.status, 200);
+  assertEquals(relatorFake.eventos.length, 1);
   assertEquals(relatorFake.eventos[0].tags.etapa, "registrar_nova_branch");
-  assertEquals(relatorFake.eventos[1].tags.etapa, "git_receive_pack");
+});
+
+Deno.test("git-proxy: nao registra branch e reporta ao Sentry quando git-receive-pack retorna ng no pkt-line", async () => {
+  const { RelatorSentryFake } = await import("../compartilhado/relator_sentry_fake.ts");
+  const relatorFake = new RelatorSentryFake();
+  let branchRegistrada = false;
+
+  const linhaComando =
+    "0000000000000000000000000000000000000000 83a90bb0a47b6cf1ab27ea2ea61e530db87cbf00 refs/heads/edicao-lapinha-bf4b154e\0report-status side-band-64k\n";
+  const payload = criarPayloadPktLine(linhaComando);
+
+  const pktUnpackOk = criarLinhaPktLine("unpack ok\n");
+  const pktNg = criarLinhaPktLine(
+    "ng refs/heads/edicao-lapinha-bf4b154e missing necessary objects\n",
+  );
+  const flush = new TextEncoder().encode("0000");
+  const reportInterno = new TextDecoder().decode(new Uint8Array([...pktUnpackOk, ...pktNg, ...flush]));
+  const corpoSidebandNg = new Uint8Array([...criarLinhaPktLine(`\x01${reportInterno}`), ...flush]);
+
+  const requisicao = new Request("http://localhost/git-proxy/git-receive-pack", {
+    method: "POST",
+    headers: {
+      "Authorization": "Bearer token-jwt-valido",
+      "Content-Type": "application/x-git-receive-pack-request",
+    },
+    body: payload as unknown as BodyInit,
+  });
+
+  const resposta = await processarRequisicaoGitProxy(requisicao, {
+    validarJwt: async () => ({
+      idUsuario: "user-123",
+      email: "autor@teste.com",
+      nomeCompleto: "Autor",
+    }),
+    verificarBranchExisteNoGithub: async () => false,
+    obterRegistroBranch: async () => null,
+    registrarNovaBranch: async (dados: any) => {
+      branchRegistrada = true;
+      return { id: "1", ...dados, status: "aberta" };
+    },
+    executarFetchGithub: async () =>
+      new Response(corpoSidebandNg as unknown as BodyInit, { status: 200 }),
+    tokenBot: "bot-token",
+    sentryDsn: "https://pub@o1.ingest.sentry.io/1",
+    relatorSentry: relatorFake,
+  });
+
+  assertEquals(resposta.status, 200);
+  assertEquals(branchRegistrada, false);
+  assertEquals(relatorFake.eventos.length, 1);
+  assertEquals(relatorFake.eventos[0].tags.etapa, "git_receive_pack_ref");
+  assertStringIncludes(
+    relatorFake.eventos[0].mensagem,
+    "ng refs/heads/edicao-lapinha-bf4b154e missing necessary objects",
+  );
 });

@@ -197,8 +197,13 @@ async function executarFluxoCreatePr(
       },
       contexto?.relatorSentry,
     );
+    const ehNaoEncontrada =
+      erro?.status === 404 || String(erro?.message || "").includes("Not Found");
+    const mensagemErro = ehNaoEncontrada
+      ? `A branch '${nomeSimplesBranch}' não foi encontrada no GitHub; o envio dos commits (git push) não foi efetivado.`
+      : `Falha ao inspecionar branch no GitHub: ${erro.message}`;
     return new Response(
-      JSON.stringify({ erro: `Falha ao inspecionar branch no GitHub: ${erro.message}` }),
+      JSON.stringify({ erro: mensagemErro }),
       {
         status: 400,
         headers: { ...CABECALHOS_CORS, "Content-Type": "application/json" },
