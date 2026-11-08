@@ -43,6 +43,585 @@ export interface ContextoWorker {
   executarFetchServing?: typeof fetch;
 }
 
+const URL_SITE_PRINCIPAL = "https://arestaclimb.com";
+const URL_LOGO_APP = "https://arestaclimb.com/assets/logo_app.png";
+const URL_LOJA_IOS = "https://apps.apple.com/app/id6776467893";
+const URL_LOJA_ANDROID = "https://play.google.com/store/apps/details?id=app.escalada.croquis";
+
+const SVG_APPLE_STORE =
+  '<svg viewBox="0 0 384 512" aria-hidden="true"><path d="M318.7 268.7c-.2-36.7 16.4-64.4 50-84.8-18.8-26.9-47.2-41.7-84.7-44.6-35.5-2.8-74.3 20.7-88.5 20.7-15 0-49.4-19.7-76.4-19.7C63.3 141.2 4 184.8 4 273.5q0 39.3 14.4 81.2c12.8 36.7 59 126.7 107.2 125.2 25.2-.6 43-17.9 75.8-17.9 31.8 0 48.3 17.9 76.4 17.9 48.6-.7 90.4-82.5 102.6-119.3-65.2-30.7-61.7-90-61.7-91.9zm-56.6-164.2c27.3-32.4 24.8-61.9 24-72.5-24.1 1.4-52 16.4-67.9 34.9-17.5 19.8-27.8 44.3-25.6 71.9 26.1 2 49.9-11.4 69.5-34.3z"/></svg>';
+
+const SVG_GOOGLE_PLAY =
+  '<svg viewBox="0 0 512 512" aria-hidden="true"><path d="M325.3 234.3L104.6 13l280.8 161.2-60.1 60.1zM47 0C34 6.8 25.3 19.2 25.3 35.3v441.3c0 16.1 8.7 28.5 21.7 35.3l256.6-256L47 0zm425.2 225.6l-58.9-34.1-65.7 64.5 65.7 64.5 60.1-34.1c18-14.3 18-46.5-1.2-60.8zM104.6 499l280.8-161.2-60.1-60.1L104.6 499z"/></svg>';
+
+const ESTILOS_BASE_DESIGN_SYSTEM = `
+    :root {
+      --bg: #f4f1e9;
+      --bg-soft: #ece7dd;
+      --surface: #faf8f2;
+      --surface-2: #e6e0d5;
+      --text: #1d1c19;
+      --muted: #6c675f;
+      --line: #d6cfc2;
+      --accent: #b53e29;
+      --accent-2: #9d2e1b;
+      --sage: #90a989;
+      --sage-deep: #596e55;
+      --shadow: 0 24px 70px rgba(57, 43, 33, 0.14);
+      --shadow-sm: 0 8px 24px rgba(57, 43, 33, 0.08);
+      --topo: rgba(109, 92, 72, 0.11);
+      --radius-sm: 12px;
+      --radius-md: 18px;
+      --radius-lg: 28px;
+      --radius-full: 9999px;
+    }
+    html[data-theme="dark"] {
+      --bg: #11120f;
+      --bg-soft: #171813;
+      --surface: #1c1d18;
+      --surface-2: #24251f;
+      --text: #f3f0e8;
+      --muted: #aaa69c;
+      --line: #35362e;
+      --accent: #cf563d;
+      --accent-2: #b53e29;
+      --sage: #90a989;
+      --sage-deep: #8ca684;
+      --shadow: 0 28px 90px rgba(0, 0, 0, 0.45);
+      --shadow-sm: 0 8px 24px rgba(0, 0, 0, 0.28);
+      --topo: rgba(144, 169, 137, 0.07);
+    }
+    *, *::before, *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+    html {
+      color-scheme: light dark;
+      scroll-behavior: smooth;
+    }
+    body {
+      font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background-color: var(--bg);
+      background-image:
+        radial-gradient(circle at 90% 10%, var(--topo), transparent 30%),
+        radial-gradient(circle at 10% 80%, var(--topo), transparent 30%);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
+      transition: background-color 0.2s ease, color 0.2s ease;
+    }
+    a {
+      color: inherit;
+      text-decoration: none;
+    }
+    .header {
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      backdrop-filter: blur(18px);
+      -webkit-backdrop-filter: blur(18px);
+      background: color-mix(in srgb, var(--bg) 85%, transparent);
+      border-bottom: 1px solid color-mix(in srgb, var(--line) 75%, transparent);
+    }
+    .nav {
+      max-width: 960px;
+      margin: 0 auto;
+      height: 64px;
+      padding: 0 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+    }
+    .logo {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      font-weight: 850;
+      letter-spacing: -0.04em;
+      font-size: 1.05rem;
+      color: var(--text);
+    }
+    .logo-img {
+      width: 32px;
+      height: 32px;
+      border-radius: 8px;
+      display: block;
+    }
+    .nav-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .theme-toggle {
+      width: 38px;
+      height: 38px;
+      border-radius: 50%;
+      border: 1px solid var(--line);
+      background: var(--surface);
+      color: var(--text);
+      display: grid;
+      place-items: center;
+      font-size: 1.05rem;
+      cursor: pointer;
+      transition: transform 0.15s ease, border-color 0.15s ease;
+    }
+    .theme-toggle:hover {
+      transform: scale(1.05);
+      border-color: var(--accent);
+    }
+    .btn-site {
+      padding: 8px 16px;
+      border-radius: var(--radius-full);
+      background: var(--surface);
+      border: 1px solid var(--line);
+      color: var(--text);
+      font-size: 0.84rem;
+      font-weight: 650;
+      transition: border-color 0.15s ease;
+    }
+    .btn-site:hover {
+      border-color: var(--accent);
+    }
+    .store-badge-group {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      width: 100%;
+    }
+    .store-badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      padding: 11px 14px;
+      border-radius: 14px;
+      background: #0d0e0b;
+      color: #ffffff;
+      border: 1px solid rgba(255, 255, 255, 0.16);
+      transition: transform 0.15s ease, border-color 0.15s ease;
+    }
+    .store-badge:hover {
+      transform: translateY(-2px);
+      border-color: var(--accent);
+    }
+    .store-badge svg {
+      width: 22px;
+      height: 22px;
+      flex-shrink: 0;
+      fill: currentColor;
+    }
+    .store-badge-text {
+      display: flex;
+      flex-direction: column;
+      line-height: 1.15;
+      text-align: left;
+    }
+    .store-badge-text small {
+      font-size: 9px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      opacity: 0.78;
+    }
+    .store-badge-text strong {
+      font-size: 13px;
+      font-weight: 700;
+    }
+    .site-footer {
+      border-top: 1px solid var(--line);
+      padding: 20px;
+      color: var(--muted);
+      font-size: 0.82rem;
+    }
+    .footer-inner {
+      max-width: 960px;
+      margin: 0 auto;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+    .footer-links {
+      display: flex;
+      gap: 14px;
+      flex-wrap: wrap;
+    }
+    .footer-links a:hover {
+      color: var(--accent);
+      text-decoration: underline;
+    }
+`;
+
+const SCRIPT_INICIALIZACAO_TEMA = `<script>try{var t=localStorage.getItem('aresta-theme')||(window.matchMedia('(prefers-color-scheme: light)').matches?'light':'dark');document.documentElement.setAttribute('data-theme',t);}catch(e){}</script>`;
+
+const SCRIPT_ALTERNANCIA_TEMA = `
+    (function () {
+      var btnTema = document.getElementById("themeToggle");
+      if (btnTema) {
+        btnTema.addEventListener("click", function () {
+          var atual = document.documentElement.getAttribute("data-theme") || "dark";
+          var proximo = atual === "dark" ? "light" : "dark";
+          document.documentElement.setAttribute("data-theme", proximo);
+          try { localStorage.setItem("aresta-theme", proximo); } catch (e) {}
+        });
+      }
+    })();`;
+
+function renderizarCabecalhoSite(): string {
+  return `<header class="header">
+    <div class="nav">
+      <a href="${URL_SITE_PRINCIPAL}" class="logo" aria-label="Aresta Climb - Início">
+        <img src="${URL_LOGO_APP}" alt="Aresta Climb Logo" class="logo-img" width="32" height="32">
+        <span>ARESTA CLIMB</span>
+      </a>
+      <div class="nav-actions">
+        <button class="theme-toggle" id="themeToggle" type="button" aria-label="Alternar tema claro e escuro">◐</button>
+        <a href="${URL_SITE_PRINCIPAL}" class="btn-site">Conhecer o Aresta ↗</a>
+      </div>
+    </div>
+  </header>`;
+}
+
+function renderizarBotoesLojas(): string {
+  return `<div class="store-badge-group">
+    <a class="store-badge" href="${URL_LOJA_IOS}" target="_blank" rel="noopener noreferrer" aria-label="Baixar na Apple App Store">
+      ${SVG_APPLE_STORE}
+      <span class="store-badge-text">
+        <small>Disponível na</small>
+        <strong>App Store</strong>
+      </span>
+    </a>
+    <a class="store-badge" href="${URL_LOJA_ANDROID}" target="_blank" rel="noopener noreferrer" aria-label="Baixar no Google Play">
+      ${SVG_GOOGLE_PLAY}
+      <span class="store-badge-text">
+        <small>Disponível no</small>
+        <strong>Google Play</strong>
+      </span>
+    </a>
+  </div>`;
+}
+
+function renderizarRodapeSite(): string {
+  return `<footer class="site-footer">
+    <div class="footer-inner">
+      <span>© 2026 Aresta Climb · Croquis de escalada 100% offline</span>
+      <div class="footer-links">
+        <a href="${URL_SITE_PRINCIPAL}">arestaclimb.com</a>
+        <a href="${URL_LOJA_IOS}" target="_blank" rel="noopener noreferrer">App Store</a>
+        <a href="${URL_LOJA_ANDROID}" target="_blank" rel="noopener noreferrer">Google Play</a>
+      </div>
+    </div>
+  </footer>`;
+}
+
+function renderizarPaginaResumoNaoEncontrado(numeroPr: number): string {
+  return `<!DOCTYPE html>
+<html lang="pt-BR" data-theme="dark">
+<head>
+  ${SCRIPT_INICIALIZACAO_TEMA}
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" type="image/svg+xml" href="https://arestaclimb.com/favicon.svg">
+  <title>Resumo da PR #${numeroPr} não encontrado | Aresta Climb</title>
+  <meta name="robots" content="noindex">
+  <style>${ESTILOS_BASE_DESIGN_SYSTEM}
+    .pagina-404 {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 32px 20px;
+    }
+    .cartao-404 {
+      max-width: 480px;
+      width: 100%;
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: var(--radius-lg);
+      padding: 36px 28px;
+      text-align: center;
+      box-shadow: var(--shadow);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 14px;
+    }
+    .badge-erro {
+      display: inline-block;
+      padding: 5px 12px;
+      border-radius: var(--radius-full);
+      background: color-mix(in srgb, var(--accent) 15%, transparent);
+      color: var(--accent);
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    h1 {
+      font-size: 24px;
+      font-weight: 850;
+      letter-spacing: -0.03em;
+    }
+    p {
+      color: var(--muted);
+      font-size: 15px;
+      line-height: 1.55;
+      margin-bottom: 6px;
+    }
+    .btn-primario {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 100%;
+      padding: 13px 20px;
+      border-radius: var(--radius-full);
+      background: var(--accent);
+      color: #ffffff;
+      font-weight: 700;
+      font-size: 15px;
+      transition: background-color 0.15s ease;
+    }
+    .btn-primario:hover {
+      background: var(--accent-2);
+    }
+  </style>
+</head>
+<body>
+  ${renderizarCabecalhoSite()}
+  <main class="pagina-404">
+    <section class="cartao-404">
+      <span class="badge-erro">Erro 404</span>
+      <h1>Resumo da PR #${numeroPr} não encontrado (404)</h1>
+      <p>Esta Pull Request já foi encerrada ou os artefatos de prévia não estão mais disponíveis no armazenamento.</p>
+      <a class="btn-primario" href="${URL_SITE_PRINCIPAL}">Ir para arestaclimb.com</a>
+      ${renderizarBotoesLojas()}
+    </section>
+  </main>
+  ${renderizarRodapeSite()}
+  <script>${SCRIPT_ALTERNANCIA_TEMA}</script>
+</body>
+</html>`;
+}
+
+function renderizarPaginaPrevia(codigoFormatado: string, numeroPr: number | null): string {
+  const urlPrevia = `https://previa.arestaclimb.com/${codigoFormatado}`;
+  const urlQrCodePr = numeroPr !== null ? `https://serving.arestaclimb.com/pr/${numeroPr}/qrcode.svg` : null;
+
+  return `<!DOCTYPE html>
+<html lang="pt-BR" data-theme="dark">
+<head>
+  ${SCRIPT_INICIALIZACAO_TEMA}
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="icon" type="image/svg+xml" href="https://arestaclimb.com/favicon.svg">
+  <title>Aresta Climb - Prévia do Croqui (${codigoFormatado})</title>
+  <style>${ESTILOS_BASE_DESIGN_SYSTEM}
+    .pagina-main {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 32px 20px;
+    }
+    .card {
+      background-color: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: var(--radius-lg);
+      padding: 36px 28px;
+      max-width: 480px;
+      width: 100%;
+      text-align: center;
+      box-shadow: var(--shadow);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 14px;
+    }
+    .etiqueta {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--accent);
+    }
+    .etiqueta::before {
+      content: "";
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--accent);
+    }
+    h1 {
+      font-size: 26px;
+      font-weight: 900;
+      letter-spacing: -0.03em;
+      color: var(--text);
+    }
+    p {
+      color: var(--muted);
+      font-size: 14.5px;
+      line-height: 1.5;
+    }
+    .codigo-box {
+      width: 100%;
+      background-color: var(--bg-soft);
+      border: 1px dashed var(--accent);
+      border-radius: var(--radius-md);
+      padding: 16px;
+    }
+    .codigo-label {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: var(--accent);
+      margin-bottom: 4px;
+      font-weight: 700;
+    }
+    .codigo-valor {
+      font-size: 28px;
+      font-family: monospace;
+      font-weight: 800;
+      letter-spacing: 2px;
+      color: var(--text);
+    }
+    .qr-container {
+      display: inline-flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 6px;
+      background: #ffffff;
+      padding: 12px;
+      border-radius: var(--radius-md);
+      border: 1px solid var(--line);
+    }
+    .qr-container img {
+      width: 148px;
+      height: 148px;
+      display: block;
+    }
+    .btn-abrir {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 100%;
+      background-color: var(--accent);
+      color: #ffffff;
+      text-decoration: none;
+      font-weight: 700;
+      font-size: 15.5px;
+      padding: 14px 20px;
+      border-radius: var(--radius-full);
+      transition: background-color 0.15s ease;
+    }
+    .btn-abrir:hover {
+      background-color: var(--accent-2);
+    }
+    .btn-resumo {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 100%;
+      background-color: var(--bg-soft);
+      border: 1px solid var(--line);
+      color: var(--text);
+      text-decoration: none;
+      font-weight: 700;
+      font-size: 14.5px;
+      padding: 12px 18px;
+      border-radius: var(--radius-full);
+      transition: border-color 0.15s ease;
+    }
+    .btn-resumo:hover {
+      border-color: var(--accent);
+    }
+    .btn-copiar {
+      background: var(--bg-soft);
+      border: 1px solid var(--line);
+      color: var(--text);
+      padding: 8px 18px;
+      border-radius: var(--radius-full);
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 650;
+      transition: border-color 0.15s ease;
+    }
+    .btn-copiar:hover {
+      border-color: var(--accent);
+    }
+    .rodape {
+      margin-top: 6px;
+      font-size: 12.5px;
+      color: var(--muted);
+    }
+  </style>
+</head>
+<body>
+  ${renderizarCabecalhoSite()}
+  <main class="pagina-main">
+    <div class="card">
+      <div class="etiqueta">${numeroPr !== null ? `Pull Request #${numeroPr}` : "Sessão ao Vivo"}</div>
+      <h1>Prévia de Croqui</h1>
+      <p>Conecte seu celular ao Aresta Climb para visualizar o croqui e testar as alterações.</p>
+
+      <div class="codigo-box">
+        <div class="codigo-label">Código de Pareamento</div>
+        <div class="codigo-valor" id="codigo-val">${codigoFormatado}</div>
+      </div>
+
+      ${
+        urlQrCodePr
+          ? `<a class="qr-container" href="${urlPrevia}" title="QR Code da Prévia (${codigoFormatado})">
+        <img src="${urlQrCodePr}" alt="QR Code da Prévia (${codigoFormatado})" width="148" height="148">
+      </a>`
+          : ""
+      }
+
+      <a href="aresta://previa/${codigoFormatado}" class="btn-abrir">Abrir no Aplicativo Aresta</a>
+      ${
+        numeroPr !== null
+          ? `<a href="/resumo/${codigoFormatado}" class="btn-resumo">Ver Resumo de Alterações da PR #${numeroPr}</a>`
+          : ""
+      }
+      <button class="btn-copiar" id="btn-copiar" onclick="copiarCodigo()">Copiar Código</button>
+
+      ${renderizarBotoesLojas()}
+
+      <div class="rodape">
+        Abra o aplicativo Aresta Climb no seu celular ou escaneie o QR Code no seu computador.
+      </div>
+    </div>
+  </main>
+  ${renderizarRodapeSite()}
+
+  <script>${SCRIPT_ALTERNANCIA_TEMA}
+    function copiarCodigo() {
+      navigator.clipboard.writeText("${codigoFormatado}").then(() => {
+        const btn = document.getElementById("btn-copiar");
+        btn.innerText = "Código Copiado!";
+        setTimeout(() => { btn.innerText = "Copiar Código"; }, 2000);
+      });
+    }
+
+    // Apenas em navegadores móveis (Android / iOS) tenta disparar o app link suavemente
+    if (/android|iphone|ipad|ipod/i.test(navigator.userAgent)) {
+      setTimeout(() => {
+        window.location.href = "aresta://previa/${codigoFormatado}";
+      }, 300);
+    }
+  </script>
+</body>
+</html>`;
+}
+
 export function criarRespostaJson(dados: any, status = 200, cabecalhosAdicionais: Record<string, string> = {}): Response {
   return new Response(JSON.stringify(dados), {
     status,
@@ -395,7 +974,7 @@ export async function tratarRequisicao(
       const respResumo = await fetchServing(urlResumoR2);
       if (!respResumo.ok) {
         return new Response(
-          `<!DOCTYPE html><html lang="pt-BR"><body><h1>Resumo da PR #${numeroPrResumo} não encontrado (404)</h1></body></html>`,
+          renderizarPaginaResumoNaoEncontrado(numeroPrResumo),
           {
             status: 404,
             headers: {
@@ -494,154 +1073,7 @@ export async function tratarRequisicao(
     // 7. Landing Page HTML de Prévia: /<codigo>
     if (!subcaminho) {
       const codigoFormatado = gerenciadorAtivo.formatarCodigo(codigoSessao);
-      const html = `<!DOCTYPE html>
-<html lang="pt-BR">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Aresta Climb - Prévia do Croqui</title>
-  <style>
-    :root {
-      --cor-fundo: #0f172a;
-      --cor-card: #1e293b;
-      --cor-destaque: #e07a5f;
-      --cor-texto: #f8fafc;
-      --cor-subtexto: #94a3b8;
-    }
-    body {
-      margin: 0;
-      padding: 0;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-      background-color: var(--cor-fundo);
-      color: var(--cor-texto);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      min-height: 100vh;
-    }
-    .card {
-      background-color: var(--cor-card);
-      border-radius: 20px;
-      padding: 32px 24px;
-      max-width: 420px;
-      width: 90%;
-      text-align: center;
-      box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5);
-    }
-    .logo {
-      font-size: 40px;
-      margin-bottom: 8px;
-    }
-    h1 {
-      font-size: 22px;
-      font-weight: 700;
-      margin: 0 0 8px 0;
-      color: var(--cor-texto);
-    }
-    p {
-      color: var(--cor-subtexto);
-      font-size: 14px;
-      line-height: 1.5;
-      margin: 0 0 24px 0;
-    }
-    .codigo-box {
-      background-color: #0b1120;
-      border: 1px dashed var(--cor-destaque);
-      border-radius: 12px;
-      padding: 16px;
-      margin-bottom: 24px;
-    }
-    .codigo-label {
-      font-size: 11px;
-      text-transform: uppercase;
-      letter-spacing: 1px;
-      color: var(--cor-destaque);
-      margin-bottom: 4px;
-      font-weight: 600;
-    }
-    .codigo-valor {
-      font-size: 28px;
-      font-family: monospace;
-      font-weight: 700;
-      letter-spacing: 2px;
-      color: #fff;
-    }
-    .btn-abrir {
-      display: block;
-      width: 100%;
-      background-color: var(--cor-destaque);
-      color: #ffffff;
-      text-decoration: none;
-      font-weight: 700;
-      font-size: 16px;
-      padding: 14px 0;
-      border-radius: 12px;
-      box-sizing: border-box;
-      transition: opacity 0.2s;
-    }
-    .btn-abrir:hover {
-      opacity: 0.9;
-    }
-    .btn-copiar {
-      margin-top: 10px;
-      background: transparent;
-      border: 1px solid #334155;
-      color: #94a3b8;
-      padding: 8px 16px;
-      border-radius: 8px;
-      cursor: pointer;
-      font-size: 13px;
-      font-weight: 600;
-    }
-    .btn-copiar:hover {
-      background: #334155;
-      color: #fff;
-    }
-    .rodape {
-      margin-top: 20px;
-      font-size: 12px;
-      color: var(--cor-subtexto);
-    }
-  </style>
-</head>
-<body>
-  <div class="card">
-    <div class="logo">🧗</div>
-    <h1>Prévia de Croqui</h1>
-    <p>Conecte seu celular ao Aresta Editor para visualizar o croqui em tempo real.</p>
-    
-    <div class="codigo-box">
-      <div class="codigo-label">Código de Pareamento</div>
-      <div class="codigo-valor" id="codigo-val">${codigoFormatado}</div>
-    </div>
-
-    <a href="aresta://previa/${codigoFormatado}" class="btn-abrir">Abrir no Aplicativo Aresta</a>
-    ${numeroPr !== null ? `<a href="/resumo/${codigoFormatado}" class="btn-abrir" style="margin-top: 10px; background-color: #3b82f6;">Ver Resumo de Alterações da PR #${numeroPr}</a>` : ""}
-    <button class="btn-copiar" id="btn-copiar" onclick="copiarCodigo()">Copiar Código</button>
-
-    <div class="rodape">
-      Abra o aplicativo Aresta Climb no seu celular ou escaneie o QR Code no seu computador.
-    </div>
-  </div>
-
-  <script>
-    function copiarCodigo() {
-      navigator.clipboard.writeText("${codigoFormatado}").then(() => {
-        const btn = document.getElementById("btn-copiar");
-        btn.innerText = "Código Copiado!";
-        setTimeout(() => { btn.innerText = "Copiar Código"; }, 2000);
-      });
-    }
-
-    // Apenas em navegadores móveis (Android / iOS) tenta disparar o app link suavemente
-    if (/android|iphone|ipad|ipod/i.test(navigator.userAgent)) {
-      setTimeout(() => {
-        window.location.href = "aresta://previa/${codigoFormatado}";
-      }, 300);
-    }
-  </script>
-</body>
-</html>`;
+      const html = renderizarPaginaPrevia(codigoFormatado, numeroPr);
 
       return new Response(html, {
         headers: {

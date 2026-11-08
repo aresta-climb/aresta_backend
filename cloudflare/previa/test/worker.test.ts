@@ -413,7 +413,7 @@ Deno.test("Worker HTTP - GET /ws deve validar posse de sessão e rejeitar usuár
   expect(sessao!.socketEditor).toBeDefined();
 });
 
-Deno.test("Worker HTTP - deve servir fallback Landing Page HTML para navegadores", async () => {
+Deno.test("Worker HTTP - deve servir fallback Landing Page HTML para navegadores com Design System de arestaclimb.com", async () => {
   const req = new Request("https://previa.arestaclimb.com/k9x2-p83a", {
     headers: { Accept: "text/html,application/xhtml+xml" },
   });
@@ -424,6 +424,14 @@ Deno.test("Worker HTTP - deve servir fallback Landing Page HTML para navegadores
   expect(html).toContain("Prévia de Croqui");
   expect(html).toContain("k9x2-p83a");
   expect(html).toContain("aresta://previa/k9x2-p83a");
+  expect(html).toContain('data-theme="dark"');
+  expect(html).toContain("--bg: #f4f1e9");
+  expect(html).toContain("--bg: #11120f");
+  expect(html).toContain("--accent: #b53e29");
+  expect(html).toContain('id="themeToggle"');
+  expect(html).toContain("https://arestaclimb.com/assets/logo_app.png");
+  expect(html).toContain("ARESTA CLIMB");
+  expect(html).toContain('class="store-badge"');
 });
 
 Deno.test("Worker HTTP - deve retornar 404 para sessão inexistente", async () => {
@@ -1172,11 +1180,15 @@ Deno.test("Worker HTTP - roteia /<codigo_pr>/* e /resumo/<codigo_pr> de forma st
     },
   };
 
-  // 1. Landing page da PR inclui botão para /resumo/pr00-0042
+  // 1. Landing page da PR inclui botão para /resumo/pr00-0042, QR Code e Design System de arestaclimb.com
   const resLanding = await worker.fetch(new Request("https://previa.arestaclimb.com/pr00-0042"), mockEnv as any);
   expect(resLanding.status).toBe(200);
   const htmlLanding = await resLanding.text();
   expect(htmlLanding).toContain("/resumo/pr00-0042");
+  expect(htmlLanding).toContain("https://serving.arestaclimb.com/pr/42/qrcode.svg");
+  expect(htmlLanding).toContain('data-theme="dark"');
+  expect(htmlLanding).toContain('id="themeToggle"');
+  expect(htmlLanding).toContain("https://arestaclimb.com/assets/logo_app.png");
 
   // 2. Metadados (/info e /meta) e rejeição de /events
   const resMeta = await worker.fetch(new Request("https://previa.arestaclimb.com/pr00-0042/meta"), mockEnv as any);
@@ -1214,9 +1226,13 @@ Deno.test("Worker HTTP - roteia /<codigo_pr>/* e /resumo/<codigo_pr> de forma st
   expect(resResumo.headers.get("content-type")).toContain("text/html");
   expect(await resResumo.text()).toContain("Resumo PR 42");
 
-  // 5. Resumo 404 quando PR já foi limpa
+  // 5. Resumo 404 quando PR já foi limpa (com Design System de arestaclimb.com)
   const resResumo404 = await worker.fetch(new Request("https://previa.arestaclimb.com/resumo/pr00-0099"), mockEnv as any);
   expect(resResumo404.status).toBe(404);
+  const html404 = await resResumo404.text();
+  expect(html404).toContain('data-theme="dark"');
+  expect(html404).toContain('id="themeToggle"');
+  expect(html404).toContain("https://arestaclimb.com/assets/logo_app.png");
 
   // Nenhuma dessas chamadas deve ter instanciado Durable Object
   expect(doAcionado).toBe(false);
