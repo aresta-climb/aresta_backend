@@ -1,0 +1,8 @@
+{
+  "tasks": {
+    "test": "deno test -A"
+  },
+  "compilerOptions": {
+    "lib": ["deno.window", "dom"]
+  }
+}

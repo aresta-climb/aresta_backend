@@ -1,0 +1,27 @@
+name = "aresta-fixalog-worker"
+main = "src/index.ts"
+compatibility_date = "2026-08-01"
+compatibility_flags = ["nodejs_compat"]
+upload_source_maps = true
+
+[[d1_databases]]
+binding = "DB"
+database_name = "aresta-catalogo"
+database_id = "7368d2d3-c69b-4cd5-9e2a-5ecc0ee3c830"
+
+[[r2_buckets]]
+binding = "LAUDOS_BUCKET"
+bucket_name = "fixalog-laudos"
+
+[ai]
+binding = "AI"
+
+[vars]
+ALERTA_URL = "https://alertas.arestaclimb.com/api/v1/alertas"
+
+[[routes]]
+pattern = "fixalog.app"
+custom_domain = true
+
+[observability]
+enabled = true

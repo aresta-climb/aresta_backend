@@ -1,0 +1,15 @@
+{
+  "name": "aresta-fixalog-worker",
+  "version": "1.0.0",
+  "description": "Worker de hospedagem soberana, verificação criptográfica OpenPubkey/XML-DSig, moderação CSAM/NSFW e streaming Byte-Range de pacotes EPUB 3 periciais do Fixalog",
+  "main": "src/index.ts",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test": "deno test -A"
+  },
+  "license": "MPL-2.0",
+  "devDependencies": {
+    "wrangler": "^4.147.0"
+  }
+}
