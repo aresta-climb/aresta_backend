@@ -355,6 +355,87 @@ Deno.test("catalogo-gateway: condensarDeltas lida com JSON sem chaves opcionais"
   });
 });
 
+Deno.test("catalogo-gateway: condensarDeltas condensa nos_estrada e distancias_estrada com duracao_minutos e limpeza por croqui", () => {
+  const resultado = condensarDeltas([
+    {
+      id: 1,
+      versao_hash: "v1",
+      upserts_json: JSON.stringify({
+        croquis: [],
+        entidades: [],
+        nos_estrada: [
+          { no_osm_id: 100, latitude_e7: -195000000, longitude_e7: -439000000 },
+          { no_osm_id: 200, latitude_e7: -196000000, longitude_e7: -438000000 },
+        ],
+        distancias_estrada: [
+          {
+            croqui_uid: "c_lapinha",
+            no_osm_id: 100,
+            distancia_metros: 12000,
+            na_borda: 0,
+            duracao_minutos: 15,
+          },
+          {
+            croqui_uid: "c_lapinha",
+            no_osm_id: 200,
+            distancia_metros: 45000,
+            na_borda: 1,
+            duracao_minutos: 40,
+          },
+        ],
+      }),
+      deletes_json: JSON.stringify({
+        croquis: [],
+        entidades: [],
+        nos_estrada: [999],
+      }),
+    },
+    {
+      id: 2,
+      versao_hash: "v2",
+      upserts_json: JSON.stringify({
+        croquis: [],
+        entidades: [],
+        nos_estrada: [
+          { no_osm_id: 100, latitude_e7: -195000001, longitude_e7: -439000001 },
+          { no_osm_id: 999, latitude_e7: -197000000, longitude_e7: -437000000 },
+        ],
+        distancias_estrada: [
+          {
+            croqui_uid: "c_lapinha",
+            no_osm_id: 100,
+            distancia_metros: 11500,
+            na_borda: 0,
+            duracao_minutos: 14,
+          },
+        ],
+      }),
+      deletes_json: JSON.stringify({
+        croquis: [],
+        entidades: [],
+        nos_estrada: [200],
+        distancias_estrada: ["c_lapinha"],
+      }),
+    },
+  ]);
+
+  assertEquals(resultado.upserts.nos_estrada, [
+    { no_osm_id: 100, latitude_e7: -195000001, longitude_e7: -439000001 },
+    { no_osm_id: 999, latitude_e7: -197000000, longitude_e7: -437000000 },
+  ]);
+  assertEquals(resultado.deletes.nos_estrada, [200]);
+  assertEquals(resultado.upserts.distancias_estrada, [
+    {
+      croqui_uid: "c_lapinha",
+      no_osm_id: 100,
+      distancia_metros: 11500,
+      na_borda: 0,
+      duracao_minutos: 14,
+    },
+  ]);
+  assertEquals(resultado.deletes.distancias_estrada, ["c_lapinha"]);
+});
+
 Deno.test("catalogo-gateway: /sync retorna 500 com no-store e reporta ao Sentry se query ao D1 lancar excecao", async () => {
   const relatorFake = new RelatorSentryFake();
   const dbComFalha = {

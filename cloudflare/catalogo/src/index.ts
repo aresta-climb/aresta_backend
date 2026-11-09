@@ -3,7 +3,9 @@
 
 import {
   CatalogoCroqui,
+  CatalogoDistanciaEstrada,
   CatalogoEntidade,
+  CatalogoNoEstrada,
   DeletesSyncCatalogo,
   ErroCatalogo,
   RespostaSyncCatalogo,
@@ -78,6 +80,10 @@ export function condensarDeltas(deltas: RegistroDeltaD1[]): {
   const croquisDelete = new Set<string>();
   const entidadesUpsert = new Map<string, CatalogoEntidade>();
   const entidadesDelete = new Set<string>();
+  const nosEstradaUpsert = new Map<number, CatalogoNoEstrada>();
+  const nosEstradaDelete = new Set<number>();
+  const distanciasEstradaUpsert = new Map<string, CatalogoDistanciaEstrada>();
+  const distanciasEstradaDelete = new Set<string>();
 
   for (const delta of deltas) {
     const deletesObj = JSON.parse(
@@ -87,14 +93,42 @@ export function condensarDeltas(deltas: RegistroDeltaD1[]): {
       delta.upserts_json
     ) as Partial<UpsertsSyncCatalogo>;
 
+    const croquisParaLimparMalha = new Set<string>();
+
     for (const croquiUid of deletesObj.croquis ?? []) {
       croquisUpsert.delete(croquiUid);
       croquisDelete.add(croquiUid);
+      croquisParaLimparMalha.add(croquiUid);
+    }
+
+    for (const croquiUid of deletesObj.distancias_estrada ?? []) {
+      croquisParaLimparMalha.add(croquiUid);
+    }
+
+    for (const dist of upsertsObj.distancias_estrada ?? []) {
+      croquisParaLimparMalha.add(String(dist.croqui_uid));
+    }
+
+    if (croquisParaLimparMalha.size > 0) {
+      for (const croquiUid of croquisParaLimparMalha) {
+        distanciasEstradaDelete.add(croquiUid);
+      }
+      for (const [chave, dist] of distanciasEstradaUpsert.entries()) {
+        if (croquisParaLimparMalha.has(dist.croqui_uid)) {
+          distanciasEstradaUpsert.delete(chave);
+        }
+      }
     }
 
     for (const entidadeUid of deletesObj.entidades ?? []) {
       entidadesUpsert.delete(entidadeUid);
       entidadesDelete.add(entidadeUid);
+    }
+
+    for (const noOsmId of deletesObj.nos_estrada ?? []) {
+      const idNum = Number(noOsmId);
+      nosEstradaUpsert.delete(idNum);
+      nosEstradaDelete.add(idNum);
     }
 
     for (const croqui of upsertsObj.croquis ?? []) {
@@ -108,18 +142,42 @@ export function condensarDeltas(deltas: RegistroDeltaD1[]): {
       entidadesDelete.delete(uid);
       entidadesUpsert.set(uid, entidade);
     }
+
+    for (const noEstrada of upsertsObj.nos_estrada ?? []) {
+      const idNum = Number(noEstrada.no_osm_id);
+      nosEstradaDelete.delete(idNum);
+      nosEstradaUpsert.set(idNum, noEstrada);
+    }
+
+    for (const distEstrada of upsertsObj.distancias_estrada ?? []) {
+      const chave = `${distEstrada.croqui_uid}:${distEstrada.no_osm_id}`;
+      distanciasEstradaUpsert.set(chave, distEstrada);
+    }
   }
 
-  return {
-    upserts: {
-      croquis: Array.from(croquisUpsert.values()),
-      entidades: Array.from(entidadesUpsert.values()),
-    },
-    deletes: {
-      croquis: Array.from(croquisDelete.values()),
-      entidades: Array.from(entidadesDelete.values()),
-    },
+  const upserts: UpsertsSyncCatalogo = {
+    croquis: Array.from(croquisUpsert.values()),
+    entidades: Array.from(entidadesUpsert.values()),
   };
+  if (nosEstradaUpsert.size > 0) {
+    upserts.nos_estrada = Array.from(nosEstradaUpsert.values());
+  }
+  if (distanciasEstradaUpsert.size > 0) {
+    upserts.distancias_estrada = Array.from(distanciasEstradaUpsert.values());
+  }
+
+  const deletes: DeletesSyncCatalogo = {
+    croquis: Array.from(croquisDelete.values()),
+    entidades: Array.from(entidadesDelete.values()),
+  };
+  if (nosEstradaDelete.size > 0) {
+    deletes.nos_estrada = Array.from(nosEstradaDelete.values());
+  }
+  if (distanciasEstradaDelete.size > 0) {
+    deletes.distancias_estrada = Array.from(distanciasEstradaDelete.values());
+  }
+
+  return { upserts, deletes };
 }
 
 function responderJson(
