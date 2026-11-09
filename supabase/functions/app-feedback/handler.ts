@@ -49,9 +49,20 @@ export const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-firebase-appcheck',
 };
 
-// Repositórios de destino conforme a categoria do feedback (croqui -> aresta_db, app -> aresta_app)
+// Repositórios de destino conforme o aplicativo e a categoria do feedback (croqui -> aresta_db, app -> aresta_app, fixalog -> fixalog)
 const REPOSITORIO_GITHUB_CROQUI = 'aresta-climb/aresta_db';
 const REPOSITORIO_GITHUB_APP = 'aresta-climb/aresta_app';
+const REPOSITORIO_GITHUB_FIXALOG = 'aresta-climb/fixalog';
+
+export interface ProjetoFirebasePermitido {
+  projectNumber: string;
+  projectId: string;
+}
+
+export const PROJETOS_FIREBASE_OFICIAIS: ProjetoFirebasePermitido[] = [
+  { projectNumber: '737982062809', projectId: 'app-escalada-croquis' },
+  { projectNumber: '1025411452942', projectId: 'fixalog' },
+];
 
 // Cache do conjunto de chaves públicas JWKS do Firebase App Check
 const FIREBASE_JWKS_URL = new URL('https://firebaseappcheck.googleapis.com/v1/jwks');
@@ -110,25 +121,46 @@ export function checkRateLimit(
 }
 
 /**
- * Valida o token JWT do Firebase App Check.
+ * Valida o token JWT do Firebase App Check contra os projetos oficiais da Aresta Climb
+ * (`app-escalada-croquis` e `fixalog`).
  */
 export async function verifyAppCheckToken(
   token: string,
-  projectNumber: string,
-  projectId: string
+  projectNumber?: string,
+  projectId?: string
 ): Promise<{ valid: boolean; error?: string }> {
-  try {
-    await jwtVerify(token, remoteJWKSet, {
-      issuer: `https://firebaseappcheck.googleapis.com/${projectNumber}`,
-      audience: [
-        `projects/${projectNumber}`,
-        `projects/${projectId}`,
-      ],
-    });
-    return { valid: true };
-  } catch (err: any) {
-    return { valid: false, error: err.message || 'Token do App Check inválido' };
+  const projetosCandidatos: ProjetoFirebasePermitido[] = [];
+  if (projectNumber && projectId) {
+    projetosCandidatos.push({ projectNumber, projectId });
   }
+  for (const oficial of PROJETOS_FIREBASE_OFICIAIS) {
+    if (
+      !projetosCandidatos.some(
+        (p) =>
+          p.projectNumber === oficial.projectNumber &&
+          p.projectId === oficial.projectId,
+      )
+    ) {
+      projetosCandidatos.push(oficial);
+    }
+  }
+
+  let ultimoErro = 'Token do App Check inválido';
+  for (const projeto of projetosCandidatos) {
+    try {
+      await jwtVerify(token, remoteJWKSet, {
+        issuer: `https://firebaseappcheck.googleapis.com/${projeto.projectNumber}`,
+        audience: [
+          `projects/${projeto.projectNumber}`,
+          `projects/${projeto.projectId}`,
+        ],
+      });
+      return { valid: true };
+    } catch (err: any) {
+      ultimoErro = err.message || ultimoErro;
+    }
+  }
+  return { valid: false, error: ultimoErro };
 }
 
 /**
@@ -298,6 +330,8 @@ export const handleRequest = async (
     } catch (_) {}
 
     const feedbackId = metadataObj?.feedbackId || crypto.randomUUID();
+    const origemApp = metadataObj?.app === 'fixalog' ? 'fixalog' : 'arestaclimb';
+    const categoriaFixalog = String(metadataObj?.categoria || 'aplicativo').toLowerCase();
     const tipoFeedback = metadataObj?.tipo_feedback === 'croqui' ? 'croqui' : 'app';
 
     // 5. Verificação de Idempotência no Supabase (se configurado)
@@ -437,13 +471,26 @@ export const handleRequest = async (
       if (description.length > 50) msgPreview += '...';
     }
 
-    const title = (tipoFeedback === 'croqui' && metadataObj?.croqui_id)
-      ? `[Croqui | ${metadataObj.croqui_id}] ${msgPreview}`
-      : (tipoFeedback === 'croqui' ? `[Croqui] ${msgPreview}` : `[App] ${msgPreview}`);
+    const rotuloCategoriaFixalog = categoriaFixalog === 'protocolo'
+      ? 'Protocolo'
+      : (categoriaFixalog === 'sugestao' ? 'Sugestão' : 'App');
+
+    const title = origemApp === 'fixalog'
+      ? `[Fixalog | ${rotuloCategoriaFixalog}] ${msgPreview}`
+      : ((tipoFeedback === 'croqui' && metadataObj?.croqui_id)
+        ? `[Croqui | ${metadataObj.croqui_id}] ${msgPreview}`
+        : (tipoFeedback === 'croqui' ? `[Croqui] ${msgPreview}` : `[App] ${msgPreview}`));
 
     const labels: string[] = [];
-    const labelTipo = sanitizarLabel(`feedback:${tipoFeedback}`);
-    if (labelTipo) labels.push(labelTipo);
+    if (origemApp === 'fixalog') {
+      const labelCat = sanitizarLabel(`feedback:${categoriaFixalog}`);
+      if (labelCat) labels.push(labelCat);
+      const labelApp = sanitizarLabel('app:fixalog');
+      if (labelApp) labels.push(labelApp);
+    } else {
+      const labelTipo = sanitizarLabel(`feedback:${tipoFeedback}`);
+      if (labelTipo) labels.push(labelTipo);
+    }
 
     if (metadataObj?.os) {
       const labelSo = sanitizarLabel(`so:${String(metadataObj.os).toLowerCase()}`);
@@ -488,7 +535,18 @@ export const handleRequest = async (
     }
 
     body += `## Informações Gerais\n`;
-    body += `- **Categoria:** ${tipoFeedback === 'croqui' ? 'Sobre o Croqui' : 'Sobre o Aplicativo'}\n`;
+    if (origemApp === 'fixalog') {
+      body += `- **Aplicativo:** \`fixalog\`\n`;
+      body += `- **Categoria:** ${rotuloCategoriaFixalog}\n`;
+      if (metadataObj?.tier_dispositivo || metadataObj?.ram_gb !== undefined) {
+        body += `- **Hardware:** Tier \`${metadataObj.tier_dispositivo || 'N/A'}\` | RAM: \`${metadataObj.ram_gb ?? 'N/A'} GB\`\n`;
+      }
+      if (metadataObj?.clube) {
+        body += `- **Clube / Associação:** \`${metadataObj.clube}\`\n`;
+      }
+    } else {
+      body += `- **Categoria:** ${tipoFeedback === 'croqui' ? 'Sobre o Croqui' : 'Sobre o Aplicativo'}\n`;
+    }
 
     const dataEnvio = metadataObj?.submittedAt || metadataObj?.submitted_at;
     const timestampEnvio = metadataObj?.submittedAtTimestamp || metadataObj?.submitted_at_timestamp;
@@ -561,9 +619,11 @@ export const handleRequest = async (
     body += `[Ver diagnóstico completo do dispositivo no Supabase](${linkSupabase})\n`;
 
     // 7. Envio para a API do GitHub com retentativa em caso de 429
-    const repositorioDestino = tipoFeedback === 'croqui'
-      ? REPOSITORIO_GITHUB_CROQUI
-      : REPOSITORIO_GITHUB_APP;
+    const repositorioDestino = origemApp === 'fixalog'
+      ? REPOSITORIO_GITHUB_FIXALOG
+      : (tipoFeedback === 'croqui'
+        ? REPOSITORIO_GITHUB_CROQUI
+        : REPOSITORIO_GITHUB_APP);
     const githubApiUrl = `https://api.github.com/repos/${repositorioDestino}/issues`;
     const githubHeaders = {
       'Authorization': `Bearer ${githubToken}`,

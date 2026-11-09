@@ -868,3 +868,61 @@ Deno.test("app-feedback: reporta ao Sentry via RelatorSentryFake quando ocorre e
   Deno.env.delete("SKIP_APP_CHECK_VERIFICATION");
   Deno.env.delete("SENTRY_DSN");
 });
+
+Deno.test("app-feedback: despacha issue para aresta-climb/fixalog quando app e fixalog", async () => {
+  resetRateLimits();
+  setCustomTokenProvider(() => Promise.resolve("gh-secret-token"));
+  Deno.env.set("SKIP_APP_CHECK_VERIFICATION", "true");
+
+  const originalFetch = globalThis.fetch;
+  let githubPayload: any = null;
+  let urlGithubChamada = "";
+
+  globalThis.fetch = async (url: string | URL | Request, options?: RequestInit) => {
+    const urlStr = url.toString();
+    if (urlStr.includes("api.github.com")) {
+      urlGithubChamada = urlStr;
+      githubPayload = JSON.parse(options?.body as string);
+      return new Response(
+        JSON.stringify({ html_url: "https://github.com/aresta-climb/fixalog/issues/12" }),
+        { status: 201, headers: { "Content-Type": "application/json" } }
+      );
+    }
+    return new Response(JSON.stringify([{}]), { status: 200, headers: { "Content-Type": "application/json" } });
+  };
+
+  const formData = new FormData();
+  formData.append("description", "Passo 3 do protocolo de manutenção precisa de campo de torque");
+  formData.append(
+    "metadata",
+    JSON.stringify({
+      app: "fixalog",
+      feedbackId: "fixalog-uuid-001",
+      categoria: "protocolo",
+      tier_dispositivo: "intermediario",
+      ram_gb: 8,
+      clube: "FEMERJ",
+      os: "android",
+      appVersion: "1.0.0",
+    })
+  );
+
+  const req = new Request("http://localhost", { method: "POST", body: formData });
+  const res = await handleRequest(req);
+
+  assertEquals(res.status, 200);
+  const bodyJson = await res.json();
+  assertEquals(bodyJson.issue_url, "https://github.com/aresta-climb/fixalog/issues/12");
+  assertEquals(urlGithubChamada, "https://api.github.com/repos/aresta-climb/fixalog/issues");
+  assertEquals(githubPayload.title.startsWith("[Fixalog | Protocolo]"), true);
+  assertEquals(githubPayload.labels.includes("feedback:protocolo"), true);
+  assertEquals(githubPayload.labels.includes("app:fixalog"), true);
+  assertEquals(githubPayload.labels.includes("so:android"), true);
+  assertEquals(githubPayload.body.includes("- **Aplicativo:** `fixalog`"), true);
+  assertEquals(githubPayload.body.includes("- **Hardware:** Tier `intermediario` | RAM: `8 GB`"), true);
+  assertEquals(githubPayload.body.includes("- **Clube / Associação:** `FEMERJ`"), true);
+
+  globalThis.fetch = originalFetch;
+  setCustomTokenProvider(null);
+  Deno.env.delete("SKIP_APP_CHECK_VERIFICATION");
+});
