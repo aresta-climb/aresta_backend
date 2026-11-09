@@ -899,6 +899,9 @@ function resolverRepositorioPorServicoSentry(servicoTag: string): string {
   if (tagNormalizada.includes("db") || tagNormalizada.includes("editor")) {
     return "aresta-climb/aresta_db";
   }
+  if (tagNormalizada.includes("fixalog") || tagNormalizada.includes("fixlog")) {
+    return "aresta-climb/fixalog";
+  }
   return "aresta-climb/aresta_app";
 }
 

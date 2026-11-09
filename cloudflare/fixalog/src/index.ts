@@ -21,6 +21,7 @@ import {
   MapaIndiceZipEpub,
   servirMidiaByteRangeDoR2,
 } from "./extrator_indice_epub.ts";
+import { relatarErroSentry } from "../../../supabase/functions/compartilhado/relator_sentry.ts";
 import {
   AmbienteFixalog,
   ContextoExecucaoFixalog,
@@ -620,6 +621,19 @@ export default {
     env: AmbienteFixalog,
     ctx?: ContextoExecucaoFixalog,
   ): Promise<Response> {
-    return await processarRequisicaoFixalog(req, env, ctx);
+    try {
+      return await processarRequisicaoFixalog(req, env, ctx);
+    } catch (erro) {
+      if (env.SENTRY_DSN) {
+        await relatarErroSentry(erro, {
+          dsn: env.SENTRY_DSN,
+          servico: "aresta-fixalog-worker",
+          requisicao: req,
+          contextoExecucao: ctx,
+          fetchFn: (env.fetchExterno ?? fetch) as typeof fetch,
+        });
+      }
+      return respostaJson({ erro: "Erro interno no Worker do Fixalog." }, 500);
+    }
   },
 };

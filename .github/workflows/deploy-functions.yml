@@ -113,6 +113,7 @@ jobs:
           - app-links
           - catalogo
           - feedback
+          - fixalog
           - previa
 
     steps:

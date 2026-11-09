@@ -75,6 +75,7 @@ export interface AmbienteFixalog {
   LAUDOS_BUCKET?: BucketR2Fixalog;
   AI?: WorkersAiFixalog;
   ALERTA_URL?: string;
+  SENTRY_DSN?: string;
   fetchExterno?: (url: string, init?: RequestInit) => Promise<Response>;
 }
 
@@ -338,6 +339,7 @@ export class AmbienteFixalogFake implements AmbienteFixalog {
   readonly LAUDOS_BUCKET = new BucketR2FixalogFake();
   readonly AI = new WorkersAiFixalogFake();
   readonly ALERTA_URL = "https://alertas.arestaclimb.com/api/v1/alertas";
+  SENTRY_DSN?: string = "https://chave_publica_fake@o1.ingest.us.sentry.io/4512313384239104";
   readonly requisicoesExternas: Array<{ url: string; init?: RequestInit }> = [];
   readonly promessasBackground: Promise<unknown>[] = [];
   statusSubrequisicaoCsam = 200;

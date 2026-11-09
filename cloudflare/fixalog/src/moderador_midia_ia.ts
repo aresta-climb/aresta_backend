@@ -7,6 +7,7 @@ import {
   MapaIndiceZipEpub,
 } from "./extrator_indice_epub.ts";
 import { extrairQuadrosChaveMp4 } from "./extrator_iframes_mp4.ts";
+import { relatarErroSentry } from "../../../supabase/functions/compartilhado/relator_sentry.ts";
 import { AmbienteFixalog } from "./fakes/ambiente_fixalog_fake.ts";
 
 export const MODELO_VISION_MODERACAO = "@cf/meta/llama-3.2-11b-vision-instruct";
@@ -52,6 +53,29 @@ export async function dispararAlertaSegurancaFixalog(params: {
     });
   } catch {
     // Não interrompe a transição de estado no D1 caso o webhook externo falhe
+  }
+
+  if (params.env.SENTRY_DSN) {
+    await relatarErroSentry(
+      new Error(
+        `[${params.tipoEvento}] Laudo ${params.idSessao} (v${params.versao}): ${params.motivo}`,
+      ),
+      {
+        dsn: params.env.SENTRY_DSN,
+        servico: "aresta-fixalog-worker",
+        tags: {
+          tipo_evento: params.tipoEvento,
+          id_sessao: params.idSessao,
+        },
+        extras: {
+          versao: params.versao,
+          user_id: params.userId ?? null,
+          motivo: params.motivo,
+          detalhes: params.detalhes ?? null,
+        },
+        fetchFn: fetcher as typeof fetch,
+      },
+    );
   }
 }
 

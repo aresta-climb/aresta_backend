@@ -182,7 +182,7 @@ for (const nomeFuncao of ["app-feedback", "git-proxy", "create-pr"]) {
   });
 }
 
-for (const nomeWorker of ["alertas", "app-links", "catalogo", "feedback", "previa"]) {
+for (const nomeWorker of ["alertas", "app-links", "catalogo", "feedback", "fixalog", "previa"]) {
   Deno.test(`validador_cabecalhos_spdx: escopo worker ${nomeWorker} possui cabecalho SPDX MPL-2.0`, async () => {
     const semSpdx = await validarCabecalhosSpdxRepositorio(
       `${RAIZ_REPOSITORIO}/cloudflare/${nomeWorker}`,
@@ -234,7 +234,7 @@ Deno.test("validador_cabecalhos_spdx: workflow deploy-functions.yml testa migrac
   assert(idxTesteFunction > 0 && idxDeployFunction > idxTesteFunction);
 
   // Deve testar todos os 5 Cloudflare Workers
-  for (const worker of ["alertas", "app-links", "catalogo", "feedback", "previa"]) {
+  for (const worker of ["alertas", "app-links", "catalogo", "feedback", "fixalog", "previa"]) {
     assertStringIncludes(conteudoWorkflow, `- ${worker}`);
   }
   assertStringIncludes(conteudoWorkflow, 'cloudflare/${{ matrix.worker }}/test/');
