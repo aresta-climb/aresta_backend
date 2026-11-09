@@ -4,10 +4,11 @@
 import { assertEquals } from "https://deno.land/std@0.192.0/testing/asserts.ts";
 import {
   reescreverCaminhosMidiaXhtml,
+  renderizarPaginaEmAnaliseLaudo,
   renderizarPaginaPublicaLaudo,
 } from "./renderizador_pagina_laudo.ts";
 
-Deno.test("renderizador_pagina_laudo: reescreve caminhos de mídia e materiais e injeta barra de verificação criptográfica e versões", () => {
+Deno.test("renderizador_pagina_laudo: reescreve caminhos de mídia e materiais e injeta barra de verificação criptográfica, meta tags OpenGraph e materiais anexos para impressão", () => {
   const xhtml = `<html><body>
     <img src="midia/foto_1.webp" />
     <video src="midia/video_1.mp4" poster="midia/video_1.jpg"></video>
@@ -38,8 +39,12 @@ Deno.test("renderizador_pagina_laudo: reescreve caminhos de mídia e materiais e
     fingerprint_chave: "abcdef0123456789abcdef0123456789",
     nome_mantenedor: "Renato Ferreira",
     clube_mantenedor: "FEMERJ",
-    indices_zip_json: "{}",
-    materiais_referenciados_json: "[]",
+    indices_zip_json: JSON.stringify({
+      "OEBPS/relatorio.xhtml": { offset: 0, length: 100, compressionMethod: 0 },
+      "OEBPS/midia/foto_1.webp": { offset: 100, length: 50, compressionMethod: 0 },
+      "OEBPS/midia/video_1.mp4": { offset: 150, length: 200, compressionMethod: 0 },
+    }),
+    materiais_referenciados_json: '["mat_123"]',
     status_moderacao: "ativo",
     motivo_moderacao: null,
     criado_em: "2026-11-08T00:00:00Z",
@@ -76,6 +81,12 @@ Deno.test("renderizador_pagina_laudo: reescreve caminhos de mídia e materiais e
     totalLaudosAssinadosPelaChave: 7,
     xhtmlOriginal: xhtml,
     cssOriginal: "body { margin: 0; }",
+    materiaisAnexosXhtml: [
+      {
+        idMaterial: "mat_123",
+        xhtml: '<html><body><h2>Ficha do Material Anexado</h2><img src="midia/mat_foto.webp" /></body></html>',
+      },
+    ],
   });
 
   assertEquals(
@@ -88,4 +99,39 @@ Deno.test("renderizador_pagina_laudo: reescreve caminhos de mídia e materiais e
   );
   assertEquals(html.includes('href="/v/sessao_1?v=1"'), true);
   assertEquals(html.includes('href="/v/sessao_1?v=2"'), true);
+  assertEquals(html.includes('property="og:title"'), true);
+  assertEquals(html.includes('property="og:description"'), true);
+  assertEquals(
+    html.includes(
+      'property="og:image" content="https://fixalog.app/v/sessao_1/midias/OEBPS/midia/foto_1.webp?v=2"',
+    ),
+    true,
+  );
+  assertEquals(
+    html.includes('property="og:url" content="https://fixalog.app/v/sessao_1"'),
+    true,
+  );
+  assertEquals(html.includes('class="anexo-materiais-impressao"'), true);
+  assertEquals(html.includes("Ficha do Material Anexado"), true);
+  assertEquals(html.includes("window.print()"), true);
+
+  const htmlEmAnalise = renderizarPaginaEmAnaliseLaudo({
+    laudo: {
+      id_sessao: "sessao_1",
+      user_id: "usr_1",
+      categoria: "MANUTENCAO",
+      id_protocolo: "manutencao_ferragens",
+      titulo: "Via Teste",
+      escalada_uid: null,
+      latitude: null,
+      longitude: null,
+      versao_atual: 2,
+      criado_em: "2026-11-08T00:00:00Z",
+      atualizado_em: "2026-11-08T01:00:00Z",
+    },
+    versaoExibida: { ...v2, status_moderacao: "em_analise" },
+  });
+  assertEquals(htmlEmAnalise.includes('http-equiv="refresh"'), true);
+  assertEquals(htmlEmAnalise.includes("window.location.reload()"), true);
+  assertEquals(htmlEmAnalise.includes("Renato Ferreira"), true);
 });

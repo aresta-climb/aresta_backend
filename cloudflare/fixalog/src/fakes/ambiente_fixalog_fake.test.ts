@@ -113,6 +113,13 @@ Deno.test("AmbienteFixalogFake: persiste e consulta chaves, laudos e versões no
     .first<{ status_moderacao: string }>();
   assertEquals(versao?.status_moderacao, "ativo");
 
+  const versaoPorHash = await env.DB.prepare(
+    "SELECT * FROM versoes_laudo_fixalog WHERE id_sessao = ? AND hash_epub_sha256 = ?",
+  )
+    .bind("laudo_1", "HASH_1")
+    .first<{ versao: number }>();
+  assertEquals(versaoPorHash?.versao, 1);
+
   const todasVersoes = await env.DB.prepare(
     "SELECT * FROM versoes_laudo_fixalog WHERE id_sessao = ?",
   )
@@ -140,12 +147,21 @@ Deno.test("AmbienteFixalogFake: persiste e consulta chaves, laudos e versões no
   );
 });
 
-Deno.test("AmbienteFixalogFake: R2 suporta leitura integral e parcial (Byte-Range), Workers AI e fila background", async () => {
+Deno.test("AmbienteFixalogFake: R2 suporta leitura integral e parcial (Byte-Range), listagem, exclusão, Workers AI e fila background", async () => {
   const env = new AmbienteFixalogFake();
   const bytes = new Uint8Array([10, 20, 30, 40, 50, 60]);
   await env.LAUDOS_BUCKET.put("laudos/id/v1.epub", bytes);
+  await env.LAUDOS_BUCKET.put("staging/id/hash/chunk_0", new Uint8Array([1, 2]));
+  await env.LAUDOS_BUCKET.put("staging/id/hash/chunk_1", new Uint8Array([3, 4]));
 
   assertEquals(await env.LAUDOS_BUCKET.get("inexistente"), null);
+
+  const listados = await env.LAUDOS_BUCKET.list({ prefix: "staging/id/hash/" });
+  assertEquals(listados.objects.length, 2);
+
+  await env.LAUDOS_BUCKET.delete(["staging/id/hash/chunk_0", "staging/id/hash/chunk_1"]);
+  const aposDelete = await env.LAUDOS_BUCKET.list({ prefix: "staging/id/hash/" });
+  assertEquals(aposDelete.objects.length, 0);
 
   const parcial = await env.LAUDOS_BUCKET.get("laudos/id/v1.epub", {
     range: { offset: 2, length: 3 },

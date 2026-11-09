@@ -8,6 +8,7 @@ import { AmbienteFixalogFake } from "./fakes/ambiente_fixalog_fake.ts";
 import workerDefault from "./index.ts";
 import {
   calcularSha256Base64,
+  calcularSha256Hex,
   construirTokensAssinadosTeste,
 } from "./verificador_assinatura_laudo.ts";
 
@@ -15,12 +16,19 @@ async function criarEpubAssinadoTeste(params: {
   titulo: string;
   atestadoOidcJwt: string;
   incluirVideo?: boolean;
+  incluirMaterialAnexo?: boolean;
 }): Promise<Uint8Array> {
   const encoder = new TextEncoder();
-  const xhtml = `<html><head><title>${params.titulo}</title></head><body><h1>${params.titulo}</h1><img src="midia/foto_1.webp" /><video id="video-v1" src="midia/video_1.mp4" poster="midia/video_1.jpg"></video></body></html>`;
+  const linkMaterial = params.incluirMaterialAnexo
+    ? '<a href="materiais/mat_anexo_1/relatorio.xhtml">Material Anexo 1</a>'
+    : "";
+  const xhtml = `<html><head><title>${params.titulo}</title></head><body><h1>${params.titulo}</h1><img src="midia/foto_1.webp" /><video id="video-v1" src="midia/video_1.mp4" poster="midia/video_1.jpg"></video>${linkMaterial}</body></html>`;
   const css = "body { font-family: sans-serif; }";
   const foto = new Uint8Array([10, 20, 30, 40]);
   const video = construirMp4ComAtomosStssTeste([1, 301]);
+  const xhtmlMatAnexo = encoder.encode(
+    "<html><body><h2>Ficha Técnica Parabolt Inox</h2></body></html>",
+  );
 
   const xhtmlBytes = encoder.encode(xhtml);
   const cssBytes = encoder.encode(css);
@@ -28,6 +36,7 @@ async function criarEpubAssinadoTeste(params: {
   const digestCss = await calcularSha256Base64(cssBytes);
   const digestFoto = await calcularSha256Base64(foto);
   const digestVideo = await calcularSha256Base64(video);
+  const digestMatAnexo = await calcularSha256Base64(xhtmlMatAnexo);
 
   const signaturesXml = `<?xml version="1.0" encoding="UTF-8"?>
 <signatures xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
@@ -41,9 +50,14 @@ async function criarEpubAssinadoTeste(params: {
           ? `<Reference URI="OEBPS/midia/video_1.mp4"><DigestValue>${digestVideo}</DigestValue></Reference>`
           : ""
       }
+      ${
+        params.incluirMaterialAnexo
+          ? `<Reference URI="OEBPS/materiais/mat_anexo_1/relatorio.xhtml"><DigestValue>${digestMatAnexo}</DigestValue></Reference>`
+          : ""
+      }
     </SignedInfo>
     <SignatureValue>Y2hhdmVfYXNzaW5hdHVyYV9lY2RzYV92YWxpZGFfMTIzNDU2</SignatureValue>
-    <KeyInfo><X509Data><X509Certificate>TUVVX0NFUlRfVEVTVEU=</X509Certificate></X509Data></KeyInfo>
+    <KeyInfo><X509Data><X509Certificate>TUVVX0NFUlRfVEVTVEU=</X509Certificate></KeyInfo>
     <Object Id="oidc-attestation"><OidcIdToken>${params.atestadoOidcJwt}</OidcIdToken></Object>
   </Signature>
 </signatures>`;
@@ -54,6 +68,14 @@ async function criarEpubAssinadoTeste(params: {
     { nome: "OEBPS/midia/foto_1.webp", dados: foto },
     ...(params.incluirVideo
       ? [{ nome: "OEBPS/midia/video_1.mp4", dados: video }]
+      : []),
+    ...(params.incluirMaterialAnexo
+      ? [
+          {
+            nome: "OEBPS/materiais/mat_anexo_1/relatorio.xhtml",
+            dados: xhtmlMatAnexo,
+          },
+        ]
       : []),
     { nome: "META-INF/signatures.xml", dados: encoder.encode(signaturesXml) },
   ];
@@ -108,6 +130,7 @@ Deno.test("fixalog-worker: fluxo ponta a ponta de upload v1 e v2, moderação as
     titulo: "Via Aresta — v1",
     atestadoOidcJwt: tokens.atestadoOidcJwt,
     incluirVideo: true,
+    incluirMaterialAnexo: true,
   });
 
   const resUploadV1 = await workerDefault.fetch(
@@ -138,11 +161,30 @@ Deno.test("fixalog-worker: fluxo ponta a ponta de upload v1 e v2, moderação as
   // Conclui a moderação em background -> promove para 'ativo'
   await env.aguardarTarefasBackground();
 
+  // Reenviar exatamente o mesmo EPUB (mesmo sha256) deve retornar 200 ja_enviado: true sem criar v2
+  const resUploadDuplicado = await workerDefault.fetch(
+    new Request("https://fixalog.app/api/v1/laudos/sessao_aresta", {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/epub+zip",
+        "X-Firebase-AppCheck": "app_check_valido_123",
+        Authorization: `Bearer ${tokens.jwtSupabase}`,
+      },
+      body: epubV1 as unknown as BodyInit,
+    }),
+    env,
+  );
+  assertEquals(resUploadDuplicado.status, 200);
+  const jsonDuplicado = await resUploadDuplicado.json();
+  assertEquals(jsonDuplicado.versao, 1);
+  assertEquals(jsonDuplicado.ja_enviado, true);
+
   // 4. Upload v2 pelo mesmo usuário -> cria versão imutável v2
   const epubV2 = await criarEpubAssinadoTeste({
     titulo: "Via Aresta — v2 Atualizada",
     atestadoOidcJwt: tokens.atestadoOidcJwt,
     incluirVideo: true,
+    incluirMaterialAnexo: true,
   });
   const resUploadV2 = await workerDefault.fetch(
     new Request("https://fixalog.app/api/v1/laudos/sessao_aresta", {
@@ -203,6 +245,8 @@ Deno.test("fixalog-worker: fluxo ponta a ponta de upload v1 e v2, moderação as
   assertEquals(htmlV2.includes("Via Aresta — v2 Atualizada"), true);
   assertEquals(htmlV2.includes("1 laudo(s) assinado(s) por esta chave"), true);
   assertEquals(htmlV2.includes('href="/v/sessao_aresta?v=1"'), true);
+  assertEquals(htmlV2.includes('property="og:title"'), true);
+  assertEquals(htmlV2.includes("Ficha Técnica Parabolt Inox"), true);
 
   const resPaginaV1 = await workerDefault.fetch(
     new Request("https://fixalog.app/v/sessao_aresta?v=1"),
@@ -260,4 +304,143 @@ Deno.test("fixalog-worker: fluxo ponta a ponta de upload v1 e v2, moderação as
     env,
   );
   assertEquals(resAposDenuncia.status, 451);
+});
+
+Deno.test("fixalog-worker: upload retomável em blocos (GET /status e PUT /chunk) e idempotência por {id_sessao, sha256}", async () => {
+  const env = new AmbienteFixalogFake();
+  const tokens = await construirTokensAssinadosTeste({
+    userId: "usr_montanha",
+    nome: "Escalador Montanha",
+  });
+
+  const epub = await criarEpubAssinadoTeste({
+    titulo: "Via Dedo de Deus — Retomável",
+    atestadoOidcJwt: tokens.atestadoOidcJwt,
+    incluirVideo: false,
+  });
+  const sha256 = await calcularSha256Hex(epub);
+  const metade = Math.ceil(epub.byteLength / 2);
+  const chunk0 = epub.slice(0, metade);
+  const chunk1 = epub.slice(metade);
+
+  // 1. Consulta inicial antes de qualquer envio
+  const resStatus0 = await workerDefault.fetch(
+    new Request(
+      `https://fixalog.app/api/v1/laudos/sessao_retomavel/status?sha256=${sha256}`,
+      {
+        headers: {
+          "X-Firebase-AppCheck": "app_check_valido_123",
+          Authorization: `Bearer ${tokens.jwtSupabase}`,
+        },
+      },
+    ),
+    env,
+  );
+  assertEquals(resStatus0.status, 200);
+  const status0 = await resStatus0.json();
+  assertEquals(status0.ja_enviado, false);
+  assertEquals(status0.chunks_recebidos, []);
+
+  // 2. Envia chunk 0 de 2 (simula queda de rede antes do chunk 1)
+  const resChunk0 = await workerDefault.fetch(
+    new Request(
+      `https://fixalog.app/api/v1/laudos/sessao_retomavel/chunk?sha256=${sha256}&index=0&total=2`,
+      {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/octet-stream",
+          "X-Firebase-AppCheck": "app_check_valido_123",
+          Authorization: `Bearer ${tokens.jwtSupabase}`,
+        },
+        body: chunk0 as unknown as BodyInit,
+      },
+    ),
+    env,
+  );
+  assertEquals(resChunk0.status, 200);
+  const jsonChunk0 = await resChunk0.json();
+  assertEquals(jsonChunk0.finalizado, false);
+  assertEquals(jsonChunk0.chunks_recebidos, [0]);
+
+  // 3. Ao retomar conexão, consulta status e descobre que chunk 0 já está salvo
+  const resStatusParcial = await workerDefault.fetch(
+    new Request(
+      `https://fixalog.app/api/v1/laudos/sessao_retomavel/status?sha256=${sha256}`,
+      {
+        headers: {
+          "X-Firebase-AppCheck": "app_check_valido_123",
+          Authorization: `Bearer ${tokens.jwtSupabase}`,
+        },
+      },
+    ),
+    env,
+  );
+  const statusParcial = await resStatusParcial.json();
+  assertEquals(statusParcial.ja_enviado, false);
+  assertEquals(statusParcial.chunks_recebidos, [0]);
+
+  // 4. Envia apenas o chunk 1 restante -> Worker concatena, valida assinatura e cria v1
+  const resChunk1 = await workerDefault.fetch(
+    new Request(
+      `https://fixalog.app/api/v1/laudos/sessao_retomavel/chunk?sha256=${sha256}&index=1&total=2`,
+      {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/octet-stream",
+          "X-Firebase-AppCheck": "app_check_valido_123",
+          Authorization: `Bearer ${tokens.jwtSupabase}`,
+        },
+        body: chunk1 as unknown as BodyInit,
+      },
+    ),
+    env,
+    env.contexto,
+  );
+  assertEquals(resChunk1.status, 201);
+  const jsonChunk1 = await resChunk1.json();
+  assertEquals(jsonChunk1.finalizado, true);
+  assertEquals(jsonChunk1.versao, 1);
+  assertEquals(jsonChunk1.status_moderacao, "em_analise");
+
+  // Conclui moderação em background -> promove para 'ativo'
+  await env.aguardarTarefasBackground();
+
+  // 5. Consulta status após conclusão -> ja_enviado: true, status_moderacao: 'ativo'
+  const resStatusFinal = await workerDefault.fetch(
+    new Request(
+      `https://fixalog.app/api/v1/laudos/sessao_retomavel/status?sha256=${sha256}`,
+      {
+        headers: {
+          "X-Firebase-AppCheck": "app_check_valido_123",
+          Authorization: `Bearer ${tokens.jwtSupabase}`,
+        },
+      },
+    ),
+    env,
+  );
+  const statusFinal = await resStatusFinal.json();
+  assertEquals(statusFinal.ja_enviado, true);
+  assertEquals(statusFinal.versao, 1);
+  assertEquals(statusFinal.status_moderacao, "ativo");
+
+  // 6. Tentar enviar chunk novamente para o mesmo sha256 retorna 200 ja_enviado: true sem recriar
+  const resChunkDuplicado = await workerDefault.fetch(
+    new Request(
+      `https://fixalog.app/api/v1/laudos/sessao_retomavel/chunk?sha256=${sha256}&index=0&total=2`,
+      {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/octet-stream",
+          "X-Firebase-AppCheck": "app_check_valido_123",
+          Authorization: `Bearer ${tokens.jwtSupabase}`,
+        },
+        body: chunk0 as unknown as BodyInit,
+      },
+    ),
+    env,
+  );
+  assertEquals(resChunkDuplicado.status, 200);
+  const jsonChunkDup = await resChunkDuplicado.json();
+  assertEquals(jsonChunkDup.ja_enviado, true);
+  assertEquals(jsonChunkDup.versao, 1);
 });

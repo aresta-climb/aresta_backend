@@ -5,8 +5,10 @@ import {
   ChaveUsuarioFixalog,
   RequisicaoDenunciaLaudoFixalog,
   RequisicaoRegistroChaveFixalog,
+  RespostaChunkLaudoFixalog,
   RespostaDenunciaLaudoFixalog,
   RespostaListaLaudosFixalog,
+  RespostaStatusLaudoFixalog,
   RespostaUploadLaudoFixalog,
 } from "../../../aresta_api/openapi/generated/ts/fixalog.ts";
 import {
@@ -24,13 +26,19 @@ import {
 import { relatarErroSentry } from "../../../supabase/functions/compartilhado/relator_sentry.ts";
 import {
   AmbienteFixalog,
+  BancoD1Fixalog,
+  BucketR2Fixalog,
   ContextoExecucaoFixalog,
 } from "./fakes/ambiente_fixalog_fake.ts";
 import {
   dispararAlertaSegurancaFixalog,
   executarModeracaoAssincronaLaudo,
 } from "./moderador_midia_ia.ts";
-import { renderizarPaginaPublicaLaudo } from "./renderizador_pagina_laudo.ts";
+import {
+  MaterialAnexoXhtml,
+  renderizarPaginaEmAnaliseLaudo,
+  renderizarPaginaPublicaLaudo,
+} from "./renderizador_pagina_laudo.ts";
 import {
   calcularSha256Hex,
   extrairUsuarioJwtSupabase,
@@ -85,6 +93,216 @@ function extrairMetadadosXhtml(xhtml: string): {
     categoria,
     idProtocolo,
     materiaisReferenciados: Array.from(materiais),
+  };
+}
+
+async function listarChunksRecebidosNoR2(
+  bucket: BucketR2Fixalog,
+  idSessao: string,
+  sha256: string,
+): Promise<number[]> {
+  const prefixo = `staging/${idSessao}/${sha256.toLowerCase()}/chunk_`;
+  const listagem = await bucket.list({ prefix: prefixo });
+  const indices: number[] = [];
+  for (const obj of listagem.objects) {
+    const sufixo = obj.key.slice(prefixo.length);
+    const idx = Number.parseInt(sufixo, 10);
+    if (!Number.isNaN(idx) && idx >= 0) {
+      indices.push(idx);
+    }
+  }
+  indices.sort((a, b) => a - b);
+  return indices;
+}
+
+async function persistirVersaoEpubValidada(params: {
+  env: AmbienteFixalog;
+  db: BancoD1Fixalog;
+  bucket: BucketR2Fixalog;
+  ctx?: ContextoExecucaoFixalog;
+  idSessao: string;
+  userId: string;
+  epubBytes: Uint8Array;
+  hashEpub: string;
+}): Promise<
+  | { erro: string; statusHttp: number }
+  | {
+      statusHttp: number;
+      jaEnviado: boolean;
+      versao: number;
+      statusModeracao: "em_analise" | "ativo" | "bloqueado";
+      urlPublica: string;
+      hashEpub: string;
+    }
+> {
+  const { env, db, bucket, ctx, idSessao, userId, epubBytes, hashEpub } =
+    params;
+
+  const laudoExistente = await db
+    .prepare("SELECT * FROM laudos_fixalog WHERE id_sessao = ?")
+    .bind(idSessao)
+    .first<LinhaLaudosFixalog>();
+
+  if (laudoExistente && laudoExistente.user_id !== userId) {
+    return {
+      erro: "Apenas a conta autora original pode publicar novas versões deste laudo.",
+      statusHttp: 403,
+    };
+  }
+
+  const versaoMesmoHash = await db
+    .prepare(
+      "SELECT * FROM versoes_laudo_fixalog WHERE id_sessao = ? AND hash_epub_sha256 = ?",
+    )
+    .bind(idSessao, hashEpub)
+    .first<LinhaVersoesLaudoFixalog>();
+
+  if (versaoMesmoHash) {
+    return {
+      statusHttp: 200,
+      jaEnviado: true,
+      versao: versaoMesmoHash.versao,
+      statusModeracao:
+        (versaoMesmoHash.status_moderacao as
+          | "em_analise"
+          | "ativo"
+          | "bloqueado") ?? "em_analise",
+      urlPublica: `https://fixalog.app/v/${encodeURIComponent(idSessao)}`,
+      hashEpub: versaoMesmoHash.hash_epub_sha256,
+    };
+  }
+
+  let indiceZip: MapaIndiceZipEpub;
+  try {
+    indiceZip = extrairIndiceZipEpub(epubBytes);
+  } catch (e) {
+    return {
+      erro: `Pacote EPUB malformado: ${(e as Error).message}`,
+      statusHttp: 400,
+    };
+  }
+
+  const verificacao = await verificarAssinaturaEpubXmlDsig(
+    epubBytes,
+    indiceZip,
+  );
+  if (!verificacao.valido) {
+    return {
+      erro: verificacao.motivoErro ?? "Assinatura XML-DSig inválida.",
+      statusHttp: 400,
+    };
+  }
+
+  const novaVersao = laudoExistente
+    ? (laudoExistente.versao_atual ?? 1) + 1
+    : 1;
+  const r2Key = `laudos/${idSessao}/v${novaVersao}.epub`;
+  await bucket.put(r2Key, epubBytes);
+
+  const xhtmlBytes = await extrairArquivoDoEpub(
+    epubBytes,
+    "OEBPS/relatorio.xhtml",
+    indiceZip,
+  );
+  const xhtmlTexto = xhtmlBytes ? new TextDecoder().decode(xhtmlBytes) : "";
+  const meta = extrairMetadadosXhtml(xhtmlTexto);
+  const agora = new Date().toISOString();
+
+  await db
+    .prepare(
+      "INSERT OR REPLACE INTO chaves_usuario_fixalog VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(
+      verificacao.fingerprintChave,
+      userId,
+      verificacao.chavePublicaPem,
+      verificacao.certificadoX509Pem,
+      verificacao.atestadoOidcJwt,
+      verificacao.provedorOidc,
+      verificacao.nomeMantenedor,
+      verificacao.clubeMantenedor,
+      agora,
+    )
+    .run();
+
+  if (!laudoExistente) {
+    await db
+      .prepare(
+        "INSERT INTO laudos_fixalog VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      )
+      .bind(
+        idSessao,
+        userId,
+        meta.categoria,
+        meta.idProtocolo,
+        meta.titulo,
+        null,
+        null,
+        null,
+        1,
+        agora,
+        agora,
+      )
+      .run();
+  } else {
+    await db
+      .prepare(
+        "UPDATE laudos_fixalog SET titulo = ?, escalada_uid = ?, latitude = ?, longitude = ?, versao_atual = ?, atualizado_em = ? WHERE id_sessao = ?",
+      )
+      .bind(
+        meta.titulo,
+        laudoExistente.escalada_uid,
+        laudoExistente.latitude,
+        laudoExistente.longitude,
+        novaVersao,
+        agora,
+        idSessao,
+      )
+      .run();
+  }
+
+  await db
+    .prepare(
+      "INSERT INTO versoes_laudo_fixalog VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(
+      idSessao,
+      novaVersao,
+      r2Key,
+      epubBytes.byteLength,
+      hashEpub,
+      verificacao.fingerprintChave,
+      verificacao.nomeMantenedor,
+      verificacao.clubeMantenedor,
+      JSON.stringify(indiceZip),
+      JSON.stringify(meta.materiaisReferenciados),
+      "em_analise",
+      null,
+      agora,
+    )
+    .run();
+
+  const tarefaModeracao = executarModeracaoAssincronaLaudo({
+    env,
+    idSessao,
+    versao: novaVersao,
+    userId,
+    epubBytes,
+    indicePreCalculado: indiceZip,
+  });
+  if (ctx) {
+    ctx.waitUntil(tarefaModeracao);
+  } else {
+    await tarefaModeracao;
+  }
+
+  return {
+    statusHttp: 201,
+    jaEnviado: false,
+    versao: novaVersao,
+    statusModeracao: "em_analise",
+    urlPublica: `https://fixalog.app/v/${encodeURIComponent(idSessao)}`,
+    hashEpub,
   };
 }
 
@@ -199,9 +417,9 @@ export async function processarRequisicaoFixalog(
     return respostaJson(resposta, 200);
   }
 
-  // 3. PUT /api/v1/laudos/:id
-  const matchUpload = path.match(/^\/api\/v1\/laudos\/([^/]+)$/);
-  if (req.method === "PUT" && matchUpload) {
+  // 3. GET /api/v1/laudos/:id/status
+  const matchStatus = path.match(/^\/api\/v1\/laudos\/([^/]+)\/status$/);
+  if (req.method === "GET" && matchStatus) {
     if (!validarTokenAppCheck(req.headers.get("X-Firebase-AppCheck"))) {
       return respostaJson(
         { erro: "Token Firebase App Check ausente ou inválido." },
@@ -213,25 +431,80 @@ export async function processarRequisicaoFixalog(
       return respostaJson({ erro: "JWT do Supabase ausente ou inválido." }, 401);
     }
 
-    const idSessao = decodeURIComponent(matchUpload[1]);
-    const epubBytes = new Uint8Array(await req.arrayBuffer());
-    let indiceZip: MapaIndiceZipEpub;
-    try {
-      indiceZip = extrairIndiceZipEpub(epubBytes);
-    } catch (e) {
-      return respostaJson(
-        { erro: `Pacote EPUB malformado: ${(e as Error).message}` },
-        400,
-      );
+    const idSessao = decodeURIComponent(matchStatus[1]);
+    const sha256 = url.searchParams.get("sha256")?.toLowerCase() ?? null;
+
+    let versaoEncontrada: LinhaVersoesLaudoFixalog | null = null;
+    if (sha256) {
+      versaoEncontrada = await env.DB.prepare(
+        "SELECT * FROM versoes_laudo_fixalog WHERE id_sessao = ? AND hash_epub_sha256 = ?",
+      )
+        .bind(idSessao, sha256)
+        .first<LinhaVersoesLaudoFixalog>();
+    } else {
+      const laudo = await env.DB.prepare(
+        "SELECT * FROM laudos_fixalog WHERE id_sessao = ?",
+      )
+        .bind(idSessao)
+        .first<LinhaLaudosFixalog>();
+      if (laudo) {
+        versaoEncontrada = await env.DB.prepare(
+          "SELECT * FROM versoes_laudo_fixalog WHERE id_sessao = ? AND versao = ?",
+        )
+          .bind(idSessao, laudo.versao_atual ?? 1)
+          .first<LinhaVersoesLaudoFixalog>();
+      }
     }
 
-    const verificacao = await verificarAssinaturaEpubXmlDsig(
-      epubBytes,
-      indiceZip,
-    );
-    if (!verificacao.valido) {
+    if (versaoEncontrada) {
+      const resposta: RespostaStatusLaudoFixalog = {
+        id_sessao: idSessao,
+        sha256: versaoEncontrada.hash_epub_sha256,
+        ja_enviado: true,
+        versao: versaoEncontrada.versao,
+        status_moderacao: versaoEncontrada.status_moderacao ?? "em_analise",
+        chunks_recebidos: [],
+      };
+      return respostaJson(resposta, 200);
+    }
+
+    const chunksRecebidos = sha256
+      ? await listarChunksRecebidosNoR2(env.LAUDOS_BUCKET, idSessao, sha256)
+      : [];
+
+    const resposta: RespostaStatusLaudoFixalog = {
+      id_sessao: idSessao,
+      sha256,
+      ja_enviado: false,
+      versao: null,
+      status_moderacao: null,
+      chunks_recebidos: chunksRecebidos,
+    };
+    return respostaJson(resposta, 200);
+  }
+
+  // 4. PUT /api/v1/laudos/:id/chunk
+  const matchChunk = path.match(/^\/api\/v1\/laudos\/([^/]+)\/chunk$/);
+  if (req.method === "PUT" && matchChunk) {
+    if (!validarTokenAppCheck(req.headers.get("X-Firebase-AppCheck"))) {
       return respostaJson(
-        { erro: verificacao.motivoErro ?? "Assinatura XML-DSig inválida." },
+        { erro: "Token Firebase App Check ausente ou inválido." },
+        401,
+      );
+    }
+    const usuario = extrairUsuarioJwtSupabase(req.headers.get("Authorization"));
+    if (!usuario) {
+      return respostaJson({ erro: "JWT do Supabase ausente ou inválido." }, 401);
+    }
+
+    const idSessao = decodeURIComponent(matchChunk[1]);
+    const sha256 = url.searchParams.get("sha256")?.toLowerCase() ?? "";
+    const index = Number.parseInt(url.searchParams.get("index") ?? "-1", 10);
+    const total = Number.parseInt(url.searchParams.get("total") ?? "0", 10);
+
+    if (!sha256 || Number.isNaN(index) || Number.isNaN(total) || index < 0 || total < 1 || index >= total) {
+      return respostaJson(
+        { erro: "Parâmetros sha256, index ou total inválidos." },
         400,
       );
     }
@@ -251,117 +524,161 @@ export async function processarRequisicaoFixalog(
       );
     }
 
-    const novaVersao = laudoExistente
-      ? (laudoExistente.versao_atual ?? 1) + 1
-      : 1;
-    const r2Key = `laudos/${idSessao}/v${novaVersao}.epub`;
-    await env.LAUDOS_BUCKET.put(r2Key, epubBytes);
-
-    const xhtmlBytes = await extrairArquivoDoEpub(
-      epubBytes,
-      "OEBPS/relatorio.xhtml",
-      indiceZip,
-    );
-    const xhtmlTexto = xhtmlBytes ? new TextDecoder().decode(xhtmlBytes) : "";
-    const meta = extrairMetadadosXhtml(xhtmlTexto);
-    const hashEpub = await calcularSha256Hex(epubBytes);
-    const agora = new Date().toISOString();
-
-    await env.DB.prepare(
-      "INSERT OR REPLACE INTO chaves_usuario_fixalog VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    const versaoExistente = await env.DB.prepare(
+      "SELECT * FROM versoes_laudo_fixalog WHERE id_sessao = ? AND hash_epub_sha256 = ?",
     )
-      .bind(
-        verificacao.fingerprintChave,
-        usuario.userId,
-        verificacao.chavePublicaPem,
-        verificacao.certificadoX509Pem,
-        verificacao.atestadoOidcJwt,
-        verificacao.provedorOidc,
-        verificacao.nomeMantenedor,
-        verificacao.clubeMantenedor,
-        agora,
-      )
-      .run();
+      .bind(idSessao, sha256)
+      .first<LinhaVersoesLaudoFixalog>();
 
-    if (!laudoExistente) {
-      await env.DB.prepare(
-        "INSERT INTO laudos_fixalog VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-      )
-        .bind(
-          idSessao,
-          usuario.userId,
-          meta.categoria,
-          meta.idProtocolo,
-          meta.titulo,
-          null,
-          null,
-          null,
-          1,
-          agora,
-          agora,
-        )
-        .run();
-    } else {
-      await env.DB.prepare(
-        "UPDATE laudos_fixalog SET titulo = ?, escalada_uid = ?, latitude = ?, longitude = ?, versao_atual = ?, atualizado_em = ? WHERE id_sessao = ?",
-      )
-        .bind(
-          meta.titulo,
-          laudoExistente.escalada_uid,
-          laudoExistente.latitude,
-          laudoExistente.longitude,
-          novaVersao,
-          agora,
-          idSessao,
-        )
-        .run();
+    if (versaoExistente) {
+      const respostaJaEnviado: RespostaChunkLaudoFixalog = {
+        id_sessao: idSessao,
+        sha256: versaoExistente.hash_epub_sha256,
+        finalizado: true,
+        ja_enviado: true,
+        versao: versaoExistente.versao,
+        status_moderacao: versaoExistente.status_moderacao ?? "em_analise",
+        url_publica: `https://fixalog.app/v/${encodeURIComponent(idSessao)}`,
+        chunks_recebidos: [],
+      };
+      return respostaJson(respostaJaEnviado, 200);
     }
 
-    await env.DB.prepare(
-      "INSERT INTO versoes_laudo_fixalog VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-    )
-      .bind(
-        idSessao,
-        novaVersao,
-        r2Key,
-        epubBytes.byteLength,
-        hashEpub,
-        verificacao.fingerprintChave,
-        verificacao.nomeMantenedor,
-        verificacao.clubeMantenedor,
-        JSON.stringify(indiceZip),
-        JSON.stringify(meta.materiaisReferenciados),
-        "em_analise",
-        null,
-        agora,
-      )
-      .run();
+    const bytesChunk = new Uint8Array(await req.arrayBuffer());
+    const chaveChunk = `staging/${idSessao}/${sha256}/chunk_${index}`;
+    await env.LAUDOS_BUCKET.put(chaveChunk, bytesChunk);
 
-    const tarefaModeracao = executarModeracaoAssincronaLaudo({
-      env,
+    const chunksRecebidos = await listarChunksRecebidosNoR2(
+      env.LAUDOS_BUCKET,
       idSessao,
-      versao: novaVersao,
+      sha256,
+    );
+
+    if (chunksRecebidos.length < total) {
+      const respostaParcial: RespostaChunkLaudoFixalog = {
+        id_sessao: idSessao,
+        sha256,
+        finalizado: false,
+        ja_enviado: false,
+        versao: null,
+        status_moderacao: null,
+        url_publica: null,
+        chunks_recebidos: chunksRecebidos,
+      };
+      return respostaJson(respostaParcial, 200);
+    }
+
+    // Todos os blocos 0..total-1 estão presentes: concatena e finaliza
+    const partes: Uint8Array[] = [];
+    const chavesStaging: string[] = [];
+    let tamanhoTotal = 0;
+    for (let i = 0; i < total; i++) {
+      const k = `staging/${idSessao}/${sha256}/chunk_${i}`;
+      chavesStaging.push(k);
+      const obj = await env.LAUDOS_BUCKET.get(k);
+      if (!obj) {
+        return respostaJson(
+          { erro: `Bloco ausente no staging R2: chunk_${i}` },
+          400,
+        );
+      }
+      const arr = new Uint8Array(await obj.arrayBuffer());
+      partes.push(arr);
+      tamanhoTotal += arr.byteLength;
+    }
+
+    const epubCompleto = new Uint8Array(tamanhoTotal);
+    let offsetCursor = 0;
+    for (const p of partes) {
+      epubCompleto.set(p, offsetCursor);
+      offsetCursor += p.byteLength;
+    }
+
+    const hashCalculado = (await calcularSha256Hex(epubCompleto)).toLowerCase();
+    if (hashCalculado !== sha256) {
+      return respostaJson(
+        {
+          erro: `Divergência de integridade SHA-256 nos blocos concatenados: esperado ${sha256}, obtido ${hashCalculado}.`,
+        },
+        400,
+      );
+    }
+
+    const resultado = await persistirVersaoEpubValidada({
+      env,
+      db: env.DB,
+      bucket: env.LAUDOS_BUCKET,
+      ctx,
+      idSessao,
+      userId: usuario.userId,
+      epubBytes: epubCompleto,
+      hashEpub: hashCalculado,
+    });
+
+    if ("erro" in resultado) {
+      return respostaJson({ erro: resultado.erro }, resultado.statusHttp);
+    }
+
+    await env.LAUDOS_BUCKET.delete(chavesStaging);
+
+    const respostaFinal: RespostaChunkLaudoFixalog = {
+      id_sessao: idSessao,
+      sha256: resultado.hashEpub,
+      finalizado: true,
+      ja_enviado: resultado.jaEnviado,
+      versao: resultado.versao,
+      status_moderacao: resultado.statusModeracao,
+      url_publica: resultado.urlPublica,
+      chunks_recebidos: chunksRecebidos,
+    };
+    return respostaJson(respostaFinal, resultado.statusHttp);
+  }
+
+  // 5. PUT /api/v1/laudos/:id
+  const matchUpload = path.match(/^\/api\/v1\/laudos\/([^/]+)$/);
+  if (req.method === "PUT" && matchUpload) {
+    if (!validarTokenAppCheck(req.headers.get("X-Firebase-AppCheck"))) {
+      return respostaJson(
+        { erro: "Token Firebase App Check ausente ou inválido." },
+        401,
+      );
+    }
+    const usuario = extrairUsuarioJwtSupabase(req.headers.get("Authorization"));
+    if (!usuario) {
+      return respostaJson({ erro: "JWT do Supabase ausente ou inválido." }, 401);
+    }
+
+    const idSessao = decodeURIComponent(matchUpload[1]);
+    const epubBytes = new Uint8Array(await req.arrayBuffer());
+    const hashEpub = (await calcularSha256Hex(epubBytes)).toLowerCase();
+
+    const resultado = await persistirVersaoEpubValidada({
+      env,
+      db: env.DB,
+      bucket: env.LAUDOS_BUCKET,
+      ctx,
+      idSessao,
       userId: usuario.userId,
       epubBytes,
-      indicePreCalculado: indiceZip,
+      hashEpub,
     });
-    if (ctx) {
-      ctx.waitUntil(tarefaModeracao);
-    } else {
-      await tarefaModeracao;
+
+    if ("erro" in resultado) {
+      return respostaJson({ erro: resultado.erro }, resultado.statusHttp);
     }
 
     const resposta: RespostaUploadLaudoFixalog = {
       id_sessao: idSessao,
-      versao: novaVersao,
-      status_moderacao: "em_analise",
-      url_publica: `https://fixalog.app/v/${encodeURIComponent(idSessao)}`,
-      hash_epub_sha256: hashEpub,
+      versao: resultado.versao,
+      status_moderacao: resultado.statusModeracao,
+      url_publica: resultado.urlPublica,
+      hash_epub_sha256: resultado.hashEpub,
+      ja_enviado: resultado.jaEnviado,
     };
-    return respostaJson(resposta, 201);
+    return respostaJson(resposta, resultado.statusHttp);
   }
 
-  // 4. POST /api/v1/laudos/:id/denunciar
+  // 6. POST /api/v1/laudos/:id/denunciar
   const matchDenuncia = path.match(/^\/api\/v1\/laudos\/([^/]+)\/denunciar$/);
   if (req.method === "POST" && matchDenuncia) {
     const idSessao = decodeURIComponent(matchDenuncia[1]);
@@ -401,7 +718,7 @@ export async function processarRequisicaoFixalog(
     return respostaJson(resposta, 200);
   }
 
-  // 5. GET /v/:id/midias/*
+  // 7. GET /v/:id/midias/*
   const matchMidia = path.match(/^\/v\/([^/]+)\/midias\/(.+)$/);
   if (req.method === "GET" && matchMidia) {
     const idSessao = decodeURIComponent(matchMidia[1]);
@@ -453,7 +770,7 @@ export async function processarRequisicaoFixalog(
     });
   }
 
-  // 6. GET /v/:id/epub e GET /v/:id/pdf
+  // 8. GET /v/:id/epub e GET /v/:id/pdf
   const matchDownload = path.match(/^\/v\/([^/]+)\/(epub|pdf)$/);
   if (req.method === "GET" && matchDownload) {
     const idSessao = decodeURIComponent(matchDownload[1]);
@@ -505,7 +822,7 @@ export async function processarRequisicaoFixalog(
     });
   }
 
-  // 7. GET /v/:id
+  // 9. GET /v/:id
   const matchPagina = path.match(/^\/v\/([^/]+)$/);
   if (req.method === "GET" && matchPagina) {
     const idSessao = decodeURIComponent(matchPagina[1]);
@@ -535,10 +852,13 @@ export async function processarRequisicaoFixalog(
 
     if (versaoExibida.status_moderacao === "em_analise") {
       return new Response(
-        "<html><body><h1>Laudo em verificação automática de segurança</h1><p>Tente novamente em alguns instantes.</p></body></html>",
+        renderizarPaginaEmAnaliseLaudo({ laudo, versaoExibida }),
         {
           status: 202,
-          headers: { "Content-Type": "text/html; charset=utf-8" },
+          headers: {
+            "Content-Type": "text/html; charset=utf-8",
+            "Cache-Control": "no-store",
+          },
         },
       );
     }
@@ -594,6 +914,24 @@ export async function processarRequisicaoFixalog(
       }
     }
 
+    const materiaisAnexosXhtml: MaterialAnexoXhtml[] = [];
+    for (const [caminhoZip, entradaMat] of Object.entries(indice)) {
+      const matchMat = caminhoZip.match(
+        /^OEBPS\/materiais\/([^/]+)\/(?:OEBPS\/)?relatorio\.xhtml$/,
+      );
+      if (matchMat) {
+        const objMat = await env.LAUDOS_BUCKET.get(versaoExibida.r2_key, {
+          range: { offset: entradaMat.offset, length: entradaMat.length },
+        });
+        if (objMat) {
+          materiaisAnexosXhtml.push({
+            idMaterial: matchMat[1],
+            xhtml: new TextDecoder().decode(await objMat.arrayBuffer()),
+          });
+        }
+      }
+    }
+
     const html = renderizarPaginaPublicaLaudo({
       laudo,
       versaoExibida,
@@ -602,6 +940,7 @@ export async function processarRequisicaoFixalog(
       totalLaudosAssinadosPelaChave: contagemRow?.total ?? 1,
       xhtmlOriginal,
       cssOriginal,
+      materiaisAnexosXhtml,
     });
 
     return new Response(html, {

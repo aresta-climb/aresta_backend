@@ -43,11 +43,20 @@ export interface ObjetoR2Fixalog {
 }
 
 /**
+ * Resultado de listagem de objetos no Cloudflare R2.
+ */
+export interface ListaObjetosR2Fixalog {
+  objects: Array<{ key: string; size: number }>;
+}
+
+/**
  * Interface de bucket Cloudflare R2 (`fixalog-laudos`).
  */
 export interface BucketR2Fixalog {
   put(chave: string, valor: Uint8Array): Promise<void>;
   get(chave: string, opcoes?: OpcoesRangeR2): Promise<ObjetoR2Fixalog | null>;
+  delete(chave: string | string[]): Promise<void>;
+  list(opcoes?: { prefix?: string }): Promise<ListaObjetosR2Fixalog>;
 }
 
 /**
@@ -230,6 +239,20 @@ export class BancoD1FixalogFake implements BancoD1Fixalog {
       }
 
       if (
+        sqlUpper.includes(
+          "FROM VERSOES_LAUDO_FIXALOG WHERE ID_SESSAO = ? AND HASH_EPUB_SHA256 = ?",
+        )
+      ) {
+        const id = String(params[0]);
+        const hash = String(params[1]).toLowerCase();
+        const encontrado = Array.from(this.versoes.values()).find(
+          (v) =>
+            v.id_sessao === id && v.hash_epub_sha256.toLowerCase() === hash,
+        );
+        return (encontrado ? [encontrado] : []) as unknown as T[];
+      }
+
+      if (
         sqlUpper.includes("FROM VERSOES_LAUDO_FIXALOG WHERE ID_SESSAO = ? AND VERSAO = ?")
       ) {
         const id = String(params[0]);
@@ -273,7 +296,8 @@ export class BancoD1FixalogFake implements BancoD1Fixalog {
 
 /**
  * Fake determinístico em memória do Cloudflare R2 (`fixalog-laudos`) com
- * suporte real a fatiamento parcial de bytes (`range: { offset, length }`).
+ * suporte real a fatiamento parcial de bytes (`range: { offset, length }`),
+ * listagem por prefixo e exclusão de objetos temporários de staging.
  */
 export class BucketR2FixalogFake implements BucketR2Fixalog {
   readonly objetos = new Map<string, Uint8Array>();
@@ -307,6 +331,25 @@ export class BucketR2FixalogFake implements BucketR2Fixalog {
         ) as ArrayBuffer;
       },
     };
+  }
+
+  async delete(chave: string | string[]): Promise<void> {
+    const lista = Array.isArray(chave) ? chave : [chave];
+    for (const item of lista) {
+      this.objetos.delete(item);
+    }
+  }
+
+  async list(opcoes?: { prefix?: string }): Promise<ListaObjetosR2Fixalog> {
+    const prefixo = opcoes?.prefix ?? "";
+    const objects: Array<{ key: string; size: number }> = [];
+    for (const [key, bytes] of this.objetos.entries()) {
+      if (key.startsWith(prefixo)) {
+        objects.push({ key, size: bytes.byteLength });
+      }
+    }
+    objects.sort((a, b) => a.key.localeCompare(b.key));
+    return { objects };
   }
 }
 
