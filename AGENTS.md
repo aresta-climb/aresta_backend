@@ -1,6 +1,6 @@
 # Princípios de Engenharia Aresta (`aresta_backend`)
 
-Para garantir que o nosso código, seja ele escrito por humanos ou por agentes autônomos de IA (como Google Antigravity e OPSX), se mantenha coeso, testável, sustentável e simples, adotamos oito princípios basilares e inegociáveis.
+Para garantir que o nosso código, seja ele escrito por humanos ou por agentes autônomos de IA (como Google Antigravity e OPSX), se mantenha coeso, testável, sustentável e simples, adotamos nove princípios basilares e inegociáveis.
 
 Estes princípios devem guiar toda e qualquer nova implementação, revisão ou refatoração no repositório de backend (Supabase Edge Functions, migrações SQL e Cloudflare Workers).
 
@@ -44,7 +44,13 @@ A existência de código ou testes legados no repositório que ainda não sigam 
 - Agentes autônomos e desenvolvedores estão proibidos de imitar antipadrões presentes em arquivos vizinhos (como mocks ad-hoc, *change-detector tests* ou identificadores em inglês).
 - Sempre que tocar em um arquivo ou módulo existente que viole este `AGENTS.md`, você DEVE refatorar o trecho e os testes afetados para que passem a seguir integralmente estes princípios.
 
-## VIII. Eficiência de Borda (Edge-First) e Isolamento Compartilhado
+## VIII. Fail-Fast e Proibição de Fallbacks Legados ou Silenciosos
+O código DEVE operar por padrão sob a filosofia **Fail-Fast** (falhar cedo, de forma ruidosa e explícita) e realizar **cortes limpos** ao evoluir contratos, schemas e arquiteturas.
+- **Proibição de Fallbacks Legados por Padrão**: Quando um contrato, schema, formato de arquivo ou fluxo arquitetural for substituído, o caminho antigo DEVE ser integralmente removido na mesma alteração (migrando os dados existentes de uma só vez quando necessário). Por padrão, é proibido manter parâmetros opcionais legados, leitura dupla (*dual-read*) de formatos obsoletos ou ramificações de retrocompatibilidade.
+- **Proibição de Degradação Silenciosa e Engolimento de Erros**: É proibido usar blocos `try/catch` genéricos que engulam exceções (blocos vazios, retorno de valores vazios/padrão mágicos) para mascarar pré-condições violadas ou acoplamento indevido entre módulos. Se uma pré-condição, dependência ou invariante falhar, o sistema DEVE lançar um erro claro imediatamente para que a falha seja capturada nos testes, no CI ou no Sentry.
+- **Exceção Explícita (*Escape Hatch*)**: Fallbacks (sejam de compatibilidade ou dentro da lógica de negócios) e degradações graciosas **SÓ** podem ser implementados quando **explicitamente solicitados pelo usuário** para um caso específico. Agentes autônomos jamais devem introduzir fallbacks por iniciativa própria; na dúvida se um cenário exige fallback ou erro explícito, o padrão é falhar explicitamente ou perguntar ao usuário.
+
+## IX. Eficiência de Borda (Edge-First) e Isolamento Compartilhado
 Toda funcionalidade de backend deve ser desenhada para execução enxuta na borda (Supabase Edge Functions e Cloudflare Workers) com **menor custo de operação e latência**:
 - Os handlers de Edge Functions e Workers devem atuar como uma camada fina de roteamento, autenticação JWT, validação de segurança e orquestração de acesso a dados (D1, R2, Supabase, GitHub).
 - Toda lógica de protocolo (como análise de `pkt-line` do Git Smart HTTP, regras de nomenclatura de branches `sugestao-*` e validação de escopo de arquivos) deve permanecer desacoplada em bibliotecas puras dentro de `compartilhado/` ou módulos de domínio dedicados.
