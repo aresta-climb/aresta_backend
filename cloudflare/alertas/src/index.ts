@@ -583,16 +583,87 @@ export class ClienteGithubAppHttp implements InterfaceClienteGithubApp {
         opcoes.installationId,
       );
 
+      const headersPadrao = {
+        "Authorization": `Bearer ${token}`,
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "aresta-alertas-worker",
+        "X-GitHub-Api-Version": "2022-11-28",
+      };
+
+      const resLista = await this.fetchImpl(
+        `https://api.github.com/repos/${opcoes.repositorio}/issues?state=open&per_page=100`,
+        {
+          method: "GET",
+          headers: headersPadrao,
+        },
+      );
+
+      if (!resLista.ok) {
+        const detalhe = await resLista.text();
+        return {
+          sucesso: false,
+          statusHttp: resLista.status,
+          erro: `HTTP ${resLista.status} ao listar issues abertas: ${detalhe}`,
+        };
+      }
+
+      const itensAbertos = (await resLista.json()) as Array<{
+        number?: number;
+        title?: string;
+        html_url?: string;
+        pull_request?: unknown;
+      }>;
+      const issueExistente = Array.isArray(itensAbertos)
+        ? itensAbertos.find(
+          (item) =>
+            !item?.pull_request &&
+            item?.title === opcoes.titulo &&
+            typeof item?.number === "number",
+        )
+        : undefined;
+
+      if (issueExistente && typeof issueExistente.number === "number") {
+        const resComentario = await this.fetchImpl(
+          `https://api.github.com/repos/${opcoes.repositorio}/issues/${issueExistente.number}/comments`,
+          {
+            method: "POST",
+            headers: {
+              ...headersPadrao,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              body: `### 🔄 Nova Ocorrência Detectada\n\n${opcoes.corpo}`,
+            }),
+          },
+        );
+
+        if (!resComentario.ok) {
+          const detalhe = await resComentario.text();
+          return {
+            sucesso: false,
+            statusHttp: resComentario.status,
+            erro: `HTTP ${resComentario.status} ao comentar na issue #${issueExistente.number}: ${detalhe}`,
+          };
+        }
+
+        return {
+          sucesso: true,
+          statusHttp: resComentario.status,
+          numeroIssue: issueExistente.number,
+          urlIssue:
+            issueExistente.html_url ||
+            `https://github.com/${opcoes.repositorio}/issues/${issueExistente.number}`,
+          comentarioAdicionado: true,
+        };
+      }
+
       const resposta = await this.fetchImpl(
         `https://api.github.com/repos/${opcoes.repositorio}/issues`,
         {
           method: "POST",
           headers: {
-            "Authorization": `Bearer ${token}`,
-            "Accept": "application/vnd.github+json",
+            ...headersPadrao,
             "Content-Type": "application/json",
-            "User-Agent": "aresta-alertas-worker",
-            "X-GitHub-Api-Version": "2022-11-28",
           },
           body: JSON.stringify({
             title: opcoes.titulo,
@@ -617,6 +688,7 @@ export class ClienteGithubAppHttp implements InterfaceClienteGithubApp {
         statusHttp: resposta.status,
         numeroIssue: dados.number,
         urlIssue: dados.html_url,
+        comentarioAdicionado: false,
       };
     } catch (erro: unknown) {
       const msg = erro instanceof Error ? erro.message : String(erro);
@@ -1155,8 +1227,38 @@ async function classificarWebhookGithub(
       return null;
     }
 
+    const ehDeployDb = ehWorkflowDeployArestaDb(repositorio, nomeWorkflow, caminhoWorkflow);
+    const ehPrDb = ehWorkflowPrArestaDb(repositorio, nomeWorkflow, caminhoWorkflow);
+    const ehFalhaGeralBranchCritica =
+      conclusao === "failure" && ehBranchProducaoOuRelease(branch);
+
+    if (!ehDeployDb && !ehPrDb && !ehFalhaGeralBranchCritica) {
+      return null;
+    }
+
+    let nomesStepsFalhos: string[] = [];
+    const clienteGithub = obterClienteGithubApp(env);
+    const runId = execucao?.id;
+
+    if (clienteGithub?.obterStepsFalhosWorkflowRun && runId !== undefined) {
+      const resSteps = await clienteGithub.obterStepsFalhosWorkflowRun({
+        clientId: env.ARESTA_CLIMB_BOT_GITHUB_APP_CLIENT_ID || "",
+        privateKey: env.ARESTA_CLIMB_BOT_GITHUB_APP_PRIVATE_KEY || "",
+        installationId: env.ARESTA_CLIMB_BOT_GITHUB_APP_INSTALLATION_ID || "",
+        repositorio,
+        runId,
+      });
+      if (resSteps.sucesso) {
+        nomesStepsFalhos = resSteps.nomesStepsFalhos;
+      }
+    }
+
+    const resumoSteps = nomesStepsFalhos.length > 0
+      ? nomesStepsFalhos.join(", ")
+      : conclusao;
+
     // Exceção 1: deploy.yml do aresta_db -> sempre EMERGÊNCIA
-    if (ehWorkflowDeployArestaDb(repositorio, nomeWorkflow, caminhoWorkflow)) {
+    if (ehDeployDb) {
       return {
         categoria: "emergencias",
         grupoId: env.WHATSAPP_GRUPO_EMERGENCIAS_ID,
@@ -1166,6 +1268,7 @@ async function classificarWebhookGithub(
           `🚨 *[EMERGÊNCIA] Falha de Deploy/CI em ${repositorio}: ${nomeWorkflow} (\`${branch}\`)*`,
           `• *Repositório:* \`${repositorio}\``,
           `• *Workflow:* ${nomeWorkflow} (\`${branch}\`)`,
+          `• *Etapa(s) com Erro:* ${resumoSteps}`,
           `• *Commit:* ${commitMsg} (${autor})`,
           `• *Logs da Execução:* ${urlRun}`,
         ].join("\n"),
@@ -1177,6 +1280,7 @@ async function classificarWebhookGithub(
             "",
             `- **Repositório:** \`${repositorio}\``,
             `- **Workflow:** ${nomeWorkflow} (\`${branch}\`)`,
+            `- **Etapa(s) com Erro:** ${resumoSteps}`,
             `- **Commit:** ${commitMsg} (${autor})`,
             `- **Logs da Execução:** ${urlRun}`,
           ].join("\n"),
@@ -1186,24 +1290,7 @@ async function classificarWebhookGithub(
     }
 
     // Exceção 2: Workflows pr-*.yml do aresta_db (independente da branch)
-    if (ehWorkflowPrArestaDb(repositorio, nomeWorkflow, caminhoWorkflow)) {
-      let nomesStepsFalhos: string[] = [];
-      const clienteGithub = obterClienteGithubApp(env);
-      const runId = execucao?.id;
-
-      if (clienteGithub?.obterStepsFalhosWorkflowRun && runId !== undefined) {
-        const resSteps = await clienteGithub.obterStepsFalhosWorkflowRun({
-          clientId: env.ARESTA_CLIMB_BOT_GITHUB_APP_CLIENT_ID || "",
-          privateKey: env.ARESTA_CLIMB_BOT_GITHUB_APP_PRIVATE_KEY || "",
-          installationId: env.ARESTA_CLIMB_BOT_GITHUB_APP_INSTALLATION_ID || "",
-          repositorio,
-          runId,
-        });
-        if (resSteps.sucesso) {
-          nomesStepsFalhos = resSteps.nomesStepsFalhos;
-        }
-      }
-
+    if (ehPrDb) {
       const apenasRecusaLegitima =
         conclusao !== "startup_failure" &&
         nomesStepsFalhos.length > 0 &&
@@ -1212,10 +1299,6 @@ async function classificarWebhookGithub(
       if (apenasRecusaLegitima) {
         return null;
       }
-
-      const resumoSteps = nomesStepsFalhos.length > 0
-        ? nomesStepsFalhos.join(", ")
-        : conclusao;
 
       return {
         categoria: "emergencias",
@@ -1248,35 +1331,34 @@ async function classificarWebhookGithub(
     }
 
     // Regra Geral: Falha de outros workflows em main, master ou tag de release -> BUG (abre Issue 'bug')
-    if (conclusao === "failure" && ehBranchProducaoOuRelease(branch)) {
-      return {
-        categoria: "bugs",
-        grupoId: env.WHATSAPP_GRUPO_BUGS_ID,
-        assuntoFallback: `[CONTINGÊNCIA ALERTA] 🐛 Falha de CI/CD em ${repositorio}: ${nomeWorkflow}`,
-        urlOrigem: urlRun || undefined,
-        texto: [
-          `🐛 *[FALHA DE CI/CD] ${repositorio}: ${nomeWorkflow} (\`${branch}\`)*`,
-          `• *Repositório:* \`${repositorio}\``,
-          `• *Workflow:* ${nomeWorkflow} (\`${branch}\`)`,
-          `• *Commit:* ${commitMsg} (${autor})`,
-          `• *Logs da Execução:* ${urlRun}`,
+    return {
+      categoria: "bugs",
+      grupoId: env.WHATSAPP_GRUPO_BUGS_ID,
+      assuntoFallback: `[CONTINGÊNCIA ALERTA] 🐛 Falha de CI/CD em ${repositorio}: ${nomeWorkflow}`,
+      urlOrigem: urlRun || undefined,
+      texto: [
+        `🐛 *[FALHA DE CI/CD] ${repositorio}: ${nomeWorkflow} (\`${branch}\`)*`,
+        `• *Repositório:* \`${repositorio}\``,
+        `• *Workflow:* ${nomeWorkflow} (\`${branch}\`)`,
+        `• *Etapa(s) com Erro:* ${resumoSteps}`,
+        `• *Commit:* ${commitMsg} (${autor})`,
+        `• *Logs da Execução:* ${urlRun}`,
+      ].join("\n"),
+      dadosIssueEmergencia: {
+        repositorio,
+        titulo: `🐛 [FALHA DE CI/CD] ${nomeWorkflow} (${branch})`,
+        corpo: [
+          "### 🐛 Falha de Workflow no GitHub Actions",
+          "",
+          `- **Repositório:** \`${repositorio}\``,
+          `- **Workflow:** ${nomeWorkflow} (\`${branch}\`)`,
+          `- **Etapa(s) com Erro:** ${resumoSteps}`,
+          `- **Commit:** ${commitMsg} (${autor})`,
+          `- **Logs da Execução:** ${urlRun}`,
         ].join("\n"),
-        dadosIssueEmergencia: {
-          repositorio,
-          titulo: `🐛 [FALHA DE CI/CD] ${nomeWorkflow} (${branch})`,
-          corpo: [
-            "### 🐛 Falha de Workflow no GitHub Actions",
-            "",
-            `- **Repositório:** \`${repositorio}\``,
-            `- **Workflow:** ${nomeWorkflow} (\`${branch}\`)`,
-            `- **Commit:** ${commitMsg} (${autor})`,
-            `- **Logs da Execução:** ${urlRun}`,
-          ].join("\n"),
-          labels: ["bug"],
-        },
-      };
-    }
-    return null;
+        labels: ["bug"],
+      },
+    };
   }
 
   // 1b. Falha de Deploy externo via Check Run (Cloudflare Pages e Cloudflare Workers Builds) -> BUG

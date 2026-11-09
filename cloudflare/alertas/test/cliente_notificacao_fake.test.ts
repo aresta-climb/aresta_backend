@@ -142,7 +142,33 @@ Deno.test("ClienteGithubAppFake: registra criacao e sincronizacao de issues e pe
   assertEquals(resCriacao.statusHttp, 201);
   assertEquals(resCriacao.numeroIssue, 1);
   assertEquals(resCriacao.urlIssue, "https://github.com/aresta-climb/aresta_backend/issues/1");
+  assertEquals(resCriacao.comentarioAdicionado, false);
   assertEquals(githubFake.issuesCriadas.length, 1);
+  assertEquals(githubFake.comentariosAdicionados.length, 0);
+
+  const resDuplicada = await githubFake.criarIssueEmergencia({
+    clientId: "client-id",
+    privateKey: "private-key",
+    installationId: "12345",
+    repositorio: "aresta-climb/aresta_backend",
+    titulo: "🚨 [EMERGÊNCIA] Crash fatal no worker",
+    corpo: "Nova ocorrencia do erro: https://aresta-climb.sentry.io/issues/999/",
+    labels: ["emergencia"],
+  });
+
+  assertEquals(resDuplicada.sucesso, true);
+  assertEquals(resDuplicada.statusHttp, 201);
+  assertEquals(resDuplicada.numeroIssue, 1);
+  assertEquals(resDuplicada.urlIssue, "https://github.com/aresta-climb/aresta_backend/issues/1");
+  assertEquals(resDuplicada.comentarioAdicionado, true);
+  assertEquals(githubFake.issuesCriadas.length, 1);
+  assertEquals(githubFake.comentariosAdicionados.length, 1);
+  assertEquals(githubFake.comentariosAdicionados[0].repositorio, "aresta-climb/aresta_backend");
+  assertEquals(githubFake.comentariosAdicionados[0].numeroIssue, 1);
+  assertEquals(
+    githubFake.comentariosAdicionados[0].corpo,
+    "### 🔄 Nova Ocorrência Detectada\n\nNova ocorrencia do erro: https://aresta-climb.sentry.io/issues/999/",
+  );
 
   const resSync = await githubFake.sincronizarEstadoIssuePorIdSentry({
     clientId: "client-id",

@@ -1605,12 +1605,17 @@ Deno.test("ClienteGithubAppHttp: assina JWT RS256 (PKCS#8 e PKCS#1), obtem insta
   }\n-----END PRIVATE KEY-----`;
 
   const chamadasUrl: string[] = [];
+  const corposPost: Array<{ url: string; body: any }> = [];
+  let issue77Aberta = false;
   const fetchSimulado: typeof fetch = async (
     input: RequestInfo | URL,
     init?: RequestInit,
   ) => {
     const url = String(input);
     chamadasUrl.push(`${init?.method || "GET"} ${url}`);
+    if (init?.body) {
+      corposPost.push({ url, body: JSON.parse(String(init.body)) });
+    }
 
     if (url.endsWith("/access_tokens")) {
       return new Response(
@@ -1619,13 +1624,51 @@ Deno.test("ClienteGithubAppHttp: assina JWT RS256 (PKCS#8 e PKCS#1), obtem insta
       );
     }
     if (
+      url.endsWith(
+        "/repos/aresta-climb/aresta_backend/issues?state=open&per_page=100",
+      ) &&
+      (!init?.method || init?.method === "GET")
+    ) {
+      const itensAbertos: Array<Record<string, unknown>> = [
+        {
+          number: 12,
+          title: "🚨 [EMERGÊNCIA] Teste Real RSA",
+          pull_request: {
+            url: "https://api.github.com/repos/aresta-climb/aresta_backend/pulls/12",
+          },
+        },
+      ];
+      if (issue77Aberta) {
+        itensAbertos.push({
+          number: 77,
+          title: "🚨 [EMERGÊNCIA] Teste Real RSA",
+          html_url: "https://github.com/aresta-climb/aresta_backend/issues/77",
+        });
+      }
+      return new Response(JSON.stringify(itensAbertos), { status: 200 });
+    }
+    if (
       url.endsWith("/repos/aresta-climb/aresta_backend/issues") &&
       init?.method === "POST"
     ) {
+      issue77Aberta = true;
       return new Response(
         JSON.stringify({
           number: 77,
           html_url: "https://github.com/aresta-climb/aresta_backend/issues/77",
+        }),
+        { status: 201 },
+      );
+    }
+    if (
+      url.endsWith("/repos/aresta-climb/aresta_backend/issues/77/comments") &&
+      init?.method === "POST"
+    ) {
+      return new Response(
+        JSON.stringify({
+          id: 9991,
+          html_url:
+            "https://github.com/aresta-climb/aresta_backend/issues/77#issuecomment-9991",
         }),
         { status: 201 },
       );
@@ -1688,9 +1731,35 @@ Deno.test("ClienteGithubAppHttp: assina JWT RS256 (PKCS#8 e PKCS#1), obtem insta
   });
   assertEquals(resCriacao.sucesso, true);
   assertEquals(resCriacao.numeroIssue, 77);
+  assertEquals(resCriacao.comentarioAdicionado, false);
   assertEquals(
     resCriacao.urlIssue,
     "https://github.com/aresta-climb/aresta_backend/issues/77",
+  );
+
+  // Segunda chamada com o mesmo título quando a Issue #77 já está aberta -> adiciona comentário sem criar duplicata
+  const resReocorrencia = await githubHttp.criarIssueEmergencia({
+    clientId: "Iv1.123456",
+    privateKey: pemPkcs8,
+    installationId: "55555",
+    repositorio: "aresta-climb/aresta_backend",
+    titulo: "🚨 [EMERGÊNCIA] Teste Real RSA",
+    corpo: "Detalhes da 2ª ocorrência (Run 42635687605)",
+    labels: ["emergencia"],
+  });
+  assertEquals(resReocorrencia.sucesso, true);
+  assertEquals(resReocorrencia.numeroIssue, 77);
+  assertEquals(resReocorrencia.comentarioAdicionado, true);
+  assertEquals(
+    resReocorrencia.urlIssue,
+    "https://github.com/aresta-climb/aresta_backend/issues/77",
+  );
+  const postComentario = corposPost.find((c) =>
+    c.url.endsWith("/issues/77/comments")
+  );
+  assertEquals(
+    postComentario?.body?.body,
+    "### 🔄 Nova Ocorrência Detectada\n\nDetalhes da 2ª ocorrência (Run 42635687605)",
   );
 
   const resSync = await githubHttp.sincronizarEstadoIssuePorIdSentry({
@@ -1729,7 +1798,7 @@ Deno.test("ClienteGithubAppHttp: assina JWT RS256 (PKCS#8 e PKCS#1), obtem insta
   });
   assertEquals(resJobs.sucesso, true);
   assertEquals(resJobs.nomesStepsFalhos, ["Run Validator"]);
-  assertEquals(chamadasUrl.length, 9);
+  assertEquals(chamadasUrl.length, 13);
 });
 
 Deno.test("alertas-worker: serve icones WebP comprimidos em /icones/emergencia.webp e /icones/feedback_bugs.webp", async () => {
@@ -2495,6 +2564,9 @@ Deno.test("alertas-worker: classifica deploy.yml e erro interno de pr-*.yml do a
   env.clienteGithubApp = githubFake;
 
   // 1. Falha de workflow geral (ex: build_editor_linux.yml em aresta_db na main) -> Bug (issue 'bug' + #bugs + ntfy prioridade 3)
+  githubFake.definirStepsFalhosWorkflowRun(1001, [
+    "Run validation and parity tests",
+  ]);
   const corpoWfGeral = JSON.stringify({
     action: "completed",
     repository: { full_name: "aresta-climb/aresta_db" },
@@ -2529,15 +2601,24 @@ Deno.test("alertas-worker: classifica deploy.yml e erro interno de pr-*.yml do a
   assertEquals(resWfGeral.status, 200);
   assertEquals(githubFake.issuesCriadas.length, 1);
   assertEquals(githubFake.issuesCriadas[0].labels, ["bug"]);
+  assertStringIncludes(
+    githubFake.issuesCriadas[0].corpo,
+    "- **Etapa(s) com Erro:** Run validation and parity tests",
+  );
   assertEquals(discordFake.mensagensEnviadas.length, 1);
   assertEquals(
     discordFake.mensagensEnviadas[0].urlWebhook,
     env.DISCORD_WEBHOOK_BUGS_URL,
   );
+  assertStringIncludes(
+    discordFake.mensagensEnviadas[0].texto,
+    "• *Etapa(s) com Erro:* Run validation and parity tests",
+  );
   assertEquals(ntfyFake.notificacoesEnviadas.length, 1);
   assertEquals(ntfyFake.notificacoesEnviadas[0].prioridade, 3);
 
   // 2. Falha no deploy.yml do aresta_db -> Emergência (issue 'emergencia' + #emergencias + ntfy prioridade 5)
+  githubFake.definirStepsFalhosWorkflowRun(1002, ["Upload R2"]);
   const corpoDeployDb = JSON.stringify({
     action: "completed",
     repository: { full_name: "aresta-climb/aresta_db" },
@@ -2572,10 +2653,18 @@ Deno.test("alertas-worker: classifica deploy.yml e erro interno de pr-*.yml do a
   assertEquals(resDeployDb.status, 200);
   assertEquals(githubFake.issuesCriadas.length, 2);
   assertEquals(githubFake.issuesCriadas[1].labels, ["emergencia"]);
+  assertStringIncludes(
+    githubFake.issuesCriadas[1].corpo,
+    "- **Etapa(s) com Erro:** Upload R2",
+  );
   assertEquals(discordFake.mensagensEnviadas.length, 2);
   assertEquals(
     discordFake.mensagensEnviadas[1].urlWebhook,
     env.DISCORD_WEBHOOK_EMERGENCIAS_URL,
+  );
+  assertStringIncludes(
+    discordFake.mensagensEnviadas[1].texto,
+    "• *Etapa(s) com Erro:* Upload R2",
   );
   assertEquals(ntfyFake.notificacoesEnviadas.length, 2);
   assertEquals(ntfyFake.notificacoesEnviadas[1].prioridade, 5);
@@ -2664,6 +2753,74 @@ Deno.test("alertas-worker: classifica deploy.yml e erro interno de pr-*.yml do a
   );
   assertEquals(ntfyFake.notificacoesEnviadas.length, 3);
   assertEquals(ntfyFake.notificacoesEnviadas[2].prioridade, 5);
+
+  // 5. Segunda falha consecutiva do mesmo workflow (Build Editor Linux na main, Run 1005) enquanto Issue #1 está aberta ->
+  // comenta na Issue #1 existente (sem criar Issue #4 duplicada) e notifica Discord + ntfy com o link da Issue #1!
+  githubFake.definirStepsFalhosWorkflowRun(1005, ["Build AppImage"]);
+  const corpoWfGeralReocorrencia = JSON.stringify({
+    action: "completed",
+    repository: { full_name: "aresta-climb/aresta_db" },
+    workflow_run: {
+      id: 1005,
+      name: "Build Editor Linux",
+      path: ".github/workflows/build_editor_linux.yml",
+      head_branch: "main",
+      conclusion: "failure",
+      html_url: "https://github.com/aresta-climb/aresta_db/actions/runs/1005",
+      head_commit: {
+        message: "fix: tentativa 2 de build linux",
+        author: { name: "Renato" },
+      },
+    },
+  });
+  const sigWfGeral2 = await assinarHmacSha256Hex(
+    env.GITHUB_WEBHOOK_SECRET,
+    corpoWfGeralReocorrencia,
+  );
+  const resWfGeral2 = await worker.fetch(
+    new Request("https://alertas.arestaclimb.com/webhook/github", {
+      method: "POST",
+      headers: {
+        "x-github-event": "workflow_run",
+        "x-hub-signature-256": `sha256=${sigWfGeral2}`,
+      },
+      body: corpoWfGeralReocorrencia,
+    }),
+    env,
+  );
+  assertEquals(resWfGeral2.status, 200);
+  // Nenhuma nova issue criada (continua 3)
+  assertEquals(githubFake.issuesCriadas.length, 3);
+  // Mas adicionou 1 comentário na Issue #1 com todos os detalhes da 2ª ocorrência
+  assertEquals(githubFake.comentariosAdicionados.length, 1);
+  assertEquals(githubFake.comentariosAdicionados[0].numeroIssue, 1);
+  assertStringIncludes(
+    githubFake.comentariosAdicionados[0].corpo,
+    "### 🔄 Nova Ocorrência Detectada",
+  );
+  assertStringIncludes(
+    githubFake.comentariosAdicionados[0].corpo,
+    "- **Etapa(s) com Erro:** Build AppImage",
+  );
+  assertStringIncludes(
+    githubFake.comentariosAdicionados[0].corpo,
+    "- **Commit:** fix: tentativa 2 de build linux (Renato)",
+  );
+  assertStringIncludes(
+    githubFake.comentariosAdicionados[0].corpo,
+    "https://github.com/aresta-climb/aresta_db/actions/runs/1005",
+  );
+  // Notificou normalmente no Discord (#bugs) e no ntfy apontando para a Issue #1 existente
+  assertEquals(discordFake.mensagensEnviadas.length, 4);
+  assertStringIncludes(
+    discordFake.mensagensEnviadas[3].texto,
+    "https://github.com/aresta-climb/aresta_db/issues/1",
+  );
+  assertEquals(ntfyFake.notificacoesEnviadas.length, 4);
+  assertEquals(
+    ntfyFake.notificacoesEnviadas[3].urlClique,
+    "https://github.com/aresta-climb/aresta_db/issues/1",
+  );
 });
 
 Deno.test("alertas-worker: enfileira criacao de issue de bug nao-fatal do Sentry na FILA_RETENTATIVAS_ALERTAS e notifica Discord e ntfy imediatamente em caso de outage do GitHub", async () => {

@@ -210,7 +210,17 @@ export interface ResultadoCriarIssueGithub {
   statusHttp: number;
   numeroIssue?: number;
   urlIssue?: string;
+  comentarioAdicionado?: boolean;
   erro?: string;
+}
+
+/**
+ * Representa um comentário de nova ocorrência registrado em uma Issue existente no GitHub.
+ */
+export interface ComentarioIssueGithubRegistrado {
+  repositorio: string;
+  numeroIssue: number;
+  corpo: string;
 }
 
 /**
@@ -274,6 +284,7 @@ export interface InterfaceClienteGithubApp {
  */
 export class ClienteGithubAppFake implements InterfaceClienteGithubApp {
   public readonly issuesCriadas: OpcoesCriarIssueGithub[] = [];
+  public readonly comentariosAdicionados: ComentarioIssueGithubRegistrado[] = [];
   public readonly sincronizacoesEstado: OpcoesSincronizarEstadoIssueGithub[] = [];
   public readonly consultasStepsWorkflow: OpcoesObterStepsWorkflowGithub[] = [];
   private readonly stepsFalhosPorRunId = new Map<string, string[]>();
@@ -305,6 +316,25 @@ export class ClienteGithubAppFake implements InterfaceClienteGithubApp {
       };
     }
 
+    const indiceExistente = this.issuesCriadas.findIndex(
+      (issue) => issue.repositorio === opcoes.repositorio && issue.titulo === opcoes.titulo,
+    );
+    if (indiceExistente !== -1) {
+      const numeroIssueExistente = indiceExistente + 1;
+      this.comentariosAdicionados.push({
+        repositorio: opcoes.repositorio,
+        numeroIssue: numeroIssueExistente,
+        corpo: `### 🔄 Nova Ocorrência Detectada\n\n${opcoes.corpo}`,
+      });
+      return {
+        sucesso: true,
+        statusHttp: 201,
+        numeroIssue: numeroIssueExistente,
+        urlIssue: `https://github.com/${opcoes.repositorio}/issues/${numeroIssueExistente}`,
+        comentarioAdicionado: true,
+      };
+    }
+
     this.issuesCriadas.push({ ...opcoes, labels: [...opcoes.labels] });
     const numeroIssue = this.issuesCriadas.length;
 
@@ -313,6 +343,7 @@ export class ClienteGithubAppFake implements InterfaceClienteGithubApp {
       statusHttp: 201,
       numeroIssue,
       urlIssue: `https://github.com/${opcoes.repositorio}/issues/${numeroIssue}`,
+      comentarioAdicionado: false,
     };
   }
 
@@ -366,6 +397,7 @@ export class ClienteGithubAppFake implements InterfaceClienteGithubApp {
 
   limpar(): void {
     this.issuesCriadas.length = 0;
+    this.comentariosAdicionados.length = 0;
     this.sincronizacoesEstado.length = 0;
     this.consultasStepsWorkflow.length = 0;
     this.stepsFalhosPorRunId.clear();
