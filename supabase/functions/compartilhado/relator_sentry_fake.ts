@@ -15,6 +15,7 @@ export interface OpcoesRelatoSentry {
   dsn?: string;
   servico: string;
   ambiente?: string;
+  nivel?: "error" | "fatal";
   requisicao?: Request;
   tags?: Record<string, string>;
   extras?: Record<string, unknown>;
@@ -31,6 +32,7 @@ export interface EventoCapturadoSentry {
   pilha?: string;
   servico: string;
   ambiente: string;
+  nivel: "error" | "fatal";
   urlRequisicao?: string;
   metodoRequisicao?: string;
   cabecalhosSanitizados?: Record<string, string>;
@@ -106,6 +108,7 @@ export class RelatorSentryFake implements InterfaceRelatorSentry {
         pilha,
         servico: opcoes.servico,
         ambiente: opcoes.ambiente ?? "producao",
+        nivel: opcoes.nivel ?? "error",
         urlRequisicao: opcoes.requisicao?.url,
         metodoRequisicao: opcoes.requisicao?.method,
         cabecalhosSanitizados: opcoes.requisicao

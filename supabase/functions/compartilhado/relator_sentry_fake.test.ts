@@ -48,6 +48,17 @@ Deno.test("RelatorSentryFake: armazena evento com cabecalhos sanitizados e agend
   assertEquals(ev.cabecalhosSanitizados?.["user-agent"], "ArestaApp/0.5.6");
   assertEquals(ev.tags, { regiao: "gru" });
   assertEquals(ev.extras, { tentativa: 2 });
+  assertEquals(ev.nivel, "error");
+});
+
+Deno.test("RelatorSentryFake: preserva o nivel fatal quando informado nas opcoes", async () => {
+  const fake = new RelatorSentryFake();
+  await fake.relatarErro(new Error("Emergencia fatal"), {
+    dsn: "https://public@o1.ingest.sentry.io/123",
+    servico: "fixalog-worker",
+    nivel: "fatal",
+  });
+  assertEquals(fake.eventos[0].nivel, "fatal");
 });
 
 Deno.test("RelatorSentryFake: ignora envio quando DSN esta vazio e respeita simularFalhaRede e limpar", async () => {

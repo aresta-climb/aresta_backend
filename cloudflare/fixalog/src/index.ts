@@ -20,6 +20,7 @@ import {
   CABECALHO_CACHE_MIDIA_IMUTAVEL,
   extrairArquivoDoEpub,
   extrairIndiceZipEpub,
+  lerBytesEntradaDoR2,
   MapaIndiceZipEpub,
   servirMidiaByteRangeDoR2,
 } from "./extrator_indice_epub.ts";
@@ -28,11 +29,13 @@ import {
   AmbienteFixalog,
   BancoD1Fixalog,
   BucketR2Fixalog,
+  CacheBordaFixalog,
   ContextoExecucaoFixalog,
 } from "./fakes/ambiente_fixalog_fake.ts";
 import {
   dispararAlertaSegurancaFixalog,
   executarModeracaoAssincronaLaudo,
+  verificarTokenHmacCsamScan,
 } from "./moderador_midia_ia.ts";
 import {
   MaterialAnexoXhtml,
@@ -49,10 +52,42 @@ import {
 
 export const cabecalhosCorsFixalog = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, POST, PUT, OPTIONS",
+  "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
   "Access-Control-Allow-Headers":
     "Content-Type, Authorization, X-Firebase-AppCheck, Range",
 };
+
+function obterCacheBorda(env: AmbienteFixalog): CacheBordaFixalog | null {
+  if (env.cacheBorda) {
+    return env.cacheBorda;
+  }
+  const globalCaches = (
+    globalThis as unknown as {
+      caches?: { default?: CacheBordaFixalog };
+    }
+  ).caches;
+  return globalCaches?.default ?? null;
+}
+
+async function invalidarCacheBordaLaudo(
+  env: AmbienteFixalog,
+  idSessao: string,
+  maxVersao = 10,
+): Promise<void> {
+  const cache = obterCacheBorda(env);
+  if (!cache) return;
+  const idCodificado = encodeURIComponent(idSessao);
+  const urls = [
+    `https://fixalog.app/v/${idCodificado}`,
+    `https://fixalog.app/v/${idCodificado}/epub`,
+    `https://fixalog.app/sitemap.xml`,
+  ];
+  for (let v = 1; v <= Math.max(1, maxVersao); v++) {
+    urls.push(`https://fixalog.app/v/${idCodificado}?v=${v}`);
+    urls.push(`https://fixalog.app/v/${idCodificado}/epub?v=${v}`);
+  }
+  await Promise.all(urls.map((u) => cache.delete(u).catch(() => false)));
+}
 
 function respostaJson(corpo: unknown, status = 200): Response {
   return new Response(JSON.stringify(corpo), {
@@ -82,7 +117,7 @@ function extrairMetadadosXhtml(xhtml: string): {
     : "manutencao_ferragens";
 
   const materiais = new Set<string>();
-  const regexMat = /materiais\/([^/"]+)\/relatorio\.xhtml/g;
+  const regexMat = /materiais\/([^/"]+)\/(?:OEBPS\/)?relatorio\.xhtml/g;
   let m: RegExpExecArray | null;
   while ((m = regexMat.exec(xhtml)) !== null) {
     materiais.add(m[1]);
@@ -119,12 +154,12 @@ async function garantirColunasProgressoNoD1(
   }
 }
 
-export const PRAZO_EXPIRACAO_STAGING_MS = 14 * 24 * 60 * 60 * 1000;
+export const PRAZO_EXPIRACAO_STAGING_MS = 7 * 24 * 60 * 60 * 1000;
 
 /**
  * Remove do bucket R2 todos os blocos temporários (`staging/`) cuja data de
- * upload tenha ultrapassado 14 dias, preservando uploads parciais de expedições
- * em andamento com menos de 14 dias.
+ * upload tenha ultrapassado 7 dias, preservando uploads parciais pausados ou
+ * cancelados pelo usuário com menos de 7 dias.
  */
 export async function limparStagingExpiradoNoR2(
   bucket: BucketR2Fixalog,
@@ -341,7 +376,11 @@ async function persistirVersaoEpubValidada(params: {
     userId,
     epubBytes,
     indicePreCalculado: indiceZip,
+  }).then(async (res) => {
+    await invalidarCacheBordaLaudo(env, idSessao, novaVersao);
+    return res;
   });
+  await invalidarCacheBordaLaudo(env, idSessao, novaVersao);
   if (ctx) {
     ctx.waitUntil(tarefaModeracao);
   } else {
@@ -377,11 +416,121 @@ export async function processarRequisicaoFixalog(
     return respostaJson({ status: "operacional", servico: "fixalog-worker" });
   }
 
+  if (req.method === "GET" && path === "/robots.txt") {
+    const robotsTxt = [
+      "User-agent: *",
+      "Allow: /v/",
+      "Disallow: /api/",
+      "Disallow: /__csam_scan/",
+      "Sitemap: https://fixalog.app/sitemap.xml",
+      "",
+    ].join("\n");
+    return new Response(robotsTxt, {
+      status: 200,
+      headers: {
+        "Content-Type": "text/plain; charset=utf-8",
+        "Cache-Control": "public, max-age=86400",
+      },
+    });
+  }
+
   if (!env.DB || !env.LAUDOS_BUCKET) {
     return respostaJson(
       { erro: "Bindings D1 ou R2 não configurados no Worker." },
       500,
     );
+  }
+
+  if (req.method === "GET" && path === "/sitemap.xml") {
+    const cacheBorda = obterCacheBorda(env);
+    const cacheSitemap = await cacheBorda?.match(req.url);
+    if (cacheSitemap) {
+      return cacheSitemap;
+    }
+
+    const { results } = await env.DB.prepare(
+      "SELECT l.id_sessao, l.atualizado_em FROM laudos_fixalog l INNER JOIN versoes_laudo_fixalog v ON l.id_sessao = v.id_sessao AND l.versao_atual = v.versao WHERE v.status_moderacao = 'ativo' ORDER BY l.atualizado_em DESC",
+    ).all<{ id_sessao: string; atualizado_em: string }>();
+
+    const urlsXml = results
+      .map(
+        (item) =>
+          `  <url>\n    <loc>https://fixalog.app/v/${encodeURIComponent(
+            item.id_sessao,
+          )}</loc>\n    <lastmod>${item.atualizado_em}</lastmod>\n  </url>`,
+      )
+      .join("\n");
+
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urlsXml}\n</urlset>`;
+    const resSitemap = new Response(xml, {
+      status: 200,
+      headers: {
+        "Content-Type": "application/xml; charset=utf-8",
+        "Cache-Control": "public, max-age=3600, s-maxage=3600",
+      },
+    });
+    await cacheBorda?.put(req.url, resSitemap.clone());
+    return resSitemap;
+  }
+
+  // Rota interna assinada por HMAC para inspeção de imagens pelo Cloudflare CSAM Scanning Tool
+  const matchCsamScan = path.match(/^\/__csam_scan\/([^/]+)\/v(\d+)\/(.+)$/);
+  if (req.method === "GET" && matchCsamScan) {
+    const idSessao = decodeURIComponent(matchCsamScan[1]);
+    const versao = Number.parseInt(matchCsamScan[2], 10);
+    const caminhoInterno = matchCsamScan[3]
+      .split("/")
+      .map(decodeURIComponent)
+      .join("/");
+    const token = url.searchParams.get("token") ?? "";
+
+    const tokenValido = await verificarTokenHmacCsamScan({
+      idSessao,
+      versao,
+      caminho: caminhoInterno,
+      token,
+      segredo: env.SENTRY_DSN,
+    });
+    if (!tokenValido) {
+      return new Response("Token HMAC de inspeção CSAM inválido.", {
+        status: 403,
+      });
+    }
+
+    const versaoRow = await env.DB.prepare(
+      "SELECT * FROM versoes_laudo_fixalog WHERE id_sessao = ? AND versao = ?",
+    )
+      .bind(idSessao, versao)
+      .first<LinhaVersoesLaudoFixalog>();
+    if (!versaoRow) {
+      return new Response("Versão não encontrada.", { status: 404 });
+    }
+
+    const indice = JSON.parse(versaoRow.indices_zip_json) as MapaIndiceZipEpub;
+    const entrada = indice[caminhoInterno];
+    if (!entrada) {
+      return new Response("Entrada de imagem não encontrada no índice.", {
+        status: 404,
+      });
+    }
+
+    const bytesImg = await lerBytesEntradaDoR2({
+      bucket: env.LAUDOS_BUCKET,
+      r2Key: versaoRow.r2_key,
+      entrada,
+    });
+    if (!bytesImg) {
+      return new Response("Arquivo não encontrado no R2.", { status: 404 });
+    }
+
+    return new Response(new Uint8Array(bytesImg), {
+      status: 200,
+      headers: {
+        "Content-Type": entrada.mimeType,
+        "Content-Length": String(bytesImg.byteLength),
+        "Cache-Control": "no-store",
+      },
+    });
   }
 
   // 1. POST /api/v1/chaves
@@ -750,6 +899,65 @@ export async function processarRequisicaoFixalog(
     return respostaJson(resposta, resultado.statusHttp);
   }
 
+  // 5b. DELETE /api/v1/laudos/:id (exclusão pelo autor no R2, D1 e Cache de Borda)
+  if (req.method === "DELETE" && matchUpload) {
+    if (!validarTokenAppCheck(req.headers.get("X-Firebase-AppCheck"))) {
+      return respostaJson(
+        { erro: "Token Firebase App Check ausente ou inválido." },
+        401,
+      );
+    }
+    const usuario = extrairUsuarioJwtSupabase(req.headers.get("Authorization"));
+    if (!usuario) {
+      return respostaJson({ erro: "JWT do Supabase ausente ou inválido." }, 401);
+    }
+
+    const idSessao = decodeURIComponent(matchUpload[1]);
+    const laudoExistente = await env.DB.prepare(
+      "SELECT * FROM laudos_fixalog WHERE id_sessao = ?",
+    )
+      .bind(idSessao)
+      .first<LinhaLaudosFixalog>();
+
+    if (!laudoExistente) {
+      return respostaJson({ erro: "Laudo não encontrado." }, 404);
+    }
+    if (laudoExistente.user_id !== usuario.userId) {
+      return respostaJson(
+        { erro: "Apenas a conta autora original pode remover este laudo." },
+        403,
+      );
+    }
+
+    const objetosLaudo = await env.LAUDOS_BUCKET.list({
+      prefix: `laudos/${idSessao}/`,
+    });
+    const objetosStaging = await env.LAUDOS_BUCKET.list({
+      prefix: `staging/${idSessao}/`,
+    });
+    const chavesParaRemover = [
+      ...objetosLaudo.objects.map((o) => o.key),
+      ...objetosStaging.objects.map((o) => o.key),
+    ];
+    if (chavesParaRemover.length > 0) {
+      await env.LAUDOS_BUCKET.delete(chavesParaRemover);
+    }
+
+    await env.DB.prepare("DELETE FROM versoes_laudo_fixalog WHERE id_sessao = ?")
+      .bind(idSessao)
+      .run();
+    await env.DB.prepare("DELETE FROM laudos_fixalog WHERE id_sessao = ?")
+      .bind(idSessao)
+      .run();
+    await invalidarCacheBordaLaudo(
+      env,
+      idSessao,
+      laudoExistente.versao_atual ?? 10,
+    );
+
+    return respostaJson({ removido: true, id_sessao: idSessao }, 200);
+  }
+
   // 6. POST /api/v1/laudos/:id/denunciar
   const matchDenuncia = path.match(/^\/api\/v1\/laudos\/([^/]+)\/denunciar$/);
   if (req.method === "POST" && matchDenuncia) {
@@ -773,6 +981,8 @@ export async function processarRequisicaoFixalog(
       .bind("suspenso", `DENUNCIA:${body.motivo}`, idSessao, versaoAlvo)
       .run();
 
+    await invalidarCacheBordaLaudo(env, idSessao, versaoAlvo);
+
     await dispararAlertaSegurancaFixalog({
       env,
       idSessao,
@@ -793,6 +1003,15 @@ export async function processarRequisicaoFixalog(
   // 7. GET /v/:id/midias/*
   const matchMidia = path.match(/^\/v\/([^/]+)\/midias\/(.+)$/);
   if (req.method === "GET" && matchMidia) {
+    const cabecalhoRange = req.headers.get("Range");
+    const cacheBorda = obterCacheBorda(env);
+    if (!cabecalhoRange) {
+      const hitMidia = await cacheBorda?.match(req.url);
+      if (hitMidia) {
+        return hitMidia;
+      }
+    }
+
     const idSessao = decodeURIComponent(matchMidia[1]);
     const caminhoInterno = decodeURIComponent(matchMidia[2]);
 
@@ -834,12 +1053,16 @@ export async function processarRequisicaoFixalog(
       });
     }
 
-    return await servirMidiaByteRangeDoR2({
+    const respostaMidia = await servirMidiaByteRangeDoR2({
       bucket: env.LAUDOS_BUCKET,
       r2Key: versao.r2_key,
       entrada,
-      cabecalhoRange: req.headers.get("Range"),
+      cabecalhoRange,
     });
+    if (!cabecalhoRange && respostaMidia.status === 200) {
+      await cacheBorda?.put(req.url, respostaMidia.clone());
+    }
+    return respostaMidia;
   }
 
   // 8. GET /v/:id/epub e GET /v/:id/pdf
@@ -847,6 +1070,13 @@ export async function processarRequisicaoFixalog(
   if (req.method === "GET" && matchDownload) {
     const idSessao = decodeURIComponent(matchDownload[1]);
     const formato = matchDownload[2];
+    const cacheBorda = obterCacheBorda(env);
+    if (formato === "epub") {
+      const hitEpub = await cacheBorda?.match(req.url);
+      if (hitEpub) {
+        return hitEpub;
+      }
+    }
 
     const laudo = await env.DB.prepare(
       "SELECT * FROM laudos_fixalog WHERE id_sessao = ?",
@@ -876,7 +1106,7 @@ export async function processarRequisicaoFixalog(
     }
 
     if (formato === "epub") {
-      return new Response(await obj.arrayBuffer(), {
+      const resEpub = new Response(await obj.arrayBuffer(), {
         status: 200,
         headers: {
           "Content-Type": "application/epub+zip",
@@ -884,6 +1114,8 @@ export async function processarRequisicaoFixalog(
           "Cache-Control": CABECALHO_CACHE_MIDIA_IMUTAVEL,
         },
       });
+      await cacheBorda?.put(req.url, resEpub.clone());
+      return resEpub;
     }
 
     return new Response(null, {
@@ -897,6 +1129,12 @@ export async function processarRequisicaoFixalog(
   // 9. GET /v/:id
   const matchPagina = path.match(/^\/v\/([^/]+)$/);
   if (req.method === "GET" && matchPagina) {
+    const cacheBorda = obterCacheBorda(env);
+    const hitPagina = await cacheBorda?.match(req.url);
+    if (hitPagina) {
+      return hitPagina;
+    }
+
     const idSessao = decodeURIComponent(matchPagina[1]);
     const laudo = await env.DB.prepare(
       "SELECT * FROM laudos_fixalog WHERE id_sessao = ?",
@@ -968,37 +1206,44 @@ export async function processarRequisicaoFixalog(
 
     let xhtmlOriginal = "<body></body>";
     if (entradaXhtml) {
-      const objXhtml = await env.LAUDOS_BUCKET.get(versaoExibida.r2_key, {
-        range: { offset: entradaXhtml.offset, length: entradaXhtml.length },
+      const bytesXhtml = await lerBytesEntradaDoR2({
+        bucket: env.LAUDOS_BUCKET,
+        r2Key: versaoExibida.r2_key,
+        entrada: entradaXhtml,
       });
-      if (objXhtml) {
-        xhtmlOriginal = new TextDecoder().decode(await objXhtml.arrayBuffer());
+      if (bytesXhtml) {
+        xhtmlOriginal = new TextDecoder().decode(bytesXhtml);
       }
     }
 
     let cssOriginal = "";
     if (entradaCss) {
-      const objCss = await env.LAUDOS_BUCKET.get(versaoExibida.r2_key, {
-        range: { offset: entradaCss.offset, length: entradaCss.length },
+      const bytesCss = await lerBytesEntradaDoR2({
+        bucket: env.LAUDOS_BUCKET,
+        r2Key: versaoExibida.r2_key,
+        entrada: entradaCss,
       });
-      if (objCss) {
-        cssOriginal = new TextDecoder().decode(await objCss.arrayBuffer());
+      if (bytesCss) {
+        cssOriginal = new TextDecoder().decode(bytesCss);
       }
     }
 
     const materiaisAnexosXhtml: MaterialAnexoXhtml[] = [];
     for (const [caminhoZip, entradaMat] of Object.entries(indice)) {
       const matchMat = caminhoZip.match(
-        /^OEBPS\/materiais\/([^/]+)\/(?:OEBPS\/)?relatorio\.xhtml$/,
+        /^(OEBPS\/materiais\/([^/]+)(?:\/OEBPS)?)\/relatorio\.xhtml$/,
       );
       if (matchMat) {
-        const objMat = await env.LAUDOS_BUCKET.get(versaoExibida.r2_key, {
-          range: { offset: entradaMat.offset, length: entradaMat.length },
+        const bytesMat = await lerBytesEntradaDoR2({
+          bucket: env.LAUDOS_BUCKET,
+          r2Key: versaoExibida.r2_key,
+          entrada: entradaMat,
         });
-        if (objMat) {
+        if (bytesMat) {
           materiaisAnexosXhtml.push({
-            idMaterial: matchMat[1],
-            xhtml: new TextDecoder().decode(await objMat.arrayBuffer()),
+            idMaterial: matchMat[2],
+            xhtml: new TextDecoder().decode(bytesMat),
+            prefixoInternoOebps: matchMat[1],
           });
         }
       }
@@ -1015,12 +1260,15 @@ export async function processarRequisicaoFixalog(
       materiaisAnexosXhtml,
     });
 
-    return new Response(html, {
+    const respostaPagina = new Response(html, {
       status: 200,
       headers: {
         "Content-Type": "text/html; charset=utf-8",
+        "Cache-Control": CABECALHO_CACHE_MIDIA_IMUTAVEL,
       },
     });
+    await cacheBorda?.put(req.url, respostaPagina.clone());
+    return respostaPagina;
   }
 
   return respostaJson({ erro: "Rota não encontrada." }, 404);

@@ -77,6 +77,15 @@ export interface ContextoExecucaoFixalog {
 }
 
 /**
+ * Interface de Cache de Borda (`caches.default`) do Cloudflare Workers.
+ */
+export interface CacheBordaFixalog {
+  match(chaveUrl: string): Promise<Response | undefined>;
+  put(chaveUrl: string, resposta: Response): Promise<void>;
+  delete(chaveUrl: string): Promise<boolean>;
+}
+
+/**
  * Bindings e dependências de ambiente do Worker `fixalog`.
  */
 export interface AmbienteFixalog {
@@ -85,6 +94,7 @@ export interface AmbienteFixalog {
   AI?: WorkersAiFixalog;
   ALERTA_URL?: string;
   SENTRY_DSN?: string;
+  cacheBorda?: CacheBordaFixalog;
   fetchExterno?: (url: string, init?: RequestInit) => Promise<Response>;
 }
 
@@ -225,6 +235,29 @@ export class BancoD1FixalogFake implements BancoD1Fixalog {
         return { success: true };
       }
 
+      if (sqlUpper.includes("DELETE FROM VERSOES_LAUDO_FIXALOG WHERE ID_SESSAO = ? AND VERSAO = ?")) {
+        const idSessao = String(params[0]);
+        const versao = Number(params[1]);
+        this.versoes.delete(BancoD1FixalogFake.chaveVersao(idSessao, versao));
+        return { success: true };
+      }
+
+      if (sqlUpper.includes("DELETE FROM VERSOES_LAUDO_FIXALOG WHERE ID_SESSAO = ?")) {
+        const idSessao = String(params[0]);
+        for (const k of Array.from(this.versoes.keys())) {
+          if (k.startsWith(`${idSessao}#v`)) {
+            this.versoes.delete(k);
+          }
+        }
+        return { success: true };
+      }
+
+      if (sqlUpper.includes("DELETE FROM LAUDOS_FIXALOG WHERE ID_SESSAO = ?")) {
+        const idSessao = String(params[0]);
+        this.laudos.delete(idSessao);
+        return { success: true };
+      }
+
       return { success: true };
     };
 
@@ -249,6 +282,22 @@ export class BancoD1FixalogFake implements BancoD1Fixalog {
           }
         }
         return [{ total: sessoesDistintas.size }] as unknown as T[];
+      }
+
+      if (sqlUpper.includes("INNER JOIN VERSOES_LAUDO_FIXALOG") && sqlUpper.includes("STATUS_MODERACAO = 'ATIVO'")) {
+        const ativos: Array<{ id_sessao: string; atualizado_em: string }> = [];
+        for (const l of this.laudos.values()) {
+          const v = this.versoes.get(
+            BancoD1FixalogFake.chaveVersao(l.id_sessao, l.versao_atual ?? 1),
+          );
+          if (v && v.status_moderacao === "ativo") {
+            ativos.push({
+              id_sessao: l.id_sessao,
+              atualizado_em: l.atualizado_em,
+            });
+          }
+        }
+        return ativos as unknown as T[];
       }
 
       if (sqlUpper.includes("FROM LAUDOS_FIXALOG WHERE ID_SESSAO")) {
@@ -398,6 +447,8 @@ export class WorkersAiFixalogFake implements WorkersAiFixalog {
   respostasConfiguradas: string[] = [];
   respostaPadrao = "SAFE";
   deveFalhar = false;
+  exigirAgreeNaPrimeiraChamada = false;
+  licencaAceita = false;
   readonly chamadas: Array<{ modelo: string; entrada: Record<string, unknown> }> = [];
 
   async run(
@@ -405,6 +456,15 @@ export class WorkersAiFixalogFake implements WorkersAiFixalog {
     entrada: Record<string, unknown>,
   ): Promise<{ response?: string; description?: string }> {
     this.chamadas.push({ modelo, entrada });
+    if (entrada.prompt === "agree") {
+      this.licencaAceita = true;
+      return { response: "Thank you for agreeing" };
+    }
+    if (this.exigirAgreeNaPrimeiraChamada && !this.licencaAceita) {
+      throw new Error(
+        "AiError: 5016: Prior to using this model, you must submit the prompt 'agree'.",
+      );
+    }
     if (this.deveFalhar) {
       throw new Error("Falha simulada no Workers AI.");
     }
@@ -417,12 +477,49 @@ export class WorkersAiFixalogFake implements WorkersAiFixalog {
 }
 
 /**
+ * Fake determinístico em memória do Cache de Borda (`caches.default`) da Cloudflare.
+ */
+export class CacheBordaFixalogFake implements CacheBordaFixalog {
+  readonly entradas = new Map<string, { status: number; headers: Array<[string, string]>; body: Uint8Array }>();
+   leiturasHit = 0;
+
+  async match(chaveUrl: string): Promise<Response | undefined> {
+    const item = this.entradas.get(chaveUrl);
+    if (!item) {
+      return undefined;
+    }
+    this.leiturasHit++;
+    return new Response(new Uint8Array(item.body), {
+      status: item.status,
+      headers: item.headers,
+    });
+  }
+
+  async put(chaveUrl: string, resposta: Response): Promise<void> {
+    const clone = resposta.clone();
+    const body = new Uint8Array(await clone.arrayBuffer());
+    const headers: Array<[string, string]> = [];
+    clone.headers.forEach((v, k) => headers.push([k, v]));
+    this.entradas.set(chaveUrl, {
+      status: clone.status,
+      headers,
+      body,
+    });
+  }
+
+  async delete(chaveUrl: string): Promise<boolean> {
+    return this.entradas.delete(chaveUrl);
+  }
+}
+
+/**
  * Construtor utilitário de ambiente Fake completo para testes do Worker `fixalog`.
  */
 export class AmbienteFixalogFake implements AmbienteFixalog {
   readonly DB = new BancoD1FixalogFake();
   readonly LAUDOS_BUCKET = new BucketR2FixalogFake();
   readonly AI = new WorkersAiFixalogFake();
+  readonly cacheBorda = new CacheBordaFixalogFake();
   readonly ALERTA_URL = "https://alertas.arestaclimb.com/api/v1/alertas";
   SENTRY_DSN?: string = "https://chave_publica_fake@o1.ingest.us.sentry.io/4512313384239104";
   readonly requisicoesExternas: Array<{ url: string; init?: RequestInit }> = [];

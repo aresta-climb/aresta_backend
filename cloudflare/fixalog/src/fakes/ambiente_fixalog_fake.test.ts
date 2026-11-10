@@ -210,4 +210,14 @@ Deno.test("AmbienteFixalogFake: R2 suporta leitura integral e parcial (Byte-Rang
   );
   await env.aguardarTarefasBackground();
   assertEquals(concluido, true);
+
+  await env.cacheBorda.put(
+    "https://fixalog.app/v/id",
+    new Response("HTML", { status: 200, headers: { "X-Teste": "1" } }),
+  );
+  const hit = await env.cacheBorda.match("https://fixalog.app/v/id");
+  assertEquals(await hit?.text(), "HTML");
+  assertEquals(env.cacheBorda.leiturasHit, 1);
+  assertEquals(await env.cacheBorda.delete("https://fixalog.app/v/id"), true);
+  assertEquals(await env.cacheBorda.match("https://fixalog.app/v/id"), undefined);
 });

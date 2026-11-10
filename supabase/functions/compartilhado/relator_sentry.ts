@@ -183,7 +183,7 @@ export class RelatorSentry implements InterfaceRelatorSentry {
         event_id: eventId,
         timestamp: enviadoEm,
         platform: "javascript",
-        level: "error",
+        level: opcoes.nivel ?? "error",
         environment: opcoes.ambiente ?? "producao",
         server_name: opcoes.servico,
         tags: {

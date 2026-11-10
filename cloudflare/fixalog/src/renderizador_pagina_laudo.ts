@@ -14,6 +14,7 @@ import {
 export interface MaterialAnexoXhtml {
   idMaterial: string;
   xhtml: string;
+  prefixoInternoOebps?: string;
 }
 
 function escaparHtml(texto: string): string {
@@ -53,10 +54,20 @@ function extrairResumoMidiasDoIndice(indicesZipJson: string): {
   let totalFotos = 0;
   let totalVideos = 0;
   let primeiraFotoCaminho: string | null = null;
+  let primeiroPosterCaminho: string | null = null;
 
   for (const chave of Object.keys(indice)) {
     const lower = chave.toLowerCase();
-    if (!lower.includes("midia/")) {
+    if (!/midias?\//.test(lower)) {
+      continue;
+    }
+    if (/_kf_\d+s\.jpe?g$/.test(lower)) {
+      continue;
+    }
+    if (lower.endsWith("_poster.jpg")) {
+      if (!primeiroPosterCaminho) {
+        primeiroPosterCaminho = chave;
+      }
       continue;
     }
     if (
@@ -74,11 +85,15 @@ function extrairResumoMidiasDoIndice(indicesZipJson: string): {
     }
   }
 
-  return { totalFotos, totalVideos, primeiraFotoCaminho };
+  return {
+    totalFotos,
+    totalVideos,
+    primeiraFotoCaminho: primeiraFotoCaminho ?? primeiroPosterCaminho,
+  };
 }
 
 /**
- * Reescreve os caminhos internos de mídia (`midia/...`) e links de materiais (`materiais/<uuid>/relatorio.xhtml`)
+ * Reescreve os caminhos internos de mídia (`midia/...` ou `midias/...`) e links de materiais (`materiais/<uuid>/relatorio.xhtml`)
  * do `OEBPS/relatorio.xhtml` para apontarem para as rotas Byte-Range e páginas públicas do Worker.
  */
 export function reescreverCaminhosMidiaXhtml(params: {
@@ -90,16 +105,16 @@ export function reescreverCaminhosMidiaXhtml(params: {
   const { xhtml, idSessao, versao, prefixoInternoOebps = "OEBPS" } = params;
   const idSeguro = encodeURIComponent(idSessao);
 
-  // Reescreve src="midia/..." e poster="midia/..."
+  // Reescreve src="midia(s)/...", poster="midia(s)/..." e href="midia(s)/..."
   let transformado = xhtml.replace(
-    /\b(src|poster)="midia\/([^"]+)"/g,
-    (_m, attr, arquivo) =>
-      `${attr}="/v/${idSeguro}/midias/${prefixoInternoOebps}/midia/${arquivo}?v=${versao}"`,
+    /\b(src|poster|href)="(midias?)\/([^"]+)"/g,
+    (_m, attr, pastaMidia, arquivo) =>
+      `${attr}="/v/${idSeguro}/midias/${prefixoInternoOebps}/${pastaMidia}/${arquivo}?v=${versao}"`,
   );
 
-  // Reescreve links de materiais aninhados href="materiais/<uuid>/relatorio.xhtml" -> href="/v/<uuid>"
+  // Reescreve links de materiais aninhados href="materiais/<uuid>/(OEBPS/)?relatorio.xhtml" -> href="/v/<uuid>"
   transformado = transformado.replace(
-    /\bhref="materiais\/([^/"]+)\/relatorio\.xhtml"/g,
+    /\bhref="materiais\/([^/"]+)\/(?:OEBPS\/)?relatorio\.xhtml"/g,
     (_m, uuidMat) => `href="/v/${encodeURIComponent(uuidMat)}"`,
   );
 
@@ -185,7 +200,9 @@ export function renderizarPaginaPublicaLaudo(params: {
           xhtml: mat.xhtml,
           idSessao: laudo.id_sessao,
           versao: versaoExibida.versao,
-          prefixoInternoOebps: `OEBPS/materiais/${encodeURIComponent(mat.idMaterial)}`,
+          prefixoInternoOebps:
+            mat.prefixoInternoOebps ??
+            `OEBPS/materiais/${encodeURIComponent(mat.idMaterial)}`,
         });
         const matchBodyMat = reescritoMat.match(
           /<body[^>]*>([\s\S]*?)<\/body>/i,
@@ -197,17 +214,35 @@ export function renderizarPaginaPublicaLaudo(params: {
   </section>`
       : "";
 
+  const jsonLd = JSON.stringify({
+    "@context": "https://schema.org",
+    "@type": "TechArticle",
+    headline: laudo.titulo,
+    datePublished: laudo.criado_em,
+    dateModified: versaoExibida.criado_em,
+    version: String(versaoExibida.versao),
+    author: {
+      "@type": "Person",
+      name: versaoExibida.nome_mantenedor,
+    },
+    mainEntityOfPage: urlCanonica,
+  });
+
   return `<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="robots" content="index, follow" />
+  <meta name="description" content="${ogDescription}" />
+  <link rel="canonical" href="${urlCanonica}" />
   <title>${escaparHtml(laudo.titulo)} — Fixalog v${versaoExibida.versao}</title>
   <meta property="og:type" content="article" />
   <meta property="og:title" content="${ogTitle}" />
   <meta property="og:description" content="${ogDescription}" />
   <meta property="og:url" content="${urlCanonica}" />
   <meta name="twitter:card" content="summary_large_image" />${metaOgImage}
+  <script type="application/ld+json">${jsonLd}</script>
   <style>
     ${cssOriginal}
     .barra-verificacao-fixalog {
@@ -342,6 +377,7 @@ export function renderizarPaginaEmAnaliseLaudo(params: {
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="robots" content="noindex, nofollow" />
   <meta http-equiv="refresh" content="3" />
   <title>Em análise: ${escaparHtml(laudo.titulo)} — Fixalog v${versaoExibida.versao}</title>
   <style>

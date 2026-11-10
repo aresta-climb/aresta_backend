@@ -11,6 +11,7 @@ import {
   extrairArquivoDoEpub,
   extrairIndiceZipEpub,
   inferirMimeTypeCaminho,
+  lerBytesEntradaDoR2,
   servirMidiaByteRangeDoR2,
 } from "./extrator_indice_epub.ts";
 import { BucketR2FixalogFake } from "./fakes/ambiente_fixalog_fake.ts";
@@ -142,6 +143,38 @@ Deno.test("extrator_indice_epub: suporta descompressão DEFLATE, MIME types e re
   );
   assertEquals(
     new TextDecoder().decode(descomprimido!),
+    " Conteúdo comprimido DEFLATE ",
+  );
+
+  const bucketDeflate = new BucketR2FixalogFake();
+  await bucketDeflate.put("laudos/sessao_deflate/v1.epub", epubDeflate);
+  const indiceDeflate = extrairIndiceZipEpub(epubDeflate);
+  const lidoDoR2 = await lerBytesEntradaDoR2({
+    bucket: bucketDeflate,
+    r2Key: "laudos/sessao_deflate/v1.epub",
+    entrada: indiceDeflate["OEBPS/estilo.css"],
+  });
+  assertEquals(
+    new TextDecoder().decode(lidoDoR2!),
+    " Conteúdo comprimido DEFLATE ",
+  );
+  assertEquals(
+    await lerBytesEntradaDoR2({
+      bucket: bucketDeflate,
+      r2Key: "inexistente",
+      entrada: indiceDeflate["OEBPS/estilo.css"],
+    }),
+    null,
+  );
+
+  const resIntegralDeflate = await servirMidiaByteRangeDoR2({
+    bucket: bucketDeflate,
+    r2Key: "laudos/sessao_deflate/v1.epub",
+    entrada: indiceDeflate["OEBPS/estilo.css"],
+  });
+  assertEquals(resIntegralDeflate.status, 200);
+  assertEquals(
+    await resIntegralDeflate.text(),
     " Conteúdo comprimido DEFLATE ",
   );
 

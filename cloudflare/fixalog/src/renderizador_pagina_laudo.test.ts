@@ -11,8 +11,12 @@ import {
 Deno.test("renderizador_pagina_laudo: reescreve caminhos de mídia e materiais e injeta barra de verificação criptográfica, meta tags OpenGraph e materiais anexos para impressão", () => {
   const xhtml = `<html><body>
     <img src="midia/foto_1.webp" />
+    <img src="midias/foto_2.webp" />
+    <a href="midias/foto_2.webp">Abrir</a>
     <video src="midia/video_1.mp4" poster="midia/video_1.jpg"></video>
-    <a href="materiais/mat_123/relatorio.xhtml">Material</a>
+    <video poster="midias/v2_poster.jpg"><source src="midias/v2.mp4" type="video/mp4" /></video>
+    <a href="materiais/mat_123/relatorio.xhtml">Material 1</a>
+    <a href="materiais/mat_456/OEBPS/relatorio.xhtml">Material 2</a>
   </body></html>`;
 
   const reescrito = reescreverCaminhosMidiaXhtml({
@@ -25,10 +29,27 @@ Deno.test("renderizador_pagina_laudo: reescreve caminhos de mídia e materiais e
     true,
   );
   assertEquals(
+    reescrito.includes('src="/v/sessao_1/midias/OEBPS/midias/foto_2.webp?v=2"'),
+    true,
+  );
+  assertEquals(
+    reescrito.includes('href="/v/sessao_1/midias/OEBPS/midias/foto_2.webp?v=2"'),
+    true,
+  );
+  assertEquals(
     reescrito.includes('poster="/v/sessao_1/midias/OEBPS/midia/video_1.jpg?v=2"'),
     true,
   );
+  assertEquals(
+    reescrito.includes('poster="/v/sessao_1/midias/OEBPS/midias/v2_poster.jpg?v=2"'),
+    true,
+  );
+  assertEquals(
+    reescrito.includes('src="/v/sessao_1/midias/OEBPS/midias/v2.mp4?v=2"'),
+    true,
+  );
   assertEquals(reescrito.includes('href="/v/mat_123"'), true);
+  assertEquals(reescrito.includes('href="/v/mat_456"'), true);
 
   const v1 = {
     id_sessao: "sessao_1",
@@ -114,6 +135,15 @@ Deno.test("renderizador_pagina_laudo: reescreve caminhos de mídia e materiais e
   assertEquals(html.includes('class="anexo-materiais-impressao"'), true);
   assertEquals(html.includes("Ficha do Material Anexado"), true);
   assertEquals(html.includes("window.print()"), true);
+  assertEquals(
+    html.includes('<link rel="canonical" href="https://fixalog.app/v/sessao_1" />'),
+    true,
+  );
+  assertEquals(
+    html.includes('<meta name="robots" content="index, follow" />'),
+    true,
+  );
+  assertEquals(html.includes('"@type":"TechArticle"'), true);
 
   const htmlEmAnalise = renderizarPaginaEmAnaliseLaudo({
     laudo: {
@@ -132,6 +162,10 @@ Deno.test("renderizador_pagina_laudo: reescreve caminhos de mídia e materiais e
     versaoExibida: { ...v2, status_moderacao: "em_analise" },
   });
   assertEquals(htmlEmAnalise.includes('http-equiv="refresh"'), true);
+  assertEquals(
+    htmlEmAnalise.includes('<meta name="robots" content="noindex, nofollow" />'),
+    true,
+  );
   assertEquals(htmlEmAnalise.includes("window.location.reload()"), true);
   assertEquals(htmlEmAnalise.includes("Renato Ferreira"), true);
 });

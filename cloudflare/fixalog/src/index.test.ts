@@ -6,36 +6,49 @@ import { construirZipEpubEmMemoria } from "./extrator_indice_epub.ts";
 import { construirMp4ComAtomosStssTeste } from "./extrator_iframes_mp4.ts";
 import { AmbienteFixalogFake } from "./fakes/ambiente_fixalog_fake.ts";
 import workerDefault from "./index.ts";
+import { gerarTokenHmacCsamScan } from "./moderador_midia_ia.ts";
 import {
   calcularSha256Base64,
   calcularSha256Hex,
   construirTokensAssinadosTeste,
 } from "./verificador_assinatura_laudo.ts";
 
+async function comprimirDeflateRaw(dados: Uint8Array): Promise<Uint8Array> {
+  const stream = new Blob([new Uint8Array(dados)])
+    .stream()
+    .pipeThrough(new CompressionStream("deflate-raw"));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+
 async function criarEpubAssinadoTeste(params: {
   titulo: string;
   atestadoOidcJwt: string;
   incluirVideo?: boolean;
   incluirMaterialAnexo?: boolean;
+  comprimirXhtmlComDeflate?: boolean;
 }): Promise<Uint8Array> {
   const encoder = new TextEncoder();
   const linkMaterial = params.incluirMaterialAnexo
-    ? '<a href="materiais/mat_anexo_1/relatorio.xhtml">Material Anexo 1</a>'
+    ? '<a href="materiais/mat_anexo_1/OEBPS/relatorio.xhtml">Material Anexo 1</a>'
     : "";
-  const xhtml = `<html><head><title>${params.titulo}</title></head><body><h1>${params.titulo}</h1><img src="midia/foto_1.webp" /><video id="video-v1" src="midia/video_1.mp4" poster="midia/video_1.jpg"></video>${linkMaterial}</body></html>`;
+  const xhtml = `<html><head><title>${params.titulo}</title></head><body><h1>${params.titulo}</h1><img src="midias/foto_1.webp" /><video id="video-v1" src="midias/video_1.mp4" poster="midias/video_1_poster.jpg"></video>${linkMaterial}</body></html>`;
   const css = "body { font-family: sans-serif; }";
   const foto = new Uint8Array([10, 20, 30, 40]);
   const video = construirMp4ComAtomosStssTeste([1, 301]);
+  const posterVideo = new Uint8Array([11, 22, 33]);
+  const keyframeVideo = new Uint8Array([44, 55, 66]);
   const xhtmlMatAnexo = encoder.encode(
     "<html><body><h2>Ficha Técnica Parabolt Inox</h2></body></html>",
   );
 
-  const xhtmlBytes = encoder.encode(xhtml);
-  const cssBytes = encoder.encode(css);
-  const digestXhtml = await calcularSha256Base64(xhtmlBytes);
-  const digestCss = await calcularSha256Base64(cssBytes);
+  const xhtmlBytesDescomprimidos = encoder.encode(xhtml);
+  const cssBytesDescomprimidos = encoder.encode(css);
+  const digestXhtml = await calcularSha256Base64(xhtmlBytesDescomprimidos);
+  const digestCss = await calcularSha256Base64(cssBytesDescomprimidos);
   const digestFoto = await calcularSha256Base64(foto);
   const digestVideo = await calcularSha256Base64(video);
+  const digestPoster = await calcularSha256Base64(posterVideo);
+  const digestKeyframe = await calcularSha256Base64(keyframeVideo);
   const digestMatAnexo = await calcularSha256Base64(xhtmlMatAnexo);
 
   const signaturesXml = `<?xml version="1.0" encoding="UTF-8"?>
@@ -44,15 +57,17 @@ async function criarEpubAssinadoTeste(params: {
     <SignedInfo>
       <Reference URI="OEBPS/relatorio.xhtml"><DigestValue>${digestXhtml}</DigestValue></Reference>
       <Reference URI="OEBPS/estilo.css"><DigestValue>${digestCss}</DigestValue></Reference>
-      <Reference URI="OEBPS/midia/foto_1.webp"><DigestValue>${digestFoto}</DigestValue></Reference>
+      <Reference URI="OEBPS/midias/foto_1.webp"><DigestValue>${digestFoto}</DigestValue></Reference>
       ${
         params.incluirVideo
-          ? `<Reference URI="OEBPS/midia/video_1.mp4"><DigestValue>${digestVideo}</DigestValue></Reference>`
+          ? `<Reference URI="OEBPS/midias/video_1.mp4"><DigestValue>${digestVideo}</DigestValue></Reference>
+      <Reference URI="OEBPS/midias/video_1_poster.jpg"><DigestValue>${digestPoster}</DigestValue></Reference>
+      <Reference URI="OEBPS/midias/video_1_kf_10s.jpg"><DigestValue>${digestKeyframe}</DigestValue></Reference>`
           : ""
       }
       ${
         params.incluirMaterialAnexo
-          ? `<Reference URI="OEBPS/materiais/mat_anexo_1/relatorio.xhtml"><DigestValue>${digestMatAnexo}</DigestValue></Reference>`
+          ? `<Reference URI="OEBPS/materiais/mat_anexo_1/OEBPS/relatorio.xhtml"><DigestValue>${digestMatAnexo}</DigestValue></Reference>`
           : ""
       }
     </SignedInfo>
@@ -62,17 +77,29 @@ async function criarEpubAssinadoTeste(params: {
   </Signature>
 </signatures>`;
 
+  const xhtmlArmazenado = params.comprimirXhtmlComDeflate
+    ? await comprimirDeflateRaw(xhtmlBytesDescomprimidos)
+    : xhtmlBytesDescomprimidos;
+  const cssArmazenado = params.comprimirXhtmlComDeflate
+    ? await comprimirDeflateRaw(cssBytesDescomprimidos)
+    : cssBytesDescomprimidos;
+  const metodoTexto = params.comprimirXhtmlComDeflate ? 8 : 0;
+
   const entradas = [
-    { nome: "OEBPS/relatorio.xhtml", dados: xhtmlBytes },
-    { nome: "OEBPS/estilo.css", dados: cssBytes },
-    { nome: "OEBPS/midia/foto_1.webp", dados: foto },
+    { nome: "OEBPS/relatorio.xhtml", dados: xhtmlArmazenado, metodo: metodoTexto },
+    { nome: "OEBPS/estilo.css", dados: cssArmazenado, metodo: metodoTexto },
+    { nome: "OEBPS/midias/foto_1.webp", dados: foto },
     ...(params.incluirVideo
-      ? [{ nome: "OEBPS/midia/video_1.mp4", dados: video }]
+      ? [
+          { nome: "OEBPS/midias/video_1.mp4", dados: video },
+          { nome: "OEBPS/midias/video_1_poster.jpg", dados: posterVideo },
+          { nome: "OEBPS/midias/video_1_kf_10s.jpg", dados: keyframeVideo },
+        ]
       : []),
     ...(params.incluirMaterialAnexo
       ? [
           {
-            nome: "OEBPS/materiais/mat_anexo_1/relatorio.xhtml",
+            nome: "OEBPS/materiais/mat_anexo_1/OEBPS/relatorio.xhtml",
             dados: xhtmlMatAnexo,
           },
         ]
@@ -179,12 +206,13 @@ Deno.test("fixalog-worker: fluxo ponta a ponta de upload v1 e v2, moderação as
   assertEquals(jsonDuplicado.versao, 1);
   assertEquals(jsonDuplicado.ja_enviado, true);
 
-  // 4. Upload v2 pelo mesmo usuário -> cria versão imutável v2
+  // 4. Upload v2 pelo mesmo usuário (com XHTML/CSS comprimidos com DEFLATE) -> cria versão imutável v2
   const epubV2 = await criarEpubAssinadoTeste({
     titulo: "Via Aresta — v2 Atualizada",
     atestadoOidcJwt: tokens.atestadoOidcJwt,
     incluirVideo: true,
     incluirMaterialAnexo: true,
+    comprimirXhtmlComDeflate: true,
   });
   const resUploadV2 = await workerDefault.fetch(
     new Request("https://fixalog.app/api/v1/laudos/sessao_aresta", {
@@ -235,18 +263,31 @@ Deno.test("fixalog-worker: fluxo ponta a ponta de upload v1 e v2, moderação as
   assertEquals(listaJson.laudos.length, 1);
   assertEquals(listaJson.laudos[0].versao_atual, 2);
 
-  // 6. Visualização pública de GET /v/sessao_aresta (v2 padrão e ?v=1)
+  // 6. Visualização pública de GET /v/sessao_aresta (v2 padrão e ?v=1) e cache de borda
   const resPaginaV2 = await workerDefault.fetch(
     new Request("https://fixalog.app/v/sessao_aresta"),
     env,
   );
   assertEquals(resPaginaV2.status, 200);
+  assertEquals(
+    resPaginaV2.headers.get("Cache-Control")?.includes("max-age=31536000"),
+    true,
+  );
   const htmlV2 = await resPaginaV2.text();
   assertEquals(htmlV2.includes("Via Aresta — v2 Atualizada"), true);
   assertEquals(htmlV2.includes("1 laudo(s) assinado(s) por esta chave"), true);
   assertEquals(htmlV2.includes('href="/v/sessao_aresta?v=1"'), true);
   assertEquals(htmlV2.includes('property="og:title"'), true);
   assertEquals(htmlV2.includes("Ficha Técnica Parabolt Inox"), true);
+
+  // Segunda abertura serve diretamente do cache de borda
+  const hitsAntes = env.cacheBorda.leiturasHit;
+  const resPaginaV2Cache = await workerDefault.fetch(
+    new Request("https://fixalog.app/v/sessao_aresta"),
+    env,
+  );
+  assertEquals(resPaginaV2Cache.status, 200);
+  assertEquals(env.cacheBorda.leiturasHit, hitsAntes + 1);
 
   const resPaginaV1 = await workerDefault.fetch(
     new Request("https://fixalog.app/v/sessao_aresta?v=1"),
@@ -255,10 +296,10 @@ Deno.test("fixalog-worker: fluxo ponta a ponta de upload v1 e v2, moderação as
   assertEquals(resPaginaV1.status, 200);
   assertEquals((await resPaginaV1.text()).includes("Via Aresta — v1"), true);
 
-  // 7. Streaming Byte-Range 206 Partial Content de mídia
+  // 7. Streaming Byte-Range 206 Partial Content de mídia e rota interna GET /__csam_scan/*
   const resMidia206 = await workerDefault.fetch(
     new Request(
-      "https://fixalog.app/v/sessao_aresta/midias/OEBPS/midia/foto_1.webp?v=2",
+      "https://fixalog.app/v/sessao_aresta/midias/OEBPS/midias/foto_1.webp?v=2",
       {
         headers: { Range: "bytes=1-2" },
       },
@@ -270,6 +311,33 @@ Deno.test("fixalog-worker: fluxo ponta a ponta de upload v1 e v2, moderação as
     Array.from(new Uint8Array(await resMidia206.arrayBuffer())),
     [20, 30],
   );
+
+  const tokenHmacScan = await gerarTokenHmacCsamScan({
+    idSessao: "sessao_aresta",
+    versao: 2,
+    caminho: "OEBPS/midias/foto_1.webp",
+    segredo: env.SENTRY_DSN,
+  });
+  const resCsamScanOk = await workerDefault.fetch(
+    new Request(
+      `https://fixalog.app/__csam_scan/sessao_aresta/v2/OEBPS/midias/foto_1.webp?token=${tokenHmacScan}`,
+    ),
+    env,
+  );
+  assertEquals(resCsamScanOk.status, 200);
+  assertEquals(resCsamScanOk.headers.get("Content-Type"), "image/webp");
+  assertEquals(
+    Array.from(new Uint8Array(await resCsamScanOk.arrayBuffer())),
+    [10, 20, 30, 40],
+  );
+
+  const resCsamScanNegado = await workerDefault.fetch(
+    new Request(
+      "https://fixalog.app/__csam_scan/sessao_aresta/v2/OEBPS/midias/foto_1.webp?token=invalido",
+    ),
+    env,
+  );
+  assertEquals(resCsamScanNegado.status, 403);
 
   // 8. Download do .epub assinado e resumo .pdf
   const resEpub = await workerDefault.fetch(
@@ -543,10 +611,10 @@ Deno.test("fixalog-worker: restringe GET /status ao proprietário (403), retorna
   });
   assertEquals(listagemAposErro.objects.length, 0);
 
-  // 5. Cron Trigger (scheduled) limpa chunks órfãos em staging/ com > 14 dias e preserva os com < 14 dias
+  // 5. Cron Trigger (scheduled) limpa chunks órfãos em staging/ com > 7 dias e preserva os com < 7 dias
   const agoraMs = Date.parse("2026-11-25T04:00:00Z");
-  const quinzeDiasAtras = new Date(agoraMs - 15 * 24 * 60 * 60 * 1000);
-  const dezDiasAtras = new Date(agoraMs - 10 * 24 * 60 * 60 * 1000);
+  const oitoDiasAtras = new Date(agoraMs - 8 * 24 * 60 * 60 * 1000);
+  const cincoDiasAtras = new Date(agoraMs - 5 * 24 * 60 * 60 * 1000);
 
   await env.LAUDOS_BUCKET.put(
     "staging/sessao_antiga/abc/chunk_0",
@@ -554,16 +622,16 @@ Deno.test("fixalog-worker: restringe GET /status ao proprietário (403), retorna
   );
   env.LAUDOS_BUCKET.definirDataUpload(
     "staging/sessao_antiga/abc/chunk_0",
-    quinzeDiasAtras,
+    oitoDiasAtras,
   );
 
   await env.LAUDOS_BUCKET.put(
-    "staging/sessao_expedicao_10dias/def/chunk_0",
+    "staging/sessao_expedicao_5dias/def/chunk_0",
     new Uint8Array([3, 4]),
   );
   env.LAUDOS_BUCKET.definirDataUpload(
-    "staging/sessao_expedicao_10dias/def/chunk_0",
-    dezDiasAtras,
+    "staging/sessao_expedicao_5dias/def/chunk_0",
+    cincoDiasAtras,
   );
 
   await workerDefault.scheduled!(
@@ -580,9 +648,56 @@ Deno.test("fixalog-worker: restringe GET /status ao proprietário (403), retorna
   assertEquals(
     (
       await env.LAUDOS_BUCKET.get(
-        "staging/sessao_expedicao_10dias/def/chunk_0",
+        "staging/sessao_expedicao_5dias/def/chunk_0",
       )
     ) !== null,
     true,
   );
+
+  // 6. SEO: GET /robots.txt e GET /sitemap.xml
+  const resRobots = await workerDefault.fetch(
+    new Request("https://fixalog.app/robots.txt"),
+    env,
+  );
+  assertEquals(resRobots.status, 200);
+  const textoRobots = await resRobots.text();
+  assertEquals(textoRobots.includes("Sitemap: https://fixalog.app/sitemap.xml"), true);
+  assertEquals(textoRobots.includes("Disallow: /__csam_scan/"), true);
+
+  const resSitemap = await workerDefault.fetch(
+    new Request("https://fixalog.app/sitemap.xml"),
+    env,
+  );
+  assertEquals(resSitemap.status, 200);
+  const textoSitemap = await resSitemap.text();
+  assertEquals(
+    textoSitemap.includes("<loc>https://fixalog.app/v/sessao_segura</loc>"),
+    true,
+  );
+
+  // 7. Exclusão pelo proprietário: DELETE /api/v1/laudos/:id
+  const resDeleteTerceiro = await workerDefault.fetch(
+    new Request("https://fixalog.app/api/v1/laudos/sessao_segura", {
+      method: "DELETE",
+      headers: {
+        "X-Firebase-AppCheck": "app_check_valido_123",
+        Authorization: `Bearer ${tokensTerceiro.jwtSupabase}`,
+      },
+    }),
+    env,
+  );
+  assertEquals(resDeleteTerceiro.status, 403);
+
+  const resDeleteDono = await workerDefault.fetch(
+    new Request("https://fixalog.app/api/v1/laudos/sessao_segura", {
+      method: "DELETE",
+      headers: {
+        "X-Firebase-AppCheck": "app_check_valido_123",
+        Authorization: `Bearer ${tokensDono.jwtSupabase}`,
+      },
+    }),
+    env,
+  );
+  assertEquals(resDeleteDono.status, 200);
+  assertEquals(await env.LAUDOS_BUCKET.get("laudos/sessao_segura/v1.epub"), null);
 });

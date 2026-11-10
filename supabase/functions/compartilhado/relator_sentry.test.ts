@@ -135,6 +135,23 @@ Deno.test("RelatorSentry: monta envelope valido, sanitiza cabecalhos sensiveis e
   assertEquals(payload.request.headers["content-type"], "application/json");
 });
 
+Deno.test("RelatorSentry: permite sobrescrever o nivel do evento para fatal", async () => {
+  let corpoEnvelope = "";
+  const relator = new RelatorSentry();
+  const sucesso = await relator.relatarErro(new Error("Emergencia CSAM/IA"), {
+    dsn: "https://pubKey@o99.ingest.sentry.io/42",
+    servico: "fixalog-worker",
+    nivel: "fatal",
+    fetchFn: (_input, init) => {
+      corpoEnvelope = String(init?.body ?? "");
+      return Promise.resolve(new Response("{}", { status: 200 }));
+    },
+  });
+  assertEquals(sucesso, true);
+  const payload = JSON.parse(corpoEnvelope.trim().split("\n")[2]);
+  assertEquals(payload.level, "fatal");
+});
+
 Deno.test("relatarErroSentry: opera em modo no-op sem DSN e captura falhas HTTP/rede sem lancar excecao", async () => {
   const resultadoSemDsn = await relatarErroSentry("Falha textual", {
     dsn: undefined,

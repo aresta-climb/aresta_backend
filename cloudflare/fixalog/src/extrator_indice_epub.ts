@@ -17,7 +17,7 @@ export interface EntradaIndiceZipEpub {
 export type MapaIndiceZipEpub = Record<string, EntradaIndiceZipEpub>;
 
 export const CABECALHO_CACHE_MIDIA_IMUTAVEL =
-  "public, max-age=31536000, immutable";
+  "public, max-age=31536000, s-maxage=31536000, immutable";
 
 /**
  * Infere o MIME type pelo caminho interno do arquivo no EPUB 3.
@@ -158,8 +158,38 @@ export async function extrairArquivoDoEpub(
 }
 
 /**
+ * Lê uma entrada específica de um `.epub` no R2 usando Byte-Range e descomprime automaticamente
+ * caso esteja armazenada com `DEFLATE` (`metodo === 8`).
+ */
+export async function lerBytesEntradaDoR2(params: {
+  bucket: BucketR2Fixalog;
+  r2Key: string;
+  entrada: EntradaIndiceZipEpub;
+}): Promise<Uint8Array | null> {
+  const { bucket, r2Key, entrada } = params;
+  const objeto = await bucket.get(r2Key, {
+    range: { offset: entrada.offset, length: entrada.length },
+  });
+  if (!objeto) {
+    return null;
+  }
+  const fatia = new Uint8Array(await objeto.arrayBuffer());
+  if (entrada.metodo === 0) {
+    return fatia;
+  }
+  if (entrada.metodo === 8) {
+    const stream = new Blob([new Uint8Array(fatia)])
+      .stream()
+      .pipeThrough(new DecompressionStream("deflate-raw"));
+    const buffer = await new Response(stream).arrayBuffer();
+    return new Uint8Array(buffer);
+  }
+  throw new Error(`Método de compressão ZIP não suportado: ${entrada.metodo}`);
+}
+
+/**
  * Resolve uma requisição HTTP (integral `200 OK` ou parcial `206 Partial Content`)
- * para uma mídia armazenada em modo `STORE` dentro do `.epub` no Cloudflare R2.
+ * para uma mídia armazenada dentro do `.epub` no Cloudflare R2.
  */
 export async function servirMidiaByteRangeDoR2(params: {
   bucket: BucketR2Fixalog;
@@ -170,18 +200,19 @@ export async function servirMidiaByteRangeDoR2(params: {
   const { bucket, r2Key, entrada, cabecalhoRange } = params;
 
   if (!cabecalhoRange || !cabecalhoRange.trim().startsWith("bytes=")) {
-    const objeto = await bucket.get(r2Key, {
-      range: { offset: entrada.offset, length: entrada.length },
+    const bytesDescomprimidos = await lerBytesEntradaDoR2({
+      bucket,
+      r2Key,
+      entrada,
     });
-    if (!objeto) {
+    if (!bytesDescomprimidos) {
       return new Response("Pacote EPUB não encontrado no R2.", { status: 404 });
     }
-    const bytes = await objeto.arrayBuffer();
-    return new Response(bytes, {
+    return new Response(new Uint8Array(bytesDescomprimidos), {
       status: 200,
       headers: {
         "Content-Type": entrada.mimeType,
-        "Content-Length": String(entrada.length),
+        "Content-Length": String(bytesDescomprimidos.byteLength),
         "Accept-Ranges": "bytes",
         "Cache-Control": CABECALHO_CACHE_MIDIA_IMUTAVEL,
       },
