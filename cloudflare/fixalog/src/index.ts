@@ -96,6 +96,54 @@ function extrairMetadadosXhtml(xhtml: string): {
   };
 }
 
+async function garantirColunasProgressoNoD1(
+  db: BancoD1Fixalog,
+): Promise<void> {
+  try {
+    await db
+      .prepare(
+        "ALTER TABLE versoes_laudo_fixalog ADD COLUMN verificacao_concluida INTEGER NOT NULL DEFAULT 0",
+      )
+      .run();
+  } catch {
+    // Coluna já existente no D1
+  }
+  try {
+    await db
+      .prepare(
+        "ALTER TABLE versoes_laudo_fixalog ADD COLUMN verificacao_total INTEGER NOT NULL DEFAULT 1",
+      )
+      .run();
+  } catch {
+    // Coluna já existente no D1
+  }
+}
+
+export const PRAZO_EXPIRACAO_STAGING_MS = 14 * 24 * 60 * 60 * 1000;
+
+/**
+ * Remove do bucket R2 todos os blocos temporários (`staging/`) cuja data de
+ * upload tenha ultrapassado 14 dias, preservando uploads parciais de expedições
+ * em andamento com menos de 14 dias.
+ */
+export async function limparStagingExpiradoNoR2(
+  bucket: BucketR2Fixalog,
+  agoraMs: number = Date.now(),
+): Promise<number> {
+  const listagem = await bucket.list({ prefix: "staging/" });
+  const chavesExpiradas: string[] = [];
+  for (const obj of listagem.objects) {
+    const uploadedMs = obj.uploaded ? obj.uploaded.getTime() : agoraMs;
+    if (agoraMs - uploadedMs > PRAZO_EXPIRACAO_STAGING_MS) {
+      chavesExpiradas.push(obj.key);
+    }
+  }
+  if (chavesExpiradas.length > 0) {
+    await bucket.delete(chavesExpiradas);
+  }
+  return chavesExpiradas.length;
+}
+
 async function listarChunksRecebidosNoR2(
   bucket: BucketR2Fixalog,
   idSessao: string,
@@ -137,6 +185,8 @@ async function persistirVersaoEpubValidada(params: {
 > {
   const { env, db, bucket, ctx, idSessao, userId, epubBytes, hashEpub } =
     params;
+
+  await garantirColunasProgressoNoD1(db);
 
   const laudoExistente = await db
     .prepare("SELECT * FROM laudos_fixalog WHERE id_sessao = ?")
@@ -263,7 +313,7 @@ async function persistirVersaoEpubValidada(params: {
 
   await db
     .prepare(
-      "INSERT INTO versoes_laudo_fixalog VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO versoes_laudo_fixalog VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(
       idSessao,
@@ -278,6 +328,8 @@ async function persistirVersaoEpubValidada(params: {
       JSON.stringify(meta.materiaisReferenciados),
       "em_analise",
       null,
+      0,
+      1,
       agora,
     )
     .run();
@@ -434,6 +486,23 @@ export async function processarRequisicaoFixalog(
     const idSessao = decodeURIComponent(matchStatus[1]);
     const sha256 = url.searchParams.get("sha256")?.toLowerCase() ?? null;
 
+    await garantirColunasProgressoNoD1(env.DB);
+
+    const laudoExistente = await env.DB.prepare(
+      "SELECT * FROM laudos_fixalog WHERE id_sessao = ?",
+    )
+      .bind(idSessao)
+      .first<LinhaLaudosFixalog>();
+
+    if (laudoExistente && laudoExistente.user_id !== usuario.userId) {
+      return respostaJson(
+        {
+          erro: "Apenas a conta proprietária do laudo pode consultar seu status de processamento.",
+        },
+        403,
+      );
+    }
+
     let versaoEncontrada: LinhaVersoesLaudoFixalog | null = null;
     if (sha256) {
       versaoEncontrada = await env.DB.prepare(
@@ -441,19 +510,12 @@ export async function processarRequisicaoFixalog(
       )
         .bind(idSessao, sha256)
         .first<LinhaVersoesLaudoFixalog>();
-    } else {
-      const laudo = await env.DB.prepare(
-        "SELECT * FROM laudos_fixalog WHERE id_sessao = ?",
+    } else if (laudoExistente) {
+      versaoEncontrada = await env.DB.prepare(
+        "SELECT * FROM versoes_laudo_fixalog WHERE id_sessao = ? AND versao = ?",
       )
-        .bind(idSessao)
-        .first<LinhaLaudosFixalog>();
-      if (laudo) {
-        versaoEncontrada = await env.DB.prepare(
-          "SELECT * FROM versoes_laudo_fixalog WHERE id_sessao = ? AND versao = ?",
-        )
-          .bind(idSessao, laudo.versao_atual ?? 1)
-          .first<LinhaVersoesLaudoFixalog>();
-      }
+        .bind(idSessao, laudoExistente.versao_atual ?? 1)
+        .first<LinhaVersoesLaudoFixalog>();
     }
 
     if (versaoEncontrada) {
@@ -463,6 +525,9 @@ export async function processarRequisicaoFixalog(
         ja_enviado: true,
         versao: versaoEncontrada.versao,
         status_moderacao: versaoEncontrada.status_moderacao ?? "em_analise",
+        motivo_moderacao: versaoEncontrada.motivo_moderacao ?? null,
+        verificacao_concluida: versaoEncontrada.verificacao_concluida ?? 0,
+        verificacao_total: versaoEncontrada.verificacao_total ?? 1,
         chunks_recebidos: [],
       };
       return respostaJson(resposta, 200);
@@ -478,6 +543,9 @@ export async function processarRequisicaoFixalog(
       ja_enviado: false,
       versao: null,
       status_moderacao: null,
+      motivo_moderacao: null,
+      verificacao_concluida: 0,
+      verificacao_total: 1,
       chunks_recebidos: chunksRecebidos,
     };
     return respostaJson(resposta, 200);
@@ -596,6 +664,7 @@ export async function processarRequisicaoFixalog(
 
     const hashCalculado = (await calcularSha256Hex(epubCompleto)).toLowerCase();
     if (hashCalculado !== sha256) {
+      await env.LAUDOS_BUCKET.delete(chavesStaging);
       return respostaJson(
         {
           erro: `Divergência de integridade SHA-256 nos blocos concatenados: esperado ${sha256}, obtido ${hashCalculado}.`,
@@ -616,6 +685,9 @@ export async function processarRequisicaoFixalog(
     });
 
     if ("erro" in resultado) {
+      if (resultado.statusHttp === 400) {
+        await env.LAUDOS_BUCKET.delete(chavesStaging);
+      }
       return respostaJson({ erro: resultado.erro }, resultado.statusHttp);
     }
 
@@ -973,6 +1045,23 @@ export default {
         });
       }
       return respostaJson({ erro: "Erro interno no Worker do Fixalog." }, 500);
+    }
+  },
+
+  async scheduled(
+    evento: { scheduledTime?: number; cron?: string },
+    env: AmbienteFixalog,
+    ctx?: ContextoExecucaoFixalog,
+  ): Promise<void> {
+    if (!env.LAUDOS_BUCKET) return;
+    const tarefa = limparStagingExpiradoNoR2(
+      env.LAUDOS_BUCKET,
+      evento.scheduledTime ?? Date.now(),
+    );
+    if (ctx) {
+      ctx.waitUntil(tarefa);
+    } else {
+      await tarefa;
     }
   },
 };

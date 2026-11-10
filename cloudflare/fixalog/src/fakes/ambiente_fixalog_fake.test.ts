@@ -101,17 +101,29 @@ Deno.test("AmbienteFixalogFake: persiste e consulta chaves, laudos e versões no
     .run();
 
   await env.DB.prepare(
-    "UPDATE versoes_laudo_fixalog SET status_moderacao = ?, motivo_moderacao = ? WHERE id_sessao = ? AND versao = ?",
+    "UPDATE versoes_laudo_fixalog SET verificacao_concluida = ?, verificacao_total = ? WHERE id_sessao = ? AND versao = ?",
   )
-    .bind("ativo", null, "laudo_1", 1)
+    .bind(2, 4, "laudo_1", 1)
+    .run();
+
+  await env.DB.prepare(
+    "UPDATE versoes_laudo_fixalog SET status_moderacao = ?, motivo_moderacao = ?, verificacao_concluida = ?, verificacao_total = ? WHERE id_sessao = ? AND versao = ?",
+  )
+    .bind("ativo", null, 4, 4, "laudo_1", 1)
     .run();
 
   const versao = await env.DB.prepare(
     "SELECT * FROM versoes_laudo_fixalog WHERE id_sessao = ? AND versao = ?",
   )
     .bind("laudo_1", 1)
-    .first<{ status_moderacao: string }>();
+    .first<{
+      status_moderacao: string;
+      verificacao_concluida: number;
+      verificacao_total: number;
+    }>();
   assertEquals(versao?.status_moderacao, "ativo");
+  assertEquals(versao?.verificacao_concluida, 4);
+  assertEquals(versao?.verificacao_total, 4);
 
   const versaoPorHash = await env.DB.prepare(
     "SELECT * FROM versoes_laudo_fixalog WHERE id_sessao = ? AND hash_epub_sha256 = ?",
@@ -156,8 +168,16 @@ Deno.test("AmbienteFixalogFake: R2 suporta leitura integral e parcial (Byte-Rang
 
   assertEquals(await env.LAUDOS_BUCKET.get("inexistente"), null);
 
+  env.LAUDOS_BUCKET.definirDataUpload(
+    "staging/id/hash/chunk_0",
+    new Date("2026-10-01T00:00:00Z"),
+  );
   const listados = await env.LAUDOS_BUCKET.list({ prefix: "staging/id/hash/" });
   assertEquals(listados.objects.length, 2);
+  assertEquals(
+    listados.objects[0].uploaded?.toISOString(),
+    "2026-10-01T00:00:00.000Z",
+  );
 
   await env.LAUDOS_BUCKET.delete(["staging/id/hash/chunk_0", "staging/id/hash/chunk_1"]);
   const aposDelete = await env.LAUDOS_BUCKET.list({ prefix: "staging/id/hash/" });
@@ -175,6 +195,12 @@ Deno.test("AmbienteFixalogFake: R2 suporta leitura integral e parcial (Byte-Rang
   const r2 = await env.AI.run("@cf/meta/llama-3.2-11b-vision-instruct", {});
   assertEquals(r1.response, "UNSAFE\nS12");
   assertEquals(r2.response, "SAFE");
+
+  env.AI.deveFalhar = true;
+  await assertRejects(() =>
+    env.AI.run("@cf/meta/llama-3.2-11b-vision-instruct", {})
+  );
+  env.AI.deveFalhar = false;
 
   let concluido = false;
   env.contexto.waitUntil(

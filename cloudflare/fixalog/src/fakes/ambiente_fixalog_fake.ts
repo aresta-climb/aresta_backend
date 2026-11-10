@@ -46,7 +46,7 @@ export interface ObjetoR2Fixalog {
  * Resultado de listagem de objetos no Cloudflare R2.
  */
 export interface ListaObjetosR2Fixalog {
-  objects: Array<{ key: string; size: number }>;
+  objects: Array<{ key: string; size: number; uploaded?: Date }>;
 }
 
 /**
@@ -161,6 +161,7 @@ export class BancoD1FixalogFake implements BancoD1Fixalog {
       }
 
       if (sqlUpper.includes("INSERT") && sqlUpper.includes("VERSOES_LAUDO_FIXALOG")) {
+        const possuiColunasProgresso = params.length >= 15;
         const linha: LinhaVersoesLaudoFixalog = {
           id_sessao: String(params[0]),
           versao: Number(params[1]),
@@ -174,7 +175,9 @@ export class BancoD1FixalogFake implements BancoD1Fixalog {
           materiais_referenciados_json: String(params[9]),
           status_moderacao: String(params[10]),
           motivo_moderacao: params[11] == null ? null : String(params[11]),
-          criado_em: String(params[12]),
+          verificacao_concluida: possuiColunasProgresso ? Number(params[12]) : 0,
+          verificacao_total: possuiColunasProgresso ? Number(params[13]) : 1,
+          criado_em: String(possuiColunasProgresso ? params[14] : params[12]),
         };
         this.versoes.set(
           BancoD1FixalogFake.chaveVersao(linha.id_sessao, linha.versao),
@@ -183,17 +186,41 @@ export class BancoD1FixalogFake implements BancoD1Fixalog {
         return { success: true };
       }
 
-      if (sqlUpper.includes("UPDATE VERSOES_LAUDO_FIXALOG SET STATUS_MODERACAO")) {
-        const novoStatus = String(params[0]);
-        const motivo = params[1] == null ? null : String(params[1]);
+      if (
+        sqlUpper.includes(
+          "UPDATE VERSOES_LAUDO_FIXALOG SET VERIFICACAO_CONCLUIDA",
+        )
+      ) {
+        const concluida = Number(params[0]);
+        const total = Number(params[1]);
         const idSessao = String(params[2]);
         const versao = Number(params[3]);
         const existente = this.versoes.get(
           BancoD1FixalogFake.chaveVersao(idSessao, versao),
         );
         if (existente) {
+          existente.verificacao_concluida = concluida;
+          existente.verificacao_total = total;
+        }
+        return { success: true };
+      }
+
+      if (sqlUpper.includes("UPDATE VERSOES_LAUDO_FIXALOG SET STATUS_MODERACAO")) {
+        const novoStatus = String(params[0]);
+        const motivo = params[1] == null ? null : String(params[1]);
+        const possuiProgresso = params.length >= 6;
+        const idSessao = String(params[possuiProgresso ? 4 : 2]);
+        const versao = Number(params[possuiProgresso ? 5 : 3]);
+        const existente = this.versoes.get(
+          BancoD1FixalogFake.chaveVersao(idSessao, versao),
+        );
+        if (existente) {
           existente.status_moderacao = novoStatus;
           existente.motivo_moderacao = motivo;
+          if (possuiProgresso) {
+            existente.verificacao_concluida = Number(params[2]);
+            existente.verificacao_total = Number(params[3]);
+          }
         }
         return { success: true };
       }
@@ -301,9 +328,15 @@ export class BancoD1FixalogFake implements BancoD1Fixalog {
  */
 export class BucketR2FixalogFake implements BucketR2Fixalog {
   readonly objetos = new Map<string, Uint8Array>();
+  readonly datasUpload = new Map<string, Date>();
 
   async put(chave: string, valor: Uint8Array): Promise<void> {
     this.objetos.set(chave, new Uint8Array(valor));
+    this.datasUpload.set(chave, new Date());
+  }
+
+  definirDataUpload(chave: string, data: Date): void {
+    this.datasUpload.set(chave, data);
   }
 
   async get(
@@ -337,15 +370,20 @@ export class BucketR2FixalogFake implements BucketR2Fixalog {
     const lista = Array.isArray(chave) ? chave : [chave];
     for (const item of lista) {
       this.objetos.delete(item);
+      this.datasUpload.delete(item);
     }
   }
 
   async list(opcoes?: { prefix?: string }): Promise<ListaObjetosR2Fixalog> {
     const prefixo = opcoes?.prefix ?? "";
-    const objects: Array<{ key: string; size: number }> = [];
+    const objects: Array<{ key: string; size: number; uploaded?: Date }> = [];
     for (const [key, bytes] of this.objetos.entries()) {
       if (key.startsWith(prefixo)) {
-        objects.push({ key, size: bytes.byteLength });
+        objects.push({
+          key,
+          size: bytes.byteLength,
+          uploaded: this.datasUpload.get(key) ?? new Date(),
+        });
       }
     }
     objects.sort((a, b) => a.key.localeCompare(b.key));
@@ -359,6 +397,7 @@ export class BucketR2FixalogFake implements BucketR2Fixalog {
 export class WorkersAiFixalogFake implements WorkersAiFixalog {
   respostasConfiguradas: string[] = [];
   respostaPadrao = "SAFE";
+  deveFalhar = false;
   readonly chamadas: Array<{ modelo: string; entrada: Record<string, unknown> }> = [];
 
   async run(
@@ -366,6 +405,9 @@ export class WorkersAiFixalogFake implements WorkersAiFixalog {
     entrada: Record<string, unknown>,
   ): Promise<{ response?: string; description?: string }> {
     this.chamadas.push({ modelo, entrada });
+    if (this.deveFalhar) {
+      throw new Error("Falha simulada no Workers AI.");
+    }
     const proxima =
       this.respostasConfiguradas.length > 0
         ? this.respostasConfiguradas.shift()!

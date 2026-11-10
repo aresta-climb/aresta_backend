@@ -127,3 +127,89 @@ Deno.test("moderador_midia_ia: bloqueia versão e dispara alerta para alertas.ar
   assertEquals(resS4.status, "bloqueado");
   assertEquals(resS4.motivo?.includes("WORKERS_AI_S4_CSAM"), true);
 });
+
+Deno.test("moderador_midia_ia: envia bytes completos da imagem (> 512 bytes) ao Workers AI, atualiza progresso no D1 e não trava se env.AI.run lançar exceção", async () => {
+  const env = new AmbienteFixalogFake();
+  await env.DB.prepare(
+    "INSERT INTO versoes_laudo_fixalog VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+  )
+    .bind(
+      "sessao_resiliente",
+      1,
+      "laudos/sessao_resiliente/v1.epub",
+      1500,
+      "hash",
+      "fp",
+      "Renato",
+      "FEMERJ",
+      "{}",
+      "[]",
+      "em_analise",
+      null,
+      0,
+      1,
+      "2026-11-10T00:00:00Z",
+    )
+    .run();
+
+  // Cria uma imagem com 1200 bytes (maior que o antigo limite truncado de 512 bytes)
+  const imagemCompleta = new Uint8Array(1200);
+  for (let i = 0; i < imagemCompleta.length; i++) {
+    imagemCompleta[i] = i % 256;
+  }
+
+  const epub = construirZipEpubEmMemoria([
+    { nome: "OEBPS/midia/foto_grande.webp", dados: imagemCompleta },
+    { nome: "OEBPS/midia/foto_2.webp", dados: new Uint8Array(800) },
+  ]);
+
+  const res = await executarModeracaoAssincronaLaudo({
+    env,
+    idSessao: "sessao_resiliente",
+    versao: 1,
+    userId: "usr_1",
+    epubBytes: epub,
+  });
+
+  assertEquals(res.status, "ativo");
+  assertEquals(env.AI.chamadas.length, 2);
+  const bytesEnviadosIa = env.AI.chamadas[0].entrada.image as number[];
+  assertEquals(bytesEnviadosIa.length, 1200);
+
+  const versaoFinal = await env.DB.prepare(
+    "SELECT * FROM versoes_laudo_fixalog WHERE id_sessao = ? AND versao = ?",
+  )
+    .bind("sessao_resiliente", 1)
+    .first<{
+      status_moderacao: string;
+      verificacao_concluida: number;
+      verificacao_total: number;
+    }>();
+  assertEquals(versaoFinal?.status_moderacao, "ativo");
+  assertEquals(versaoFinal?.verificacao_concluida, 2);
+  assertEquals(versaoFinal?.verificacao_total, 2);
+
+  // Simula falha interna no Workers AI (ex.: erro de decodificação ou indisponibilidade)
+  env.AI.deveFalhar = true;
+  await env.DB.prepare(
+    "UPDATE versoes_laudo_fixalog SET status_moderacao = ?, motivo_moderacao = ? WHERE id_sessao = ? AND versao = ?",
+  )
+    .bind("em_analise", null, "sessao_resiliente", 1)
+    .run();
+
+  const resComFalhaIa = await executarModeracaoAssincronaLaudo({
+    env,
+    idSessao: "sessao_resiliente",
+    versao: 1,
+    userId: "usr_1",
+    epubBytes: epub,
+  });
+  assertEquals(resComFalhaIa.status, "ativo");
+
+  const versaoAposFalhaIa = await env.DB.prepare(
+    "SELECT * FROM versoes_laudo_fixalog WHERE id_sessao = ? AND versao = ?",
+  )
+    .bind("sessao_resiliente", 1)
+    .first<{ status_moderacao: string }>();
+  assertEquals(versaoAposFalhaIa?.status_moderacao, "ativo");
+});

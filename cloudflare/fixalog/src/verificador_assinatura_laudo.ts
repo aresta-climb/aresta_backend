@@ -191,6 +191,58 @@ export async function validarAtestadoOidcOpenPubkey(params: {
   };
 }
 
+const CABECALHO_SPKI_P256_DER = new Uint8Array([
+  0x30, 0x59, 0x30, 0x13, 0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01,
+  0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07, 0x03, 0x42, 0x00,
+]);
+
+/**
+ * Extrai o bloco ASN.1 SubjectPublicKeyInfo (SPKI, 91 bytes para ECDSA P-256)
+ * diretamente dos bytes DER de um `<X509Certificate>` Base64 e o formata como
+ * `-----BEGIN PUBLIC KEY-----`, garantindo paridade exata com `CryptoService.getPublicKeyPem()`
+ * do app Flutter mesmo quando `<PublicKeyPem>` não estiver explícito no XML.
+ */
+export function extrairPublicKeyPemDeCertificadoX509(
+  certBase64: string,
+): string | null {
+  const limpo = certBase64.replace(/\s+/g, "");
+  if (!limpo) return null;
+  try {
+    const binario = atob(limpo);
+    const der = new Uint8Array(binario.length);
+    for (let i = 0; i < binario.length; i++) {
+      der[i] = binario.charCodeAt(i);
+    }
+
+    for (
+      let i = 0;
+      i <= der.length - 91;
+      i++
+    ) {
+      let coincide = true;
+      for (let j = 0; j < CABECALHO_SPKI_P256_DER.length; j++) {
+        if (der[i + j] !== CABECALHO_SPKI_P256_DER[j]) {
+          coincide = false;
+          break;
+        }
+      }
+      if (coincide) {
+        const spki = der.slice(i, i + 91);
+        let spkiBin = "";
+        for (const b of spki) {
+          spkiBin += String.fromCharCode(b);
+        }
+        const spkiB64 = btoa(spkiBin);
+        const linhas = spkiB64.match(/.{1,64}/g) ?? [spkiB64];
+        return `-----BEGIN PUBLIC KEY-----\n${linhas.join("\n")}\n-----END PUBLIC KEY-----`;
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Verifica a integridade criptográfica completa de um pacote `.epub` do Fixalog:
  * 1. Existência e estrutura de `META-INF/signatures.xml`
@@ -309,9 +361,12 @@ export async function verificarAssinaturaEpubXmlDsig(
   const certificadoX509Pem = certBase64
     ? `-----BEGIN CERTIFICATE-----\n${certBase64}\n-----END CERTIFICATE-----`
     : "";
+  const chavePublicaExtraidaX509 = certBase64
+    ? extrairPublicKeyPemDeCertificadoX509(certBase64)
+    : null;
   const chavePublicaPem = matchPubKey
     ? matchPubKey[1].trim()
-    : certificadoX509Pem;
+    : (chavePublicaExtraidaX509 ?? certificadoX509Pem);
 
   if (!chavePublicaPem) {
     return {

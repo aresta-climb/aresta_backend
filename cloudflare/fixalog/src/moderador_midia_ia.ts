@@ -85,7 +85,8 @@ export async function dispararAlertaSegurancaFixalog(params: {
  * 1. Sub-requisição na borda para o Cloudflare CSAM Scanning Tool (`/__csam_scan/...`)
  * 2. Classificação CSAM (`S4`) via Cloudflare Workers AI Vision
  * 3. Classificação NSFW/Gore (`S12`) via Cloudflare Workers AI Vision
- * Atualiza `versoes_laudo_fixalog.status_moderacao` para `'ativo'` ou `'bloqueado'`.
+ * Atualiza `versoes_laudo_fixalog.status_moderacao` para `'ativo'` ou `'bloqueado'`
+ * e registra o progresso incremental (`verificacao_concluida` / `verificacao_total`) no D1.
  */
 export async function executarModeracaoAssincronaLaudo(params: {
   env: AmbienteFixalog;
@@ -142,6 +143,16 @@ export async function executarModeracaoAssincronaLaudo(params: {
 
   let totalImagensInspecionadas = 0;
   let totalIframesVideoInspecionados = 0;
+  const totalEtapas = Math.max(1, amostrasParaInspecionar.length);
+  let etapasConcluidas = 0;
+
+  if (env.DB) {
+    await env.DB.prepare(
+      "UPDATE versoes_laudo_fixalog SET verificacao_concluida = ?, verificacao_total = ? WHERE id_sessao = ? AND versao = ?",
+    )
+      .bind(0, totalEtapas, idSessao, versao)
+      .run();
+  }
 
   const bloquearVersao = async (
     motivo: string,
@@ -149,9 +160,16 @@ export async function executarModeracaoAssincronaLaudo(params: {
   ): Promise<ResultadoModeracaoLaudo> => {
     if (env.DB) {
       await env.DB.prepare(
-        "UPDATE versoes_laudo_fixalog SET status_moderacao = ?, motivo_moderacao = ? WHERE id_sessao = ? AND versao = ?",
+        "UPDATE versoes_laudo_fixalog SET status_moderacao = ?, motivo_moderacao = ?, verificacao_concluida = ?, verificacao_total = ? WHERE id_sessao = ? AND versao = ?",
       )
-        .bind("bloqueado", `${motivo}:${identificadorMidia}`, idSessao, versao)
+        .bind(
+          "bloqueado",
+          `${motivo}:${identificadorMidia}`,
+          etapasConcluidas,
+          totalEtapas,
+          idSessao,
+          versao,
+        )
         .run();
     }
 
@@ -199,14 +217,35 @@ export async function executarModeracaoAssincronaLaudo(params: {
 
     // Camadas 2 e 3: Cloudflare Workers AI Vision (S4 CSAM + S12 NSFW/Gore)
     if (env.AI) {
-      const respostaIa = await env.AI.run(MODELO_VISION_MODERACAO, {
-        image: Array.from(amostra.bytes.subarray(0, 512)),
-        prompt:
-          "Classify this climbing inspection image for safety. Reply SAFE or UNSAFE followed by S4 (CSAM) or S12 (NSFW/Sexual/Gore).",
-      });
-      const textoIa = String(
-        respostaIa.response ?? respostaIa.description ?? "SAFE",
-      ).toUpperCase();
+      let textoIa = "SAFE";
+      try {
+        const respostaIa = await env.AI.run(MODELO_VISION_MODERACAO, {
+          image: Array.from(amostra.bytes),
+          prompt:
+            "Classify this climbing inspection image for safety. Reply SAFE or UNSAFE followed by S4 (CSAM) or S12 (NSFW/Sexual/Gore).",
+        });
+        textoIa = String(
+          respostaIa.response ?? respostaIa.description ?? "SAFE",
+        ).toUpperCase();
+      } catch (erroIa) {
+        if (env.SENTRY_DSN) {
+          await relatarErroSentry(erroIa, {
+            dsn: env.SENTRY_DSN,
+            servico: "aresta-fixalog-worker",
+            tags: {
+              etapa: "workers_ai_vision",
+              id_sessao: idSessao,
+            },
+            extras: {
+              versao,
+              identificador_midia: amostra.identificador,
+              eh_iframe_video: amostra.ehIframeVideo,
+              tamanho_bytes: amostra.bytes.byteLength,
+            },
+            fetchFn: fetcher as typeof fetch,
+          });
+        }
+      }
 
       if (textoIa.includes("S4") || textoIa.includes("CSAM")) {
         return await bloquearVersao("WORKERS_AI_S4_CSAM", amostra.identificador);
@@ -219,13 +258,22 @@ export async function executarModeracaoAssincronaLaudo(params: {
         return await bloquearVersao("WORKERS_AI_S12_NSFW", amostra.identificador);
       }
     }
+
+    etapasConcluidas++;
+    if (env.DB) {
+      await env.DB.prepare(
+        "UPDATE versoes_laudo_fixalog SET verificacao_concluida = ?, verificacao_total = ? WHERE id_sessao = ? AND versao = ?",
+      )
+        .bind(etapasConcluidas, totalEtapas, idSessao, versao)
+        .run();
+    }
   }
 
   if (env.DB) {
     await env.DB.prepare(
-      "UPDATE versoes_laudo_fixalog SET status_moderacao = ?, motivo_moderacao = ? WHERE id_sessao = ? AND versao = ?",
+      "UPDATE versoes_laudo_fixalog SET status_moderacao = ?, motivo_moderacao = ?, verificacao_concluida = ?, verificacao_total = ? WHERE id_sessao = ? AND versao = ?",
     )
-      .bind("ativo", null, idSessao, versao)
+      .bind("ativo", null, totalEtapas, totalEtapas, idSessao, versao)
       .run();
   }
 

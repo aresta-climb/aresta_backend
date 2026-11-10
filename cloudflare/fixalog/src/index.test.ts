@@ -444,3 +444,145 @@ Deno.test("fixalog-worker: upload retomável em blocos (GET /status e PUT /chunk
   assertEquals(jsonChunkDup.ja_enviado, true);
   assertEquals(jsonChunkDup.versao, 1);
 });
+
+Deno.test("fixalog-worker: restringe GET /status ao proprietário (403), retorna progresso de verificação, limpa staging em erro 400 e expira staging > 14 dias via Cron", async () => {
+  const env = new AmbienteFixalogFake();
+  const tokensDono = await construirTokensAssinadosTeste({
+    userId: "usr_dono",
+    nome: "Autor Original",
+  });
+  const tokensTerceiro = await construirTokensAssinadosTeste({
+    userId: "usr_terceiro",
+    nome: "Outro Usuário",
+  });
+
+  const epub = await criarEpubAssinadoTeste({
+    titulo: "Via Corcovado",
+    atestadoOidcJwt: tokensDono.atestadoOidcJwt,
+    incluirVideo: true,
+  });
+  const sha256 = await calcularSha256Hex(epub);
+
+  // 1. Faz upload do laudo como usr_dono sem aguardar background ainda
+  const resUpload = await workerDefault.fetch(
+    new Request("https://fixalog.app/api/v1/laudos/sessao_segura", {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/epub+zip",
+        "X-Firebase-AppCheck": "app_check_valido_123",
+        Authorization: `Bearer ${tokensDono.jwtSupabase}`,
+      },
+      body: epub as unknown as BodyInit,
+    }),
+    env,
+    env.contexto,
+  );
+  assertEquals(resUpload.status, 201);
+
+  // 2. Outro usuário autenticado tentando consultar GET /status recebe 403 Forbidden
+  const resStatusTerceiro = await workerDefault.fetch(
+    new Request(
+      `https://fixalog.app/api/v1/laudos/sessao_segura/status?sha256=${sha256}`,
+      {
+        headers: {
+          "X-Firebase-AppCheck": "app_check_valido_123",
+          Authorization: `Bearer ${tokensTerceiro.jwtSupabase}`,
+        },
+      },
+    ),
+    env,
+  );
+  assertEquals(resStatusTerceiro.status, 403);
+
+  // 3. Conclui moderação e verifica que o dono recebe verificacao_concluida e verificacao_total
+  await env.aguardarTarefasBackground();
+  const resStatusDono = await workerDefault.fetch(
+    new Request(
+      `https://fixalog.app/api/v1/laudos/sessao_segura/status?sha256=${sha256}`,
+      {
+        headers: {
+          "X-Firebase-AppCheck": "app_check_valido_123",
+          Authorization: `Bearer ${tokensDono.jwtSupabase}`,
+        },
+      },
+    ),
+    env,
+  );
+  assertEquals(resStatusDono.status, 200);
+  const jsonStatusDono = await resStatusDono.json();
+  assertEquals(jsonStatusDono.status_moderacao, "ativo");
+  assertEquals(typeof jsonStatusDono.verificacao_concluida, "number");
+  assertEquals(typeof jsonStatusDono.verificacao_total, "number");
+  assertEquals(jsonStatusDono.verificacao_concluida > 0, true);
+  assertEquals(
+    jsonStatusDono.verificacao_concluida,
+    jsonStatusDono.verificacao_total,
+  );
+
+  // 4. Quando o último chunk falha na validação (ex.: SHA-256 ou assinatura inválida), os chunks de staging são removidos imediatamente do R2
+  const bytesInvalidos = new Uint8Array([1, 2, 3, 4, 5, 6]);
+  const shaInvalido = await calcularSha256Hex(bytesInvalidos);
+  const resChunkInvalido = await workerDefault.fetch(
+    new Request(
+      `https://fixalog.app/api/v1/laudos/sessao_invalida/chunk?sha256=${shaInvalido}&index=0&total=1`,
+      {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/octet-stream",
+          "X-Firebase-AppCheck": "app_check_valido_123",
+          Authorization: `Bearer ${tokensDono.jwtSupabase}`,
+        },
+        body: bytesInvalidos as unknown as BodyInit,
+      },
+    ),
+    env,
+  );
+  assertEquals(resChunkInvalido.status, 400);
+  const listagemAposErro = await env.LAUDOS_BUCKET.list({
+    prefix: `staging/sessao_invalida/${shaInvalido}/`,
+  });
+  assertEquals(listagemAposErro.objects.length, 0);
+
+  // 5. Cron Trigger (scheduled) limpa chunks órfãos em staging/ com > 14 dias e preserva os com < 14 dias
+  const agoraMs = Date.parse("2026-11-25T04:00:00Z");
+  const quinzeDiasAtras = new Date(agoraMs - 15 * 24 * 60 * 60 * 1000);
+  const dezDiasAtras = new Date(agoraMs - 10 * 24 * 60 * 60 * 1000);
+
+  await env.LAUDOS_BUCKET.put(
+    "staging/sessao_antiga/abc/chunk_0",
+    new Uint8Array([1, 2]),
+  );
+  env.LAUDOS_BUCKET.definirDataUpload(
+    "staging/sessao_antiga/abc/chunk_0",
+    quinzeDiasAtras,
+  );
+
+  await env.LAUDOS_BUCKET.put(
+    "staging/sessao_expedicao_10dias/def/chunk_0",
+    new Uint8Array([3, 4]),
+  );
+  env.LAUDOS_BUCKET.definirDataUpload(
+    "staging/sessao_expedicao_10dias/def/chunk_0",
+    dezDiasAtras,
+  );
+
+  await workerDefault.scheduled!(
+    { scheduledTime: agoraMs, cron: "0 4 * * *" },
+    env,
+    env.contexto,
+  );
+  await env.aguardarTarefasBackground();
+
+  assertEquals(
+    await env.LAUDOS_BUCKET.get("staging/sessao_antiga/abc/chunk_0"),
+    null,
+  );
+  assertEquals(
+    (
+      await env.LAUDOS_BUCKET.get(
+        "staging/sessao_expedicao_10dias/def/chunk_0",
+      )
+    ) !== null,
+    true,
+  );
+});
