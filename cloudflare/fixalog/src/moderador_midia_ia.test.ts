@@ -389,7 +389,7 @@ Deno.test("moderador_midia_ia: não gera falso-positivo quando o modelo Llama 3.
 
   env.AI.respostasConfiguradas = [
     "SAFE. This climbing hardware image does not contain S4 (CSAM) or S12 (NSFW/Sexual/Gore).",
-    "**SAFE** - The image shows metal rods and is not UNSAFE, NSFW, or S12.",
+    "This image shows page 2 of a technical PDF document (`_p2.webp`). There are no severe violations like S4 (child sexual abuse material / CSAM) or S12 (explicit nudity, pornography, or extreme gore), so the image is SAFE.",
   ];
 
   const resultado = await executarModeracaoAssincronaLaudo({

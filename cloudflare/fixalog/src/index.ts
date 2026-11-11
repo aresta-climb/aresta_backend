@@ -452,7 +452,7 @@ async function persistirVersaoEpubValidada(params: {
 
   await db
     .prepare(
-      "INSERT INTO versoes_laudo_fixalog VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO versoes_laudo_fixalog (id_sessao, versao, r2_key, tamanho_bytes, hash_epub_sha256, fingerprint_chave, nome_mantenedor, clube_mantenedor, indices_zip_json, materiais_referenciados_json, status_moderacao, motivo_moderacao, verificacao_concluida, verificacao_total, criado_em) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(
       idSessao,

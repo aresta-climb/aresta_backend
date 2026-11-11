@@ -138,26 +138,6 @@ export async function dispararAlertaSegurancaFixalog(params: {
     params.env.ALERTA_URL ?? "https://alertas.arestaclimb.com/api/v1/alertas";
   const fetcher = params.env.fetchExterno ?? fetch;
 
-  try {
-    await fetcher(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        origem: "fixalog-worker",
-        tipo_evento: params.tipoEvento,
-        nivel: params.nivel ?? "error",
-        id_sessao: params.idSessao,
-        versao: params.versao,
-        user_id: params.userId ?? null,
-        motivo: params.motivo,
-        detalhes: params.detalhes ?? null,
-        ocorrido_em: new Date().toISOString(),
-      }),
-    });
-  } catch {
-    // Não interrompe a transição de estado no D1 caso o webhook externo falhe
-  }
-
   if (params.env.SENTRY_DSN) {
     const erroRelato =
       params.erroOriginal instanceof Error
@@ -184,12 +164,32 @@ export async function dispararAlertaSegurancaFixalog(params: {
       fetchFn: fetcher as typeof fetch,
     });
   }
+
+  try {
+    await fetcher(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        origem: "fixalog-worker",
+        tipo_evento: params.tipoEvento,
+        nivel: params.nivel ?? "error",
+        id_sessao: params.idSessao,
+        versao: params.versao,
+        user_id: params.userId ?? null,
+        motivo: params.motivo,
+        detalhes: params.detalhes ?? null,
+        ocorrido_em: new Date().toISOString(),
+      }),
+    });
+  } catch {
+    // Não interrompe a transição de estado no D1 caso o webhook externo falhe
+  }
 }
 
 /**
  * Analisa a resposta textual do modelo Llama 3.2 Vision distinguindo respostas
- * aprovadas (`SAFE`, mesmo quando o modelo cita ausência de `S4`/`CSAM`/`S12`/`NSFW`)
- * de classificações positivas de violação (`UNSAFE S4` ou `UNSAFE S12`).
+ * aprovadas (`SAFE`, mesmo quando o modelo cita ausência de `S4`/`CSAM`/`S12`/`NSFW`
+ * no início, meio ou fim da frase) de classificações positivas de violação (`UNSAFE S4` ou `UNSAFE S12`).
  */
 export function classificarRespostaModeracaoVision(
   textoBruto: string,
@@ -200,22 +200,31 @@ export function classificarRespostaModeracaoVision(
     .trim()
     .toUpperCase();
 
-  if (/^SAFE\b/.test(normalizado)) {
+  // Em regex, \bSAFE\b exige fronteira de palavra antes do S, portanto NUNCA casa com UNSAFE.
+  // Se o modelo declarou a palavra isolada SAFE sem negá-la ("NOT SAFE") e sem veredito explícito UNSAFE, é SAFE.
+  const contemPalavraSafeIsolada = /\bSAFE\b/.test(normalizado);
+  const safeFoiNegado =
+    /\b(?:NOT|NO|NEVER|ISN'T|AREN'T|NEITHER)\s+(?:CONSIDERED\s+|CLASSIFIED\s+AS\s+)?SAFE\b/.test(
+      normalizado,
+    );
+  const vereditoExplicitoUnsafe =
+    /^UNSAFE\b/.test(normalizado) ||
+    /\b(?:IS|ARE|VERDICT|CLASSIFICATION|RESULT|STATUS)\s*[:=-]?\s*UNSAFE\b/.test(
+      normalizado,
+    );
+
+  if (contemPalavraSafeIsolada && !safeFoiNegado && !vereditoExplicitoUnsafe) {
     return "SAFE";
   }
 
   const semNegacoes = normalizado.replace(
-    /\b(?:NOT|NO|WITHOUT|FREE OF|DOES NOT CONTAIN|DOESN'T CONTAIN|NEITHER|NOR)\s+(?:ANY\s+)?(?:UNSAFE|S4|CSAM|S12|NSFW|SEXUAL|GORE)(?:\s*(?:,|OR|NOR|\(|\))\s*(?:UNSAFE|S4|CSAM|S12|NSFW|SEXUAL|GORE))*\b/g,
+    /\b(?:NOT|NO|WITHOUT|FREE OF|DOES NOT CONTAIN|DOESN'T CONTAIN|NEITHER|NOR)\s+(?:ANY\s+)?(?:SEVERE\s+VIOLATIONS\s+(?:LIKE|SUCH AS)\s+)?(?:UNSAFE|S4|CSAM|S12|NSFW|SEXUAL|GORE)(?:\s*(?:,|OR|NOR|\(|\))\s*(?:UNSAFE|S4|CSAM|S12|NSFW|SEXUAL|GORE))*\b/g,
     " ",
   );
 
   const contemUnsafe = /\bUNSAFE\b/.test(semNegacoes);
   const contemS4 = /\b(?:S4|CSAM)\b/.test(semNegacoes);
   const contemS12 = /\b(?:S12|NSFW)\b/.test(semNegacoes);
-
-  if (!contemUnsafe && /\bSAFE\b/.test(semNegacoes) && !contemS4 && !contemS12) {
-    return "SAFE";
-  }
 
   if (contemS4) {
     return "S4_CSAM";
@@ -488,7 +497,7 @@ export async function executarModeracaoAssincronaLaudo(params: {
     const entradaIa = {
       image: Array.from(amostra.bytes),
       prompt:
-        "You are a content safety classifier. Inspect this image ONLY for severe violations: S4 (child sexual abuse material / CSAM) or S12 (explicit nudity, pornography, or extreme gore). Hardware, tools, bolts, rock climbing gear, and maintenance scenes are SAFE. If the image is safe, reply with ONLY the single word: SAFE. Only if it contains a violation, reply with: UNSAFE S4 or UNSAFE S12.",
+        "You are a strict content safety classifier for a technical engineering and rock climbing inspection app. Photos of tools, saw blades, hardware, bolts, climbing gear, hands holding equipment, technical documents, PDFs, invoices, certificates, tables, and text pages are completely SAFE. Only classify as UNSAFE if the image depicts real child sexual abuse material (S4) or explicit pornography/extreme gore (S12). Reply with ONLY the single word: SAFE, or if a violation is present, reply: UNSAFE S4 or UNSAFE S12.",
     };
 
     let textoIa: string;
