@@ -15,9 +15,53 @@ import {
 export const MODELO_VISION_MODERACAO = "@cf/meta/llama-3.2-11b-vision-instruct";
 
 const falhasTecnicasPendentesNotificacao = new Set<string>();
+const moderacoesEmExecucaoTimestamp = new Map<string, number>();
 
 function chaveSessaoVersao(idSessao: string, versao: number): string {
   return `${idSessao}#v${versao}`;
+}
+
+/**
+ * Registra um heartbeat em memória indicando que a moderação de `{idSessao, versao}`
+ * está ativamente em execução neste Isolate do Worker.
+ */
+export function registrarHeartbeatModeracaoEmExecucao(
+  idSessao: string,
+  versao: number,
+  timestampMs = Date.now(),
+): void {
+  moderacoesEmExecucaoTimestamp.set(
+    chaveSessaoVersao(idSessao, versao),
+    timestampMs,
+  );
+}
+
+/**
+ * Remove o registro de execução em memória ao concluir ou interromper a moderação.
+ */
+export function encerrarHeartbeatModeracaoEmExecucao(
+  idSessao: string,
+  versao: number,
+): void {
+  moderacoesEmExecucaoTimestamp.delete(chaveSessaoVersao(idSessao, versao));
+}
+
+/**
+ * Verifica se há uma moderação ativa neste Isolate que progrediu nos últimos `limiteInatividadeMs`
+ * (20s por padrão — abaixo do limite de 30s do `ctx.waitUntil` do Cloudflare Workers).
+ */
+export function moderacaoEstaAtivaRecentemente(
+  idSessao: string,
+  versao: number,
+  limiteInatividadeMs = 20_000,
+): boolean {
+  const ultimo = moderacoesEmExecucaoTimestamp.get(
+    chaveSessaoVersao(idSessao, versao),
+  );
+  if (ultimo === undefined) {
+    return false;
+  }
+  return Date.now() - ultimo < limiteInatividadeMs;
 }
 
 /**
@@ -313,6 +357,25 @@ export async function executarModeracaoAssincronaLaudo(params: {
   userId: string;
   epubBytes: Uint8Array;
   indicePreCalculado?: MapaIndiceZipEpub;
+  etapaInicial?: number;
+}): Promise<ResultadoModeracaoLaudo> {
+  const { env, idSessao, versao, userId, epubBytes } = params;
+  registrarHeartbeatModeracaoEmExecucao(idSessao, versao);
+  try {
+    return await _executarModeracaoAssincronaLaudoInterno(params);
+  } finally {
+    encerrarHeartbeatModeracaoEmExecucao(idSessao, versao);
+  }
+}
+
+async function _executarModeracaoAssincronaLaudoInterno(params: {
+  env: AmbienteFixalog;
+  idSessao: string;
+  versao: number;
+  userId: string;
+  epubBytes: Uint8Array;
+  indicePreCalculado?: MapaIndiceZipEpub;
+  etapaInicial?: number;
 }): Promise<ResultadoModeracaoLaudo> {
   const { env, idSessao, versao, userId, epubBytes } = params;
   const indice = params.indicePreCalculado ?? extrairIndiceZipEpub(epubBytes);
@@ -447,16 +510,29 @@ export async function executarModeracaoAssincronaLaudo(params: {
   }
 
   totalEtapas = Math.max(1, amostrasParaInspecionar.length);
+  etapasConcluidas = Math.min(
+    Math.max(0, params.etapaInicial ?? 0),
+    amostrasParaInspecionar.length,
+  );
+
+  for (let i = 0; i < etapasConcluidas; i++) {
+    if (amostrasParaInspecionar[i].ehIframeVideo) {
+      totalIframesVideoInspecionados++;
+    } else {
+      totalImagensInspecionadas++;
+    }
+  }
 
   if (env.DB) {
     await env.DB.prepare(
       "UPDATE versoes_laudo_fixalog SET verificacao_concluida = ?, verificacao_total = ? WHERE id_sessao = ? AND versao = ?",
     )
-      .bind(0, totalEtapas, idSessao, versao)
+      .bind(etapasConcluidas, totalEtapas, idSessao, versao)
       .run();
   }
 
-  for (const amostra of amostrasParaInspecionar) {
+  for (const amostra of amostrasParaInspecionar.slice(etapasConcluidas)) {
+    registrarHeartbeatModeracaoEmExecucao(idSessao, versao);
     if (amostra.ehIframeVideo) {
       totalIframesVideoInspecionados++;
     } else {

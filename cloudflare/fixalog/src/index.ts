@@ -36,6 +36,8 @@ import {
   consumirNotificacaoFalhaTecnicaRecente,
   dispararAlertaSegurancaFixalog,
   executarModeracaoAssincronaLaudo,
+  moderacaoEstaAtivaRecentemente,
+  registrarHeartbeatModeracaoEmExecucao,
   verificarTokenHmacCsamScan,
 } from "./moderador_midia_ia.ts";
 import {
@@ -229,28 +231,44 @@ async function reagendarModeracaoSeErroTecnico(params: {
   const ehErroTecnico =
     versaoRow.status_moderacao === "bloqueado" &&
     (versaoRow.motivo_moderacao ?? "").startsWith("ERRO_TECNICO_VERIFICACAO:");
+  const ehEmAnaliseInterrompida =
+    versaoRow.status_moderacao === "em_analise" &&
+    !moderacaoEstaAtivaRecentemente(idSessao, versaoRow.versao);
 
-  if (!ehErroTecnico) {
+  if (!ehErroTecnico && !ehEmAnaliseInterrompida) {
     return versaoRow;
   }
 
   if (
+    ehErroTecnico &&
     respeitarNotificacaoPendente &&
     consumirNotificacaoFalhaTecnicaRecente(idSessao, versaoRow.versao)
   ) {
     return versaoRow;
   }
 
-  // Limpa qualquer notificação residual e reinicia a verificação no D1
+  // Limpa qualquer notificação residual e retoma a verificação a partir da última etapa concluída no D1
   consumirNotificacaoFalhaTecnicaRecente(idSessao, versaoRow.versao);
   const totalEtapas = Math.max(1, versaoRow.verificacao_total ?? 1);
+  const etapaRetomada = Math.min(
+    Math.max(0, versaoRow.verificacao_concluida ?? 0),
+    totalEtapas - 1,
+  );
   await db
     .prepare(
       "UPDATE versoes_laudo_fixalog SET status_moderacao = ?, motivo_moderacao = ?, verificacao_concluida = ?, verificacao_total = ? WHERE id_sessao = ? AND versao = ?",
     )
-    .bind("em_analise", null, 0, totalEtapas, idSessao, versaoRow.versao)
+    .bind(
+      "em_analise",
+      null,
+      etapaRetomada,
+      totalEtapas,
+      idSessao,
+      versaoRow.versao,
+    )
     .run();
 
+  registrarHeartbeatModeracaoEmExecucao(idSessao, versaoRow.versao);
   const tarefaReprocessamento = (async () => {
     const objR2 = await bucket.get(versaoRow.r2_key);
     if (!objR2) {
@@ -259,9 +277,12 @@ async function reagendarModeracaoSeErroTecnico(params: {
     const epubBytes = new Uint8Array(await objR2.arrayBuffer());
     let indicePreCalculado: MapaIndiceZipEpub | undefined;
     try {
-      indicePreCalculado = JSON.parse(
+      const parsed = JSON.parse(
         versaoRow.indices_zip_json,
       ) as MapaIndiceZipEpub;
+      if (parsed && Object.keys(parsed).length > 0) {
+        indicePreCalculado = parsed;
+      }
     } catch {
       indicePreCalculado = undefined;
     }
@@ -272,6 +293,7 @@ async function reagendarModeracaoSeErroTecnico(params: {
       userId,
       epubBytes,
       indicePreCalculado,
+      etapaInicial: etapaRetomada,
     });
     await invalidarCacheBordaLaudo(env, idSessao, versaoRow.versao);
   })();
@@ -287,7 +309,7 @@ async function reagendarModeracaoSeErroTecnico(params: {
     ...versaoRow,
     status_moderacao: "em_analise",
     motivo_moderacao: null,
-    verificacao_concluida: 0,
+    verificacao_concluida: etapaRetomada,
     verificacao_total: totalEtapas,
   };
 }

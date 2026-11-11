@@ -800,4 +800,94 @@ Deno.test("fixalog-worker: reprocessa automaticamente laudo já enviado no R2 qu
   assertEquals(jsonFinal.ja_enviado, true);
   assertEquals(jsonFinal.status_moderacao, "ativo");
   assertEquals(jsonFinal.motivo_moderacao, null);
+
+  // 3. Se uma versão ficar parada em "em_analise" (ex.: limite de 30s do ctx.waitUntil após 2 de 3 mídias),
+  // o próximo GET /status retoma automaticamente da etapa 2 (processando apenas a 3ª mídia restante)
+  const epubTresMidias = await criarEpubAssinadoTeste({
+    titulo: "Barras Roscadas 316",
+    atestadoOidcJwt: tokensDono.atestadoOidcJwt,
+    incluirVideo: true,
+  });
+  const shaTresMidias = await calcularSha256Hex(epubTresMidias);
+  await env.LAUDOS_BUCKET.put(
+    "laudos/sessao_parada_10_15/v1.epub",
+    epubTresMidias,
+  );
+  const agoraIso = new Date().toISOString();
+  await env.DB.prepare(
+    "INSERT INTO laudos_fixalog VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+  )
+    .bind(
+      "sessao_parada_10_15",
+      "usr_retentativa",
+      "MATERIAL",
+      " Anchor Bolts",
+      "Barras Roscadas 316",
+      null,
+      null,
+      null,
+      1,
+      agoraIso,
+      agoraIso,
+    )
+    .run();
+  await env.DB.prepare(
+    "INSERT INTO versoes_laudo_fixalog (id_sessao, versao, r2_key, tamanho_bytes, hash_epub_sha256, fingerprint_chave, nome_mantenedor, clube_mantenedor, indices_zip_json, materiais_referenciados_json, status_moderacao, motivo_moderacao, verificacao_concluida, verificacao_total, criado_em) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+  )
+    .bind(
+      "sessao_parada_10_15",
+      1,
+      "laudos/sessao_parada_10_15/v1.epub",
+      epubTresMidias.byteLength,
+      shaTresMidias,
+      "fp",
+      "Renato Utsch",
+      "FEMERJ",
+      "{}",
+      "[]",
+      "em_analise",
+      null,
+      2,
+      3,
+      agoraIso,
+    )
+    .run();
+
+  const chamadasIaAntes = env.AI.chamadas.length;
+  const resStatusParada = await workerDefault.fetch(
+    new Request(
+      `https://fixalog.app/api/v1/laudos/sessao_parada_10_15/status?sha256=${shaTresMidias}`,
+      {
+        headers: {
+          "X-Firebase-AppCheck": "app_check_valido_123",
+          Authorization: `Bearer ${tokensDono.jwtSupabase}`,
+        },
+      },
+    ),
+    env,
+    env.contexto,
+  );
+  assertEquals(resStatusParada.status, 200);
+  await env.aguardarTarefasBackground();
+
+  // Deve ter inspecionado apenas a 1 mídia restante (3 - 2 = 1 chamada à IA)
+  assertEquals(env.AI.chamadas.length - chamadasIaAntes, 1);
+
+  const resStatusDesbloqueada = await workerDefault.fetch(
+    new Request(
+      `https://fixalog.app/api/v1/laudos/sessao_parada_10_15/status?sha256=${shaTresMidias}`,
+      {
+        headers: {
+          "X-Firebase-AppCheck": "app_check_valido_123",
+          Authorization: `Bearer ${tokensDono.jwtSupabase}`,
+        },
+      },
+    ),
+    env,
+    env.contexto,
+  );
+  const jsonDesbloqueada = await resStatusDesbloqueada.json();
+  assertEquals(jsonDesbloqueada.status_moderacao, "ativo");
+  assertEquals(jsonDesbloqueada.verificacao_concluida, 3);
+  assertEquals(jsonDesbloqueada.verificacao_total, 3);
 });
