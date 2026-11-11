@@ -187,13 +187,51 @@ export async function dispararAlertaSegurancaFixalog(params: {
 }
 
 /**
- * Analisa a resposta textual do modelo Llama 3.2 Vision distinguindo respostas
- * aprovadas (`SAFE`, mesmo quando o modelo cita ausência de `S4`/`CSAM`/`S12`/`NSFW`
- * no início, meio ou fim da frase) de classificações positivas de violação (`UNSAFE S4` ou `UNSAFE S12`).
+ * Analisa a resposta do modelo Llama 3.2 Vision priorizando o formato JSON estruturado
+ * `{"reasoning": "...", "verdict": "SAFE" | "UNSAFE_S4" | "UNSAFE_S12"}` (onde o campo
+ * `reasoning` é completamente ignorado na tomada de decisão, eliminando falsos-positivos
+ * causados por termos técnicos ou negações na descrição da imagem) e mantendo fallback
+ * textual caso o modelo não retorne JSON válido.
  */
 export function classificarRespostaModeracaoVision(
   textoBruto: string,
 ): "SAFE" | "S4_CSAM" | "S12_NSFW" {
+  const inicioJson = textoBruto.indexOf("{");
+  const fimJson = textoBruto.lastIndexOf("}");
+  if (inicioJson >= 0 && fimJson > inicioJson) {
+    try {
+      const parsed = JSON.parse(
+        textoBruto.slice(inicioJson, fimJson + 1),
+      ) as Record<string, unknown>;
+      const vereditoJson = String(
+        parsed.verdict ??
+          parsed.veredito ??
+          parsed.classification ??
+          parsed.status ??
+          "",
+      )
+        .trim()
+        .toUpperCase();
+      if (vereditoJson) {
+        if (vereditoJson === "SAFE") {
+          return "SAFE";
+        }
+        if (vereditoJson.includes("S4") || vereditoJson.includes("CSAM")) {
+          return "S4_CSAM";
+        }
+        if (
+          vereditoJson.includes("S12") ||
+          vereditoJson.includes("NSFW") ||
+          vereditoJson.includes("UNSAFE")
+        ) {
+          return "S12_NSFW";
+        }
+      }
+    } catch {
+      // Se o JSON estiver truncado ou malformado, prossegue para o fallback textual abaixo
+    }
+  }
+
   const normalizado = textoBruto
     .replace(/[*_`~>#-]/g, " ")
     .replace(/\s+/g, " ")
@@ -496,13 +534,15 @@ export async function executarModeracaoAssincronaLaudo(params: {
 
     const entradaIa = {
       image: Array.from(amostra.bytes),
+      temperature: 0,
+      max_tokens: 120,
       prompt:
-        "You are a strict content safety classifier for a technical engineering and rock climbing inspection app. Photos of tools, saw blades, hardware, bolts, climbing gear, hands holding equipment, technical documents, PDFs, invoices, certificates, tables, and text pages are completely SAFE. Only classify as UNSAFE if the image depicts real child sexual abuse material (S4) or explicit pornography/extreme gore (S12). Reply with ONLY the single word: SAFE, or if a violation is present, reply: UNSAFE S4 or UNSAFE S12.",
+        'You are a strict content safety classifier for a technical engineering and rock climbing inspection app. Photos of tools, saw blades, hardware, bolts, climbing gear, hands holding equipment, technical documents, PDFs, invoices, certificates, tables, and text pages are completely SAFE. Only classify as UNSAFE_S4 if the image depicts real child sexual abuse material (CSAM), or UNSAFE_S12 if it depicts explicit pornography or extreme gore. Respond ONLY with a valid JSON object in this exact format: {"reasoning":"<brief 1-sentence description of what is visible>","verdict":"SAFE"} where "verdict" MUST be one of "SAFE", "UNSAFE_S4", or "UNSAFE_S12".',
     };
 
     let textoIa: string;
     try {
-      let respostaIa: { response?: string; description?: string };
+      let respostaIa: { response?: unknown; description?: unknown };
       try {
         respostaIa = await env.AI.run(MODELO_VISION_MODERACAO, entradaIa);
       } catch (erroPrimeiraTentativa) {
@@ -530,9 +570,11 @@ export async function executarModeracaoAssincronaLaudo(params: {
           throw erroPrimeiraTentativa;
         }
       }
-      textoIa = String(
-        respostaIa.response ?? respostaIa.description ?? "",
-      ).toUpperCase();
+      const bruto = respostaIa.response ?? respostaIa.description ?? "";
+      textoIa =
+        typeof bruto === "object" && bruto !== null
+          ? JSON.stringify(bruto)
+          : String(bruto).trim();
       if (!textoIa) {
         throw new Error("Resposta vazia do modelo Workers AI Vision.");
       }

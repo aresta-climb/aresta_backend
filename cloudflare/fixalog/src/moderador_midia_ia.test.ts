@@ -5,6 +5,7 @@ import { assertEquals } from "https://deno.land/std@0.192.0/testing/asserts.ts";
 import { construirZipEpubEmMemoria } from "./extrator_indice_epub.ts";
 import { AmbienteFixalogFake } from "./fakes/ambiente_fixalog_fake.ts";
 import {
+  classificarRespostaModeracaoVision,
   executarModeracaoAssincronaLaudo,
   gerarTokenHmacCsamScan,
   verificarTokenHmacCsamScan,
@@ -402,4 +403,65 @@ Deno.test("moderador_midia_ia: não gera falso-positivo quando o modelo Llama 3.
 
   assertEquals(resultado.status, "ativo");
   assertEquals(resultado.motivo, null);
+});
+
+Deno.test("moderador_midia_ia: solicita JSON determinístico (temperature=0) separando reasoning de verdict e ignora termos S4/S12/UNSAFE dentro de reasoning", async () => {
+  const env = new AmbienteFixalogFake();
+  await env.DB.prepare(
+    "INSERT INTO versoes_laudo_fixalog VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+  )
+    .bind(
+      "sessao_json_verdict",
+      1,
+      "laudos/sessao_json_verdict/v1.epub",
+      1500,
+      "hash",
+      "fp",
+      "Renato",
+      "FEMERJ",
+      "{}",
+      "[]",
+      "em_analise",
+      null,
+      0,
+      1,
+      "2026-11-10T00:00:00Z",
+    )
+    .run();
+
+  const epub = construirZipEpubEmMemoria([
+    { nome: "OEBPS/midias/doc_p2.webp", dados: new Uint8Array(600) },
+  ]);
+
+  // Mesmo se o reasoning contiver palavras como UNSAFE, NOT SAFE, S4 ou S12,
+  // o campo estruturado "verdict": "SAFE" tem precedência absoluta.
+  env.AI.respostasConfiguradas = [
+    '```json\n{"reasoning": "Technical document discussing why a corroded bolt is UNSAFE and NOT SAFE for climbing; no S4 or S12 content.", "verdict": "SAFE"}\n```',
+  ];
+
+  const resultado = await executarModeracaoAssincronaLaudo({
+    env,
+    idSessao: "sessao_json_verdict",
+    versao: 1,
+    userId: "usr_1",
+    epubBytes: epub,
+  });
+
+  assertEquals(resultado.status, "ativo");
+  assertEquals(resultado.motivo, null);
+  assertEquals(env.AI.chamadas[0].entrada.temperature, 0);
+  assertEquals(typeof env.AI.chamadas[0].entrada.max_tokens, "number");
+
+  assertEquals(
+    classificarRespostaModeracaoVision(
+      '{"reasoning": "Safe looking background, but contains explicit nudity", "verdict": "UNSAFE_S12"}',
+    ),
+    "S12_NSFW",
+  );
+  assertEquals(
+    classificarRespostaModeracaoVision(
+      '{"reasoning": "Child exploitation material detected", "verdict": "UNSAFE_S4"}',
+    ),
+    "S4_CSAM",
+  );
 });
