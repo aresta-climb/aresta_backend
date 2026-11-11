@@ -701,3 +701,103 @@ Deno.test("fixalog-worker: restringe GET /status ao proprietário (403), retorna
   assertEquals(resDeleteDono.status, 200);
   assertEquals(await env.LAUDOS_BUCKET.get("laudos/sessao_segura/v1.epub"), null);
 });
+
+Deno.test("fixalog-worker: reprocessa automaticamente laudo já enviado no R2 quando tentativa anterior falhou por ERRO_TECNICO_VERIFICACAO sem exigir novo upload", async () => {
+  const env = new AmbienteFixalogFake();
+  const tokensDono = await construirTokensAssinadosTeste({
+    userId: "usr_retentativa",
+    nome: "Renato Utsch",
+  });
+
+  const epub = await criarEpubAssinadoTeste({
+    titulo: "Barras Roscadas",
+    atestadoOidcJwt: tokensDono.atestadoOidcJwt,
+  });
+  const sha256 = await calcularSha256Hex(epub);
+
+  // 1. Primeiro upload falha na verificação por erro técnico (HTTP 522 simulado)
+  env.statusSubrequisicaoCsam = 522;
+  const resUpload = await workerDefault.fetch(
+    new Request("https://fixalog.app/api/v1/laudos/sessao_erro_tecnico", {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/epub+zip",
+        "X-Firebase-AppCheck": "app_check_valido_123",
+        Authorization: `Bearer ${tokensDono.jwtSupabase}`,
+      },
+      body: epub as unknown as BodyInit,
+    }),
+    env,
+    env.contexto,
+  );
+  assertEquals(resUpload.status, 201);
+  await env.aguardarTarefasBackground();
+
+  // O primeiro GET /status logo após a falha reporta o erro técnico ao cliente
+  const resStatusFalha = await workerDefault.fetch(
+    new Request(
+      `https://fixalog.app/api/v1/laudos/sessao_erro_tecnico/status?sha256=${sha256}`,
+      {
+        headers: {
+          "X-Firebase-AppCheck": "app_check_valido_123",
+          Authorization: `Bearer ${tokensDono.jwtSupabase}`,
+        },
+      },
+    ),
+    env,
+    env.contexto,
+  );
+  assertEquals(resStatusFalha.status, 200);
+  const jsonFalha = await resStatusFalha.json();
+  assertEquals(jsonFalha.ja_enviado, true);
+  assertEquals(jsonFalha.status_moderacao, "bloqueado");
+  assertEquals(
+    String(jsonFalha.motivo_moderacao).startsWith(
+      "ERRO_TECNICO_VERIFICACAO:CSAM_SCAN_HTTP_522",
+    ),
+    true,
+  );
+
+  // 2. Quando o problema técnico é sanado e o usuário toca em COMPARTILHAR novamente,
+  // a consulta a GET /status retoma automaticamente a verificação a partir do R2 sem re-upload!
+  env.statusSubrequisicaoCsam = 200;
+  const resStatusRetomada = await workerDefault.fetch(
+    new Request(
+      `https://fixalog.app/api/v1/laudos/sessao_erro_tecnico/status?sha256=${sha256}`,
+      {
+        headers: {
+          "X-Firebase-AppCheck": "app_check_valido_123",
+          Authorization: `Bearer ${tokensDono.jwtSupabase}`,
+        },
+      },
+    ),
+    env,
+    env.contexto,
+  );
+  assertEquals(resStatusRetomada.status, 200);
+  const jsonRetomada = await resStatusRetomada.json();
+  assertEquals(jsonRetomada.ja_enviado, true);
+  assertEquals(jsonRetomada.status_moderacao, "em_analise");
+  assertEquals(jsonRetomada.motivo_moderacao, null);
+
+  await env.aguardarTarefasBackground();
+
+  const resStatusFinal = await workerDefault.fetch(
+    new Request(
+      `https://fixalog.app/api/v1/laudos/sessao_erro_tecnico/status?sha256=${sha256}`,
+      {
+        headers: {
+          "X-Firebase-AppCheck": "app_check_valido_123",
+          Authorization: `Bearer ${tokensDono.jwtSupabase}`,
+        },
+      },
+    ),
+    env,
+    env.contexto,
+  );
+  assertEquals(resStatusFinal.status, 200);
+  const jsonFinal = await resStatusFinal.json();
+  assertEquals(jsonFinal.ja_enviado, true);
+  assertEquals(jsonFinal.status_moderacao, "ativo");
+  assertEquals(jsonFinal.motivo_moderacao, null);
+});

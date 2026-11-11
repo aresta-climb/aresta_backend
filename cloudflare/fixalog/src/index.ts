@@ -33,6 +33,7 @@ import {
   ContextoExecucaoFixalog,
 } from "./fakes/ambiente_fixalog_fake.ts";
 import {
+  consumirNotificacaoFalhaTecnicaRecente,
   dispararAlertaSegurancaFixalog,
   executarModeracaoAssincronaLaudo,
   verificarTokenHmacCsamScan,
@@ -198,6 +199,99 @@ async function listarChunksRecebidosNoR2(
   return indices;
 }
 
+/**
+ * Se uma versão já armazenada no R2 estiver em `status_moderacao === "bloqueado"`
+ * exclusivamente por falha técnica (`ERRO_TECNICO_VERIFICACAO:*`) de uma tentativa anterior,
+ * reseta seu status para `"em_analise"` e reagenda a moderação assíncrona lendo o `.epub`
+ * diretamente do R2 sem exigir novo upload de blocos pelo aplicativo.
+ */
+async function reagendarModeracaoSeErroTecnico(params: {
+  env: AmbienteFixalog;
+  db: BancoD1Fixalog;
+  bucket: BucketR2Fixalog;
+  ctx?: ContextoExecucaoFixalog;
+  idSessao: string;
+  userId: string;
+  versaoRow: LinhaVersoesLaudoFixalog;
+  respeitarNotificacaoPendente?: boolean;
+}): Promise<LinhaVersoesLaudoFixalog> {
+  const {
+    env,
+    db,
+    bucket,
+    ctx,
+    idSessao,
+    userId,
+    versaoRow,
+    respeitarNotificacaoPendente = false,
+  } = params;
+
+  const ehErroTecnico =
+    versaoRow.status_moderacao === "bloqueado" &&
+    (versaoRow.motivo_moderacao ?? "").startsWith("ERRO_TECNICO_VERIFICACAO:");
+
+  if (!ehErroTecnico) {
+    return versaoRow;
+  }
+
+  if (
+    respeitarNotificacaoPendente &&
+    consumirNotificacaoFalhaTecnicaRecente(idSessao, versaoRow.versao)
+  ) {
+    return versaoRow;
+  }
+
+  // Limpa qualquer notificação residual e reinicia a verificação no D1
+  consumirNotificacaoFalhaTecnicaRecente(idSessao, versaoRow.versao);
+  const totalEtapas = Math.max(1, versaoRow.verificacao_total ?? 1);
+  await db
+    .prepare(
+      "UPDATE versoes_laudo_fixalog SET status_moderacao = ?, motivo_moderacao = ?, verificacao_concluida = ?, verificacao_total = ? WHERE id_sessao = ? AND versao = ?",
+    )
+    .bind("em_analise", null, 0, totalEtapas, idSessao, versaoRow.versao)
+    .run();
+
+  const tarefaReprocessamento = (async () => {
+    const objR2 = await bucket.get(versaoRow.r2_key);
+    if (!objR2) {
+      return;
+    }
+    const epubBytes = new Uint8Array(await objR2.arrayBuffer());
+    let indicePreCalculado: MapaIndiceZipEpub | undefined;
+    try {
+      indicePreCalculado = JSON.parse(
+        versaoRow.indices_zip_json,
+      ) as MapaIndiceZipEpub;
+    } catch {
+      indicePreCalculado = undefined;
+    }
+    await executarModeracaoAssincronaLaudo({
+      env,
+      idSessao,
+      versao: versaoRow.versao,
+      userId,
+      epubBytes,
+      indicePreCalculado,
+    });
+    await invalidarCacheBordaLaudo(env, idSessao, versaoRow.versao);
+  })();
+
+  await invalidarCacheBordaLaudo(env, idSessao, versaoRow.versao);
+  if (ctx) {
+    ctx.waitUntil(tarefaReprocessamento);
+  } else {
+    await tarefaReprocessamento;
+  }
+
+  return {
+    ...versaoRow,
+    status_moderacao: "em_analise",
+    motivo_moderacao: null,
+    verificacao_concluida: 0,
+    verificacao_total: totalEtapas,
+  };
+}
+
 async function persistirVersaoEpubValidada(params: {
   env: AmbienteFixalog;
   db: BancoD1Fixalog;
@@ -243,17 +337,27 @@ async function persistirVersaoEpubValidada(params: {
     .first<LinhaVersoesLaudoFixalog>();
 
   if (versaoMesmoHash) {
+    const versaoAtualizada = await reagendarModeracaoSeErroTecnico({
+      env,
+      db,
+      bucket,
+      ctx,
+      idSessao,
+      userId,
+      versaoRow: versaoMesmoHash,
+      respeitarNotificacaoPendente: false,
+    });
     return {
       statusHttp: 200,
       jaEnviado: true,
-      versao: versaoMesmoHash.versao,
+      versao: versaoAtualizada.versao,
       statusModeracao:
-        (versaoMesmoHash.status_moderacao as
+        (versaoAtualizada.status_moderacao as
           | "em_analise"
           | "ativo"
           | "bloqueado") ?? "em_analise",
       urlPublica: `https://fixalog.app/v/${encodeURIComponent(idSessao)}`,
-      hashEpub: versaoMesmoHash.hash_epub_sha256,
+      hashEpub: versaoAtualizada.hash_epub_sha256,
     };
   }
 
@@ -668,6 +772,16 @@ export async function processarRequisicaoFixalog(
     }
 
     if (versaoEncontrada) {
+      versaoEncontrada = await reagendarModeracaoSeErroTecnico({
+        env,
+        db: env.DB,
+        bucket: env.LAUDOS_BUCKET,
+        ctx,
+        idSessao,
+        userId: usuario.userId,
+        versaoRow: versaoEncontrada,
+        respeitarNotificacaoPendente: true,
+      });
       const resposta: RespostaStatusLaudoFixalog = {
         id_sessao: idSessao,
         sha256: versaoEncontrada.hash_epub_sha256,
@@ -748,13 +862,23 @@ export async function processarRequisicaoFixalog(
       .first<LinhaVersoesLaudoFixalog>();
 
     if (versaoExistente) {
+      const versaoAtualizada = await reagendarModeracaoSeErroTecnico({
+        env,
+        db: env.DB,
+        bucket: env.LAUDOS_BUCKET,
+        ctx,
+        idSessao,
+        userId: usuario.userId,
+        versaoRow: versaoExistente,
+        respeitarNotificacaoPendente: false,
+      });
       const respostaJaEnviado: RespostaChunkLaudoFixalog = {
         id_sessao: idSessao,
-        sha256: versaoExistente.hash_epub_sha256,
+        sha256: versaoAtualizada.hash_epub_sha256,
         finalizado: true,
         ja_enviado: true,
-        versao: versaoExistente.versao,
-        status_moderacao: versaoExistente.status_moderacao ?? "em_analise",
+        versao: versaoAtualizada.versao,
+        status_moderacao: versaoAtualizada.status_moderacao ?? "em_analise",
         url_publica: `https://fixalog.app/v/${encodeURIComponent(idSessao)}`,
         chunks_recebidos: [],
       };
@@ -1150,7 +1274,7 @@ export async function processarRequisicaoFixalog(
       url.searchParams.get("v") ?? String(laudo.versao_atual ?? 1),
       10,
     );
-    const versaoExibida = await env.DB.prepare(
+    let versaoExibida = await env.DB.prepare(
       "SELECT * FROM versoes_laudo_fixalog WHERE id_sessao = ? AND versao = ?",
     )
       .bind(idSessao, versaoSolicitada)
@@ -1159,6 +1283,17 @@ export async function processarRequisicaoFixalog(
     if (!versaoExibida) {
       return new Response("Versão do laudo não encontrada.", { status: 404 });
     }
+
+    versaoExibida = await reagendarModeracaoSeErroTecnico({
+      env,
+      db: env.DB,
+      bucket: env.LAUDOS_BUCKET,
+      ctx,
+      idSessao,
+      userId: laudo.user_id,
+      versaoRow: versaoExibida,
+      respeitarNotificacaoPendente: true,
+    });
 
     if (versaoExibida.status_moderacao === "em_analise") {
       return new Response(

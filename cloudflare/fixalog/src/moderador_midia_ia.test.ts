@@ -286,3 +286,120 @@ Deno.test("moderador_midia_ia: opera em modo estritamente fail-closed e dispara 
     true,
   );
 });
+
+Deno.test("moderador_midia_ia: em produção sem fetchExterno evita sub-requisição loopback same-zone (HTTP 522) e popula Cache de Borda para o CSAM Scanning Tool", async () => {
+  const env = new AmbienteFixalogFake();
+  // Simula o runtime de produção do Cloudflare Worker onde fetchExterno não existe
+  (env as { fetchExterno?: unknown }).fetchExterno = undefined;
+
+  await env.DB.prepare(
+    "INSERT INTO versoes_laudo_fixalog VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+  )
+    .bind(
+      "sessao_prod_sem_loopback",
+      1,
+      "laudos/sessao_prod_sem_loopback/v1.epub",
+      1500,
+      "hash",
+      "fp",
+      "Renato",
+      "FEMERJ",
+      "{}",
+      "[]",
+      "em_analise",
+      null,
+      0,
+      1,
+      "2026-11-10T00:00:00Z",
+    )
+    .run();
+
+  const epub = construirZipEpubEmMemoria([
+    { nome: "OEBPS/midias/foto_prod.webp", dados: new Uint8Array(600) },
+  ]);
+
+  const fetchOriginal = globalThis.fetch;
+  try {
+    // No Cloudflare Workers, fetch() para a própria zona Worker-only retorna HTTP 522
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      const url = typeof input === "string"
+        ? input
+        : input instanceof URL
+        ? input.toString()
+        : input.url;
+      if (url.startsWith("https://fixalog.app/")) {
+        return new Response("Origin Connection Time-out", { status: 522 });
+      }
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    }) as typeof fetch;
+
+    const resultado = await executarModeracaoAssincronaLaudo({
+      env,
+      idSessao: "sessao_prod_sem_loopback",
+      versao: 1,
+      userId: "usr_1",
+      epubBytes: epub,
+    });
+
+    assertEquals(resultado.status, "ativo");
+    assertEquals(resultado.motivo, null);
+    assertEquals(resultado.totalImagensInspecionadas, 1);
+
+    // Verifica que a imagem foi registrada no Cache de Borda da zona para inspeção CSAM
+    const chavesCache = Array.from(env.cacheBorda.entradas.keys());
+    assertEquals(
+      chavesCache.some((u) =>
+        u.includes("/__csam_scan/sessao_prod_sem_loopback/v1/OEBPS/midias/foto_prod.webp")
+      ),
+      true,
+    );
+  } finally {
+    globalThis.fetch = fetchOriginal;
+  }
+});
+
+Deno.test("moderador_midia_ia: não gera falso-positivo quando o modelo Llama 3.2 Vision responde SAFE citando ausência de S4/CSAM ou S12/NSFW", async () => {
+  const env = new AmbienteFixalogFake();
+  await env.DB.prepare(
+    "INSERT INTO versoes_laudo_fixalog VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+  )
+    .bind(
+      "sessao_safe_verboso",
+      1,
+      "laudos/sessao_safe_verboso/v1.epub",
+      1500,
+      "hash",
+      "fp",
+      "Renato",
+      "FEMERJ",
+      "{}",
+      "[]",
+      "em_analise",
+      null,
+      0,
+      2,
+      "2026-11-10T00:00:00Z",
+    )
+    .run();
+
+  const epub = construirZipEpubEmMemoria([
+    { nome: "OEBPS/midias/foto_1.webp", dados: new Uint8Array(600) },
+    { nome: "OEBPS/midias/video_1_poster.jpg", dados: new Uint8Array(600) },
+  ]);
+
+  env.AI.respostasConfiguradas = [
+    "SAFE. This climbing hardware image does not contain S4 (CSAM) or S12 (NSFW/Sexual/Gore).",
+    "**SAFE** - The image shows metal rods and is not UNSAFE, NSFW, or S12.",
+  ];
+
+  const resultado = await executarModeracaoAssincronaLaudo({
+    env,
+    idSessao: "sessao_safe_verboso",
+    versao: 1,
+    userId: "usr_1",
+    epubBytes: epub,
+  });
+
+  assertEquals(resultado.status, "ativo");
+  assertEquals(resultado.motivo, null);
+});

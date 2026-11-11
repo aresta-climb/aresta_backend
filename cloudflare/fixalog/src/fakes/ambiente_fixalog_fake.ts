@@ -458,7 +458,9 @@ export class WorkersAiFixalogFake implements WorkersAiFixalog {
     this.chamadas.push({ modelo, entrada });
     if (entrada.prompt === "agree") {
       this.licencaAceita = true;
-      return { response: "Thank you for agreeing" };
+      throw new Error(
+        "5016: Thank you for agreeing to this model's terms. You may now use the model.",
+      );
     }
     if (this.exigirAgreeNaPrimeiraChamada && !this.licencaAceita) {
       throw new Error(

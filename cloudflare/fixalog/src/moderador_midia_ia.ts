@@ -7,9 +7,46 @@ import {
   MapaIndiceZipEpub,
 } from "./extrator_indice_epub.ts";
 import { relatarErroSentry } from "../../../supabase/functions/compartilhado/relator_sentry.ts";
-import { AmbienteFixalog } from "./fakes/ambiente_fixalog_fake.ts";
+import {
+  AmbienteFixalog,
+  CacheBordaFixalog,
+} from "./fakes/ambiente_fixalog_fake.ts";
 
 export const MODELO_VISION_MODERACAO = "@cf/meta/llama-3.2-11b-vision-instruct";
+
+const falhasTecnicasPendentesNotificacao = new Set<string>();
+
+function chaveSessaoVersao(idSessao: string, versao: number): string {
+  return `${idSessao}#v${versao}`;
+}
+
+/**
+ * Registra que uma versão de laudo acabou de sofrer falha técnica de verificação,
+ * garantindo que o próximo polling de `GET /status` receba a falha uma vez antes
+ * de habilitar o reprocessamento automático em novas tentativas do usuário.
+ */
+export function registrarFalhaTecnicaRecente(
+  idSessao: string,
+  versao: number,
+): void {
+  falhasTecnicasPendentesNotificacao.add(chaveSessaoVersao(idSessao, versao));
+}
+
+/**
+ * Consome a notificação pendente de falha técnica recente para `{idSessao, versao}`.
+ * Retorna `true` na primeira consulta imediatamente após a falha e `false` nas seguintes.
+ */
+export function consumirNotificacaoFalhaTecnicaRecente(
+  idSessao: string,
+  versao: number,
+): boolean {
+  const chave = chaveSessaoVersao(idSessao, versao);
+  if (falhasTecnicasPendentesNotificacao.has(chave)) {
+    falhasTecnicasPendentesNotificacao.delete(chave);
+    return true;
+  }
+  return false;
+}
 
 export interface ResultadoModeracaoLaudo {
   status: "ativo" | "bloqueado";
@@ -150,6 +187,47 @@ export async function dispararAlertaSegurancaFixalog(params: {
 }
 
 /**
+ * Analisa a resposta textual do modelo Llama 3.2 Vision distinguindo respostas
+ * aprovadas (`SAFE`, mesmo quando o modelo cita ausência de `S4`/`CSAM`/`S12`/`NSFW`)
+ * de classificações positivas de violação (`UNSAFE S4` ou `UNSAFE S12`).
+ */
+export function classificarRespostaModeracaoVision(
+  textoBruto: string,
+): "SAFE" | "S4_CSAM" | "S12_NSFW" {
+  const normalizado = textoBruto
+    .replace(/[*_`~>#-]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toUpperCase();
+
+  if (/^SAFE\b/.test(normalizado)) {
+    return "SAFE";
+  }
+
+  const semNegacoes = normalizado.replace(
+    /\b(?:NOT|NO|WITHOUT|FREE OF|DOES NOT CONTAIN|DOESN'T CONTAIN|NEITHER|NOR)\s+(?:ANY\s+)?(?:UNSAFE|S4|CSAM|S12|NSFW|SEXUAL|GORE)(?:\s*(?:,|OR|NOR|\(|\))\s*(?:UNSAFE|S4|CSAM|S12|NSFW|SEXUAL|GORE))*\b/g,
+    " ",
+  );
+
+  const contemUnsafe = /\bUNSAFE\b/.test(semNegacoes);
+  const contemS4 = /\b(?:S4|CSAM)\b/.test(semNegacoes);
+  const contemS12 = /\b(?:S12|NSFW)\b/.test(semNegacoes);
+
+  if (!contemUnsafe && /\bSAFE\b/.test(semNegacoes) && !contemS4 && !contemS12) {
+    return "SAFE";
+  }
+
+  if (contemS4) {
+    return "S4_CSAM";
+  }
+  if (contemS12 || contemUnsafe) {
+    return "S12_NSFW";
+  }
+
+  return "SAFE";
+}
+
+/**
  * Executa a esteira assíncrona de moderação em 3 camadas em modo estritamente *fail-closed*
  * sobre todas as fotos, posters (`_poster.jpg`) e keyframes de vídeo (`_kf_*s.jpg`) do laudo:
  * 1. Sub-requisição `GET /__csam_scan/:idSessao/v:versao/:caminho?token=<hmac>` para o Cloudflare CSAM Scanning Tool
@@ -168,7 +246,15 @@ export async function executarModeracaoAssincronaLaudo(params: {
 }): Promise<ResultadoModeracaoLaudo> {
   const { env, idSessao, versao, userId, epubBytes } = params;
   const indice = params.indicePreCalculado ?? extrairIndiceZipEpub(epubBytes);
-  const fetcher = env.fetchExterno ?? fetch;
+  const cacheBorda: CacheBordaFixalog | null =
+    env.cacheBorda ??
+    (
+      globalThis as unknown as {
+        caches?: { default?: CacheBordaFixalog };
+      }
+    ).caches?.default ??
+    null;
+  const urlsCsamCacheBorda: string[] = [];
 
   let totalImagensInspecionadas = 0;
   let totalIframesVideoInspecionados = 0;
@@ -181,6 +267,14 @@ export async function executarModeracaoAssincronaLaudo(params: {
     nivel: "error" | "fatal" = "error",
     erroOriginal?: unknown,
   ): Promise<ResultadoModeracaoLaudo> => {
+    if (motivo.startsWith("ERRO_TECNICO_VERIFICACAO:")) {
+      registrarFalhaTecnicaRecente(idSessao, versao);
+    }
+    if (cacheBorda && urlsCsamCacheBorda.length > 0) {
+      await Promise.all(
+        urlsCsamCacheBorda.map((u) => cacheBorda.delete(u).catch(() => false)),
+      );
+    }
     const motivoCompleto = `${motivo}:${identificadorMidia}`;
     if (env.DB) {
       await env.DB.prepare(
@@ -295,7 +389,7 @@ export async function executarModeracaoAssincronaLaudo(params: {
       totalImagensInspecionadas++;
     }
 
-    // Camada 1: Sub-requisição GET assinada por HMAC para o Cloudflare CSAM Scanning Tool
+    // Camada 1: Inspeção pelo Cloudflare CSAM Scanning Tool na borda da zona fixalog.app
     const tokenHmac = await gerarTokenHmacCsamScan({
       idSessao,
       versao,
@@ -310,29 +404,76 @@ export async function executarModeracaoAssincronaLaudo(params: {
       idSessao,
     )}/v${versao}/${caminhoCodificado}?token=${tokenHmac}`;
 
-    let resScan: Response;
-    try {
-      resScan = await fetcher(urlScanCsam, {
-        method: "GET",
-      });
-    } catch (erroScan) {
-      return await bloquearVersao(
-        "ERRO_TECNICO_VERIFICACAO:CSAM_SCAN_FETCH_ERROR",
-        amostra.identificador,
-        "fatal",
-        erroScan,
-      );
-    }
+    if (env.fetchExterno) {
+      let resScan: Response;
+      try {
+        resScan = await env.fetchExterno(urlScanCsam, {
+          method: "GET",
+        });
+      } catch (erroScan) {
+        return await bloquearVersao(
+          "ERRO_TECNICO_VERIFICACAO:CSAM_SCAN_FETCH_ERROR",
+          amostra.identificador,
+          "fatal",
+          erroScan,
+        );
+      }
 
-    if (resScan.status === 451 || resScan.status === 403) {
-      return await bloquearVersao("CSAM_SCAN_TOOL_MATCH", amostra.identificador);
-    }
-    if (resScan.status !== 200) {
-      return await bloquearVersao(
-        `ERRO_TECNICO_VERIFICACAO:CSAM_SCAN_HTTP_${resScan.status}`,
-        amostra.identificador,
-        "fatal",
-      );
+      if (resScan.status === 451 || resScan.status === 403) {
+        return await bloquearVersao(
+          "CSAM_SCAN_TOOL_MATCH",
+          amostra.identificador,
+        );
+      }
+      if (resScan.status !== 200) {
+        return await bloquearVersao(
+          `ERRO_TECNICO_VERIFICACAO:CSAM_SCAN_HTTP_${resScan.status}`,
+          amostra.identificador,
+          "fatal",
+        );
+      }
+    } else if (cacheBorda) {
+      // Em produção no Cloudflare Workers (zona Worker-only sem servidor de origem DNS),
+      // chamadas fetch() para a própria zona fixalog.app sofrem bypass do Worker e falham com HTTP 522.
+      // O CSAM Scanning Tool da Cloudflare opera diretamente sobre objetos de imagem no Cache de Borda.
+      const mimeTypeAmostra =
+        indice[amostra.identificador]?.mimeType ??
+        (amostra.identificador.toLowerCase().endsWith(".webp")
+          ? "image/webp"
+          : amostra.identificador.toLowerCase().endsWith(".png")
+          ? "image/png"
+          : "image/jpeg");
+      try {
+        await cacheBorda.put(
+          urlScanCsam,
+          new Response(new Uint8Array(amostra.bytes), {
+            status: 200,
+            headers: {
+              "Content-Type": mimeTypeAmostra,
+              "Content-Length": String(amostra.bytes.byteLength),
+              "Cache-Control": "public, max-age=3600",
+            },
+          }),
+        );
+        urlsCsamCacheBorda.push(urlScanCsam);
+        const inspecaoBorda = await cacheBorda.match(urlScanCsam);
+        if (
+          inspecaoBorda &&
+          (inspecaoBorda.status === 451 || inspecaoBorda.status === 403)
+        ) {
+          return await bloquearVersao(
+            "CSAM_SCAN_TOOL_MATCH",
+            amostra.identificador,
+          );
+        }
+      } catch (erroCache) {
+        return await bloquearVersao(
+          "ERRO_TECNICO_VERIFICACAO:CSAM_SCAN_CACHE_ERROR",
+          amostra.identificador,
+          "fatal",
+          erroCache,
+        );
+      }
     }
 
     // Camadas 2 e 3: Cloudflare Workers AI Vision (S4 CSAM + S12 NSFW/Gore)
@@ -347,7 +488,7 @@ export async function executarModeracaoAssincronaLaudo(params: {
     const entradaIa = {
       image: Array.from(amostra.bytes),
       prompt:
-        "Classify this climbing inspection image for safety. Reply SAFE or UNSAFE followed by S4 (CSAM) or S12 (NSFW/Sexual/Gore).",
+        "You are a content safety classifier. Inspect this image ONLY for severe violations: S4 (child sexual abuse material / CSAM) or S12 (explicit nudity, pornography, or extreme gore). Hardware, tools, bolts, rock climbing gear, and maintenance scenes are SAFE. If the image is safe, reply with ONLY the single word: SAFE. Only if it contains a violation, reply with: UNSAFE S4 or UNSAFE S12.",
     };
 
     let textoIa: string;
@@ -361,7 +502,20 @@ export async function executarModeracaoAssincronaLaudo(params: {
             ? erroPrimeiraTentativa.message
             : String(erroPrimeiraTentativa);
         if (msg.includes("5016") || msg.toLowerCase().includes("agree")) {
-          await env.AI.run(MODELO_VISION_MODERACAO, { prompt: "agree" });
+          try {
+            await env.AI.run(MODELO_VISION_MODERACAO, { prompt: "agree" });
+          } catch (erroAgree) {
+            const msgAgree =
+              erroAgree instanceof Error
+                ? erroAgree.message
+                : String(erroAgree);
+            if (
+              !msgAgree.includes("5016") &&
+              !msgAgree.toLowerCase().includes("agree")
+            ) {
+              throw erroAgree;
+            }
+          }
           respostaIa = await env.AI.run(MODELO_VISION_MODERACAO, entradaIa);
         } else {
           throw erroPrimeiraTentativa;
@@ -382,14 +536,11 @@ export async function executarModeracaoAssincronaLaudo(params: {
       );
     }
 
-    if (textoIa.includes("S4") || textoIa.includes("CSAM")) {
+    const vereditoIa = classificarRespostaModeracaoVision(textoIa);
+    if (vereditoIa === "S4_CSAM") {
       return await bloquearVersao("WORKERS_AI_S4_CSAM", amostra.identificador);
     }
-    if (
-      textoIa.includes("S12") ||
-      textoIa.includes("NSFW") ||
-      textoIa.includes("UNSAFE")
-    ) {
+    if (vereditoIa === "S12_NSFW") {
       return await bloquearVersao("WORKERS_AI_S12_NSFW", amostra.identificador);
     }
 
