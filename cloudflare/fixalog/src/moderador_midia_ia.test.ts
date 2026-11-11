@@ -405,7 +405,7 @@ Deno.test("moderador_midia_ia: não gera falso-positivo quando o modelo Llama 3.
   assertEquals(resultado.motivo, null);
 });
 
-Deno.test("moderador_midia_ia: solicita JSON determinístico (temperature=0) separando reasoning de verdict e ignora termos S4/S12/UNSAFE dentro de reasoning", async () => {
+Deno.test("moderador_midia_ia: solicita JSON estruturado separando reasoning de verdict sem reduzir temperature e ignora termos S4/S12/UNSAFE dentro de reasoning", async () => {
   const env = new AmbienteFixalogFake();
   await env.DB.prepare(
     "INSERT INTO versoes_laudo_fixalog VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -449,8 +449,7 @@ Deno.test("moderador_midia_ia: solicita JSON determinístico (temperature=0) sep
 
   assertEquals(resultado.status, "ativo");
   assertEquals(resultado.motivo, null);
-  assertEquals(env.AI.chamadas[0].entrada.temperature, 0);
-  assertEquals(typeof env.AI.chamadas[0].entrada.max_tokens, "number");
+  assertEquals(env.AI.chamadas[0].entrada.temperature, undefined);
 
   assertEquals(
     classificarRespostaModeracaoVision(
@@ -463,5 +462,31 @@ Deno.test("moderador_midia_ia: solicita JSON determinístico (temperature=0) sep
       '{"reasoning": "Child exploitation material detected", "verdict": "UNSAFE_S4"}',
     ),
     "S4_CSAM",
+  );
+
+  // Quando a mídia é bloqueada por UNSAFE, o reasoning da LLM deve constar no alerta/issue do Sentry
+  env.AI.respostasConfiguradas = [
+    '{"reasoning": "Explicit adult content detected in the attached photo", "verdict": "UNSAFE_S12"}',
+  ];
+  const resBloqueadoComReasoning = await executarModeracaoAssincronaLaudo({
+    env,
+    idSessao: "sessao_json_verdict",
+    versao: 1,
+    userId: "usr_1",
+    epubBytes: epub,
+  });
+  assertEquals(resBloqueadoComReasoning.status, "bloqueado");
+
+  const envelopesSentry = env.requisicoesExternas.filter((r) =>
+    r.url.includes("ingest.us.sentry.io")
+  );
+  const ultimoEnvelopeSentry = String(
+    envelopesSentry[envelopesSentry.length - 1]?.init?.body ?? "",
+  );
+  assertEquals(
+    ultimoEnvelopeSentry.includes(
+      "Explicit adult content detected in the attached photo",
+    ),
+    true,
   );
 });

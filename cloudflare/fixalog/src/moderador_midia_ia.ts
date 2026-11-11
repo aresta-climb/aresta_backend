@@ -116,6 +116,11 @@ export async function verificarTokenHmacCsamScan(params: {
   return diff === 0;
 }
 
+export interface InterpretacaoModeracaoVision {
+  veredito: "SAFE" | "S4_CSAM" | "S12_NSFW";
+  reasoning: string | null;
+}
+
 /**
  * Dispara alerta imediato para `alertas.arestaclimb.com` (ou `env.ALERTA_URL`) e Sentry
  * quando ocorre bloqueio por CSAM/NSFW, falha técnica fail-closed ou denúncia de usuário.
@@ -131,6 +136,7 @@ export async function dispararAlertaSegurancaFixalog(params: {
     | "DENUNCIA_LAUDO";
   motivo: string;
   detalhes?: string | null;
+  reasoningIa?: string | null;
   nivel?: "error" | "fatal";
   erroOriginal?: unknown;
 }): Promise<void> {
@@ -139,14 +145,14 @@ export async function dispararAlertaSegurancaFixalog(params: {
   const fetcher = params.env.fetchExterno ?? fetch;
 
   if (params.env.SENTRY_DSN) {
-    const erroRelato =
+    const sufixoErro =
       params.erroOriginal instanceof Error
-        ? new Error(
-            `[${params.tipoEvento}] Laudo ${params.idSessao} (v${params.versao}): ${params.motivo} — ${params.erroOriginal.message}`,
-          )
-        : new Error(
-            `[${params.tipoEvento}] Laudo ${params.idSessao} (v${params.versao}): ${params.motivo}`,
-          );
+        ? ` — ${params.erroOriginal.message}`
+        : "";
+    const sufixoDetalhes = params.detalhes ? ` (${params.detalhes})` : "";
+    const erroRelato = new Error(
+      `[${params.tipoEvento}] Laudo ${params.idSessao} (v${params.versao}): ${params.motivo}${sufixoDetalhes}${sufixoErro}`,
+    );
     await relatarErroSentry(erroRelato, {
       dsn: params.env.SENTRY_DSN,
       servico: "aresta-fixalog-worker",
@@ -160,6 +166,7 @@ export async function dispararAlertaSegurancaFixalog(params: {
         user_id: params.userId ?? null,
         motivo: params.motivo,
         detalhes: params.detalhes ?? null,
+        reasoning_ia: params.reasoningIa ?? null,
       },
       fetchFn: fetcher as typeof fetch,
     });
@@ -178,6 +185,7 @@ export async function dispararAlertaSegurancaFixalog(params: {
         user_id: params.userId ?? null,
         motivo: params.motivo,
         detalhes: params.detalhes ?? null,
+        reasoning_ia: params.reasoningIa ?? null,
         ocorrido_em: new Date().toISOString(),
       }),
     });
@@ -187,15 +195,15 @@ export async function dispararAlertaSegurancaFixalog(params: {
 }
 
 /**
- * Analisa a resposta do modelo Llama 3.2 Vision priorizando o formato JSON estruturado
- * `{"reasoning": "...", "verdict": "SAFE" | "UNSAFE_S4" | "UNSAFE_S12"}` (onde o campo
- * `reasoning` é completamente ignorado na tomada de decisão, eliminando falsos-positivos
- * causados por termos técnicos ou negações na descrição da imagem) e mantendo fallback
- * textual caso o modelo não retorne JSON válido.
+ * Extrai o `veredito` e o `reasoning` da resposta do modelo Llama 3.2 Vision priorizando
+ * o formato JSON estruturado `{"reasoning": "...", "verdict": "SAFE" | "UNSAFE_S4" | "UNSAFE_S12"}`
+ * (onde o campo `reasoning` é completamente ignorado na tomada de decisão, mas preservado para
+ * diagnóstico em alertas/issues do Sentry quando ocorre bloqueio UNSAFE).
  */
-export function classificarRespostaModeracaoVision(
+export function interpretarRespostaModeracaoVision(
   textoBruto: string,
-): "SAFE" | "S4_CSAM" | "S12_NSFW" {
+): InterpretacaoModeracaoVision {
+  let reasoningExtraido: string | null = null;
   const inicioJson = textoBruto.indexOf("{");
   const fimJson = textoBruto.lastIndexOf("}");
   if (inicioJson >= 0 && fimJson > inicioJson) {
@@ -203,6 +211,11 @@ export function classificarRespostaModeracaoVision(
       const parsed = JSON.parse(
         textoBruto.slice(inicioJson, fimJson + 1),
       ) as Record<string, unknown>;
+      const reasoningBruto = String(
+        parsed.reasoning ?? parsed.reason ?? parsed.explanation ?? "",
+      ).trim();
+      reasoningExtraido = reasoningBruto || null;
+
       const vereditoJson = String(
         parsed.verdict ??
           parsed.veredito ??
@@ -214,17 +227,17 @@ export function classificarRespostaModeracaoVision(
         .toUpperCase();
       if (vereditoJson) {
         if (vereditoJson === "SAFE") {
-          return "SAFE";
+          return { veredito: "SAFE", reasoning: reasoningExtraido };
         }
         if (vereditoJson.includes("S4") || vereditoJson.includes("CSAM")) {
-          return "S4_CSAM";
+          return { veredito: "S4_CSAM", reasoning: reasoningExtraido };
         }
         if (
           vereditoJson.includes("S12") ||
           vereditoJson.includes("NSFW") ||
           vereditoJson.includes("UNSAFE")
         ) {
-          return "S12_NSFW";
+          return { veredito: "S12_NSFW", reasoning: reasoningExtraido };
         }
       }
     } catch {
@@ -232,6 +245,7 @@ export function classificarRespostaModeracaoVision(
     }
   }
 
+  const reasoningFallback = reasoningExtraido ?? (textoBruto.trim() || null);
   const normalizado = textoBruto
     .replace(/[*_`~>#-]/g, " ")
     .replace(/\s+/g, " ")
@@ -252,7 +266,7 @@ export function classificarRespostaModeracaoVision(
     );
 
   if (contemPalavraSafeIsolada && !safeFoiNegado && !vereditoExplicitoUnsafe) {
-    return "SAFE";
+    return { veredito: "SAFE", reasoning: reasoningFallback };
   }
 
   const semNegacoes = normalizado.replace(
@@ -265,13 +279,22 @@ export function classificarRespostaModeracaoVision(
   const contemS12 = /\b(?:S12|NSFW)\b/.test(semNegacoes);
 
   if (contemS4) {
-    return "S4_CSAM";
+    return { veredito: "S4_CSAM", reasoning: reasoningFallback };
   }
   if (contemS12 || contemUnsafe) {
-    return "S12_NSFW";
+    return { veredito: "S12_NSFW", reasoning: reasoningFallback };
   }
 
-  return "SAFE";
+  return { veredito: "SAFE", reasoning: reasoningFallback };
+}
+
+/**
+ * Analisa a resposta do modelo Llama 3.2 Vision retornando apenas o veredito de classificação.
+ */
+export function classificarRespostaModeracaoVision(
+  textoBruto: string,
+): "SAFE" | "S4_CSAM" | "S12_NSFW" {
+  return interpretarRespostaModeracaoVision(textoBruto).veredito;
 }
 
 /**
@@ -313,6 +336,7 @@ export async function executarModeracaoAssincronaLaudo(params: {
     identificadorMidia: string,
     nivel: "error" | "fatal" = "error",
     erroOriginal?: unknown,
+    reasoningIa?: string | null,
   ): Promise<ResultadoModeracaoLaudo> => {
     if (motivo.startsWith("ERRO_TECNICO_VERIFICACAO:")) {
       registrarFalhaTecnicaRecente(idSessao, versao);
@@ -346,7 +370,10 @@ export async function executarModeracaoAssincronaLaudo(params: {
       tipoEvento:
         nivel === "fatal" ? "EMERGENCIA_FALHA_MODERACAO" : "BLOQUEIO_CSAM_NSFW",
       motivo,
-      detalhes: `Mídia bloqueada: ${identificadorMidia}`,
+      detalhes: reasoningIa
+        ? `Mídia bloqueada: ${identificadorMidia} | Reasoning IA: ${reasoningIa}`
+        : `Mídia bloqueada: ${identificadorMidia}`,
+      reasoningIa,
       nivel,
       erroOriginal,
     });
@@ -534,8 +561,6 @@ export async function executarModeracaoAssincronaLaudo(params: {
 
     const entradaIa = {
       image: Array.from(amostra.bytes),
-      temperature: 0,
-      max_tokens: 120,
       prompt:
         'You are a strict content safety classifier for a technical engineering and rock climbing inspection app. Photos of tools, saw blades, hardware, bolts, climbing gear, hands holding equipment, technical documents, PDFs, invoices, certificates, tables, and text pages are completely SAFE. Only classify as UNSAFE_S4 if the image depicts real child sexual abuse material (CSAM), or UNSAFE_S12 if it depicts explicit pornography or extreme gore. Respond ONLY with a valid JSON object in this exact format: {"reasoning":"<brief 1-sentence description of what is visible>","verdict":"SAFE"} where "verdict" MUST be one of "SAFE", "UNSAFE_S4", or "UNSAFE_S12".',
     };
@@ -587,12 +612,24 @@ export async function executarModeracaoAssincronaLaudo(params: {
       );
     }
 
-    const vereditoIa = classificarRespostaModeracaoVision(textoIa);
-    if (vereditoIa === "S4_CSAM") {
-      return await bloquearVersao("WORKERS_AI_S4_CSAM", amostra.identificador);
+    const interpretacaoIa = interpretarRespostaModeracaoVision(textoIa);
+    if (interpretacaoIa.veredito === "S4_CSAM") {
+      return await bloquearVersao(
+        "WORKERS_AI_S4_CSAM",
+        amostra.identificador,
+        "error",
+        undefined,
+        interpretacaoIa.reasoning,
+      );
     }
-    if (vereditoIa === "S12_NSFW") {
-      return await bloquearVersao("WORKERS_AI_S12_NSFW", amostra.identificador);
+    if (interpretacaoIa.veredito === "S12_NSFW") {
+      return await bloquearVersao(
+        "WORKERS_AI_S12_NSFW",
+        amostra.identificador,
+        "error",
+        undefined,
+        interpretacaoIa.reasoning,
+      );
     }
 
     etapasConcluidas++;
