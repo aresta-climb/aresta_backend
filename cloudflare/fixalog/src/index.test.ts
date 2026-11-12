@@ -890,4 +890,69 @@ Deno.test("fixalog-worker: reprocessa automaticamente laudo já enviado no R2 qu
   assertEquals(jsonDesbloqueada.status_moderacao, "ativo");
   assertEquals(jsonDesbloqueada.verificacao_concluida, 3);
   assertEquals(jsonDesbloqueada.verificacao_total, 3);
+
+  // 4. Mesmo que o aplicativo seja fechado (sem chamadas GET /status), o Cron Trigger ("* * * * *")
+  // retoma e conclui em background qualquer versão parada em "em_analise" no D1
+  await env.LAUDOS_BUCKET.put(
+    "laudos/sessao_cron_bg/v1.epub",
+    epubTresMidias,
+  );
+  await env.DB.prepare(
+    "INSERT INTO laudos_fixalog VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+  )
+    .bind(
+      "sessao_cron_bg",
+      "usr_retentativa",
+      "MATERIAL",
+      "Anchor Bolts",
+      "Barras Roscadas Cron",
+      null,
+      null,
+      null,
+      1,
+      agoraIso,
+      agoraIso,
+    )
+    .run();
+  await env.DB.prepare(
+    "INSERT INTO versoes_laudo_fixalog (id_sessao, versao, r2_key, tamanho_bytes, hash_epub_sha256, fingerprint_chave, nome_mantenedor, clube_mantenedor, indices_zip_json, materiais_referenciados_json, status_moderacao, motivo_moderacao, verificacao_concluida, verificacao_total, criado_em) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+  )
+    .bind(
+      "sessao_cron_bg",
+      1,
+      "laudos/sessao_cron_bg/v1.epub",
+      epubTresMidias.byteLength,
+      shaTresMidias,
+      "fp",
+      "Renato Utsch",
+      "FEMERJ",
+      "{}",
+      "[]",
+      "em_analise",
+      null,
+      1,
+      3,
+      agoraIso,
+    )
+    .run();
+
+  await workerDefault.scheduled!(
+    { scheduledTime: Date.now(), cron: "* * * * *" },
+    env,
+    env.contexto,
+  );
+  await env.aguardarTarefasBackground();
+
+  const versaoAposCron = await env.DB.prepare(
+    "SELECT * FROM versoes_laudo_fixalog WHERE id_sessao = ? AND versao = ?",
+  )
+    .bind("sessao_cron_bg", 1)
+    .first<{
+      status_moderacao: string;
+      verificacao_concluida: number;
+      verificacao_total: number;
+    }>();
+  assertEquals(versaoAposCron?.status_moderacao, "ativo");
+  assertEquals(versaoAposCron?.verificacao_concluida, 3);
+  assertEquals(versaoAposCron?.verificacao_total, 3);
 });

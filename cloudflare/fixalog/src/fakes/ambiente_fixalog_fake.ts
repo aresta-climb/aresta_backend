@@ -347,6 +347,17 @@ export class BancoD1FixalogFake implements BancoD1Fixalog {
         return lista as unknown as T[];
       }
 
+      if (
+        sqlUpper.includes(
+          "FROM VERSOES_LAUDO_FIXALOG WHERE STATUS_MODERACAO = 'EM_ANALISE'",
+        )
+      ) {
+        const pendentes = Array.from(this.versoes.values()).filter(
+          (v) => v.status_moderacao === "em_analise",
+        );
+        return pendentes as unknown as T[];
+      }
+
       return [];
     };
 

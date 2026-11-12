@@ -314,6 +314,45 @@ async function reagendarModeracaoSeErroTecnico(params: {
   };
 }
 
+/**
+ * Varre o banco D1 em busca de versões com `status_moderacao = 'em_analise'` cuja execução
+ * assíncrona tenha sido interrompida (ex.: limite de 30s do `ctx.waitUntil` após o app fechar)
+ * e retoma o processamento incrementalmente a partir de `verificacao_concluida`.
+ */
+async function retomarModeracoesEmAnalisePendentesNoD1(
+  env: AmbienteFixalog,
+  ctx?: ContextoExecucaoFixalog,
+): Promise<void> {
+  if (!env.DB || !env.LAUDOS_BUCKET) {
+    return;
+  }
+  await garantirColunasProgressoNoD1(env.DB);
+  const { results } = await env.DB.prepare(
+    "SELECT * FROM versoes_laudo_fixalog WHERE status_moderacao = 'em_analise'",
+  ).all<LinhaVersoesLaudoFixalog>();
+
+  for (const versaoRow of results) {
+    if (moderacaoEstaAtivaRecentemente(versaoRow.id_sessao, versaoRow.versao)) {
+      continue;
+    }
+    const laudo = await env.DB.prepare(
+      "SELECT * FROM laudos_fixalog WHERE id_sessao = ?",
+    )
+      .bind(versaoRow.id_sessao)
+      .first<LinhaLaudosFixalog>();
+    await reagendarModeracaoSeErroTecnico({
+      env,
+      db: env.DB,
+      bucket: env.LAUDOS_BUCKET,
+      ctx,
+      idSessao: versaoRow.id_sessao,
+      userId: laudo?.user_id ?? "sistema-cron",
+      versaoRow,
+      respeitarNotificacaoPendente: false,
+    });
+  }
+}
+
 async function persistirVersaoEpubValidada(params: {
   env: AmbienteFixalog;
   db: BancoD1Fixalog;
@@ -1459,10 +1498,17 @@ export default {
     ctx?: ContextoExecucaoFixalog,
   ): Promise<void> {
     if (!env.LAUDOS_BUCKET) return;
-    const tarefa = limparStagingExpiradoNoR2(
-      env.LAUDOS_BUCKET,
-      evento.scheduledTime ?? Date.now(),
-    );
+    const executarLimpezaDiaria =
+      !evento.cron || evento.cron === "0 4 * * *";
+    const tarefa = (async () => {
+      await retomarModeracoesEmAnalisePendentesNoD1(env, ctx);
+      if (executarLimpezaDiaria && env.LAUDOS_BUCKET) {
+        await limparStagingExpiradoNoR2(
+          env.LAUDOS_BUCKET,
+          evento.scheduledTime ?? Date.now(),
+        );
+      }
+    })();
     if (ctx) {
       ctx.waitUntil(tarefa);
     } else {

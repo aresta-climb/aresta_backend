@@ -139,6 +139,11 @@ Deno.test("AmbienteFixalogFake: persiste e consulta chaves, laudos e versões no
     .all();
   assertEquals(todasVersoes.results.length, 1);
 
+  const versoesEmAnalise = await env.DB.prepare(
+    "SELECT * FROM versoes_laudo_fixalog WHERE status_moderacao = 'em_analise'",
+  ).all();
+  assertEquals(versoesEmAnalise.results.length, 0);
+
   const contagem = await env.DB.prepare(
     "SELECT COUNT(DISTINCT id_sessao) AS total FROM versoes_laudo_fixalog WHERE fingerprint_chave = ?",
   )

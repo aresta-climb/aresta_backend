@@ -27,4 +27,4 @@ custom_domain = true
 enabled = true
 
 [triggers]
-crons = ["0 4 * * *"]
+crons = ["* * * * *", "0 4 * * *"]

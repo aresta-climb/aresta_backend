@@ -531,190 +531,225 @@ async function _executarModeracaoAssincronaLaudoInterno(params: {
       .run();
   }
 
-  for (const amostra of amostrasParaInspecionar.slice(etapasConcluidas)) {
+  const amostrasRestantes = amostrasParaInspecionar.slice(etapasConcluidas);
+  let cursorLote = 0;
+
+  while (cursorLote < amostrasRestantes.length) {
     registrarHeartbeatModeracaoEmExecucao(idSessao, versao);
-    if (amostra.ehIframeVideo) {
-      totalIframesVideoInspecionados++;
-    } else {
-      totalImagensInspecionadas++;
-    }
+    // Processa a 1ª amostra isoladamente (para eventual aceite de licença 5016)
+    // e as demais em lotes paralelos de até 4 inferências simultâneas no Workers AI
+    const tamanhoLote = cursorLote === 0 && etapasConcluidas === 0 ? 1 : 4;
+    const lote = amostrasRestantes.slice(cursorLote, cursorLote + tamanhoLote);
+    cursorLote += lote.length;
 
-    // Camada 1: Inspeção pelo Cloudflare CSAM Scanning Tool na borda da zona fixalog.app
-    const tokenHmac = await gerarTokenHmacCsamScan({
-      idSessao,
-      versao,
-      caminho: amostra.identificador,
-      segredo: env.SENTRY_DSN,
-    });
-    const caminhoCodificado = amostra.identificador
-      .split("/")
-      .map(encodeURIComponent)
-      .join("/");
-    const urlScanCsam = `https://fixalog.app/__csam_scan/${encodeURIComponent(
-      idSessao,
-    )}/v${versao}/${caminhoCodificado}?token=${tokenHmac}`;
-
-    if (env.fetchExterno) {
-      let resScan: Response;
-      try {
-        resScan = await env.fetchExterno(urlScanCsam, {
-          method: "GET",
-        });
-      } catch (erroScan) {
-        return await bloquearVersao(
-          "ERRO_TECNICO_VERIFICACAO:CSAM_SCAN_FETCH_ERROR",
-          amostra.identificador,
-          "fatal",
-          erroScan,
-        );
+    for (const amostra of lote) {
+      if (amostra.ehIframeVideo) {
+        totalIframesVideoInspecionados++;
+      } else {
+        totalImagensInspecionadas++;
       }
 
-      if (resScan.status === 451 || resScan.status === 403) {
-        return await bloquearVersao(
-          "CSAM_SCAN_TOOL_MATCH",
-          amostra.identificador,
-        );
-      }
-      if (resScan.status !== 200) {
-        return await bloquearVersao(
-          `ERRO_TECNICO_VERIFICACAO:CSAM_SCAN_HTTP_${resScan.status}`,
-          amostra.identificador,
-          "fatal",
-        );
-      }
-    } else if (cacheBorda) {
-      // Em produção no Cloudflare Workers (zona Worker-only sem servidor de origem DNS),
-      // chamadas fetch() para a própria zona fixalog.app sofrem bypass do Worker e falham com HTTP 522.
-      // O CSAM Scanning Tool da Cloudflare opera diretamente sobre objetos de imagem no Cache de Borda.
-      const mimeTypeAmostra =
-        indice[amostra.identificador]?.mimeType ??
-        (amostra.identificador.toLowerCase().endsWith(".webp")
-          ? "image/webp"
-          : amostra.identificador.toLowerCase().endsWith(".png")
-          ? "image/png"
-          : "image/jpeg");
-      try {
-        await cacheBorda.put(
-          urlScanCsam,
-          new Response(new Uint8Array(amostra.bytes), {
-            status: 200,
-            headers: {
-              "Content-Type": mimeTypeAmostra,
-              "Content-Length": String(amostra.bytes.byteLength),
-              "Cache-Control": "public, max-age=3600",
-            },
-          }),
-        );
-        urlsCsamCacheBorda.push(urlScanCsam);
-        const inspecaoBorda = await cacheBorda.match(urlScanCsam);
-        if (
-          inspecaoBorda &&
-          (inspecaoBorda.status === 451 || inspecaoBorda.status === 403)
-        ) {
+      // Camada 1: Inspeção pelo Cloudflare CSAM Scanning Tool na borda da zona fixalog.app
+      const tokenHmac = await gerarTokenHmacCsamScan({
+        idSessao,
+        versao,
+        caminho: amostra.identificador,
+        segredo: env.SENTRY_DSN,
+      });
+      const caminhoCodificado = amostra.identificador
+        .split("/")
+        .map(encodeURIComponent)
+        .join("/");
+      const urlScanCsam = `https://fixalog.app/__csam_scan/${encodeURIComponent(
+        idSessao,
+      )}/v${versao}/${caminhoCodificado}?token=${tokenHmac}`;
+
+      if (env.fetchExterno) {
+        let resScan: Response;
+        try {
+          resScan = await env.fetchExterno(urlScanCsam, {
+            method: "GET",
+          });
+        } catch (erroScan) {
+          return await bloquearVersao(
+            "ERRO_TECNICO_VERIFICACAO:CSAM_SCAN_FETCH_ERROR",
+            amostra.identificador,
+            "fatal",
+            erroScan,
+          );
+        }
+
+        if (resScan.status === 451 || resScan.status === 403) {
           return await bloquearVersao(
             "CSAM_SCAN_TOOL_MATCH",
             amostra.identificador,
           );
         }
-      } catch (erroCache) {
-        return await bloquearVersao(
-          "ERRO_TECNICO_VERIFICACAO:CSAM_SCAN_CACHE_ERROR",
-          amostra.identificador,
-          "fatal",
-          erroCache,
-        );
+        if (resScan.status !== 200) {
+          return await bloquearVersao(
+            `ERRO_TECNICO_VERIFICACAO:CSAM_SCAN_HTTP_${resScan.status}`,
+            amostra.identificador,
+            "fatal",
+          );
+        }
+      } else if (cacheBorda) {
+        // Em produção no Cloudflare Workers (zona Worker-only sem servidor de origem DNS),
+        // chamadas fetch() para a própria zona fixalog.app sofrem bypass do Worker e falham com HTTP 522.
+        // O CSAM Scanning Tool da Cloudflare opera diretamente sobre objetos de imagem no Cache de Borda.
+        const mimeTypeAmostra =
+          indice[amostra.identificador]?.mimeType ??
+          (amostra.identificador.toLowerCase().endsWith(".webp")
+            ? "image/webp"
+            : amostra.identificador.toLowerCase().endsWith(".png")
+            ? "image/png"
+            : "image/jpeg");
+        try {
+          await cacheBorda.put(
+            urlScanCsam,
+            new Response(new Uint8Array(amostra.bytes), {
+              status: 200,
+              headers: {
+                "Content-Type": mimeTypeAmostra,
+                "Content-Length": String(amostra.bytes.byteLength),
+                "Cache-Control": "public, max-age=3600",
+              },
+            }),
+          );
+          urlsCsamCacheBorda.push(urlScanCsam);
+          const inspecaoBorda = await cacheBorda.match(urlScanCsam);
+          if (
+            inspecaoBorda &&
+            (inspecaoBorda.status === 451 || inspecaoBorda.status === 403)
+          ) {
+            return await bloquearVersao(
+              "CSAM_SCAN_TOOL_MATCH",
+              amostra.identificador,
+            );
+          }
+        } catch (erroCache) {
+          return await bloquearVersao(
+            "ERRO_TECNICO_VERIFICACAO:CSAM_SCAN_CACHE_ERROR",
+            amostra.identificador,
+            "fatal",
+            erroCache,
+          );
+        }
       }
     }
 
-    // Camadas 2 e 3: Cloudflare Workers AI Vision (S4 CSAM + S12 NSFW/Gore)
+    // Camadas 2 e 3: Cloudflare Workers AI Vision (S4 CSAM + S12 NSFW/Gore) em paralelo por lote
     if (!env.AI) {
       return await bloquearVersao(
         "ERRO_TECNICO_VERIFICACAO:WORKERS_AI_BINDING_AUSENTE",
-        amostra.identificador,
+        lote[0].identificador,
         "fatal",
       );
     }
 
-    const entradaIa = {
-      image: Array.from(amostra.bytes),
-      prompt:
-        'You are a strict content safety classifier for a technical engineering and rock climbing inspection app. Photos of tools, saw blades, hardware, bolts, climbing gear, hands holding equipment, technical documents, PDFs, invoices, certificates, tables, and text pages are completely SAFE. Only classify as UNSAFE_S4 if the image depicts real child sexual abuse material (CSAM), or UNSAFE_S12 if it depicts explicit pornography or extreme gore. Respond ONLY with a valid JSON object in this exact format: {"reasoning":"<brief 1-sentence description of what is visible>","verdict":"SAFE"} where "verdict" MUST be one of "SAFE", "UNSAFE_S4", or "UNSAFE_S12".',
-    };
-
-    let textoIa: string;
-    try {
-      let respostaIa: { response?: unknown; description?: unknown };
-      try {
-        respostaIa = await env.AI.run(MODELO_VISION_MODERACAO, entradaIa);
-      } catch (erroPrimeiraTentativa) {
-        const msg =
-          erroPrimeiraTentativa instanceof Error
-            ? erroPrimeiraTentativa.message
-            : String(erroPrimeiraTentativa);
-        if (msg.includes("5016") || msg.toLowerCase().includes("agree")) {
+    const aiBinding = env.AI;
+    const resultadosLoteIa = await Promise.all(
+      lote.map(async (amostra) => {
+        const entradaIa = {
+          image: Array.from(amostra.bytes),
+          prompt:
+            'You are a strict content safety classifier for a technical engineering and rock climbing inspection app. Photos of tools, saw blades, hardware, bolts, climbing gear, hands holding equipment, technical documents, PDFs, invoices, certificates, tables, and text pages are completely SAFE. Only classify as UNSAFE_S4 if the image depicts real child sexual abuse material (CSAM), or UNSAFE_S12 if it depicts explicit pornography or extreme gore. Respond ONLY with a valid JSON object in this exact format: {"reasoning":"<brief 1-sentence description of what is visible>","verdict":"SAFE"} where "verdict" MUST be one of "SAFE", "UNSAFE_S4", or "UNSAFE_S12".',
+        };
+        try {
+          let respostaIa: { response?: unknown; description?: unknown };
           try {
-            await env.AI.run(MODELO_VISION_MODERACAO, { prompt: "agree" });
-          } catch (erroAgree) {
-            const msgAgree =
-              erroAgree instanceof Error
-                ? erroAgree.message
-                : String(erroAgree);
-            if (
-              !msgAgree.includes("5016") &&
-              !msgAgree.toLowerCase().includes("agree")
-            ) {
-              throw erroAgree;
+            respostaIa = await aiBinding.run(
+              MODELO_VISION_MODERACAO,
+              entradaIa,
+            );
+          } catch (erroPrimeiraTentativa) {
+            const msg =
+              erroPrimeiraTentativa instanceof Error
+                ? erroPrimeiraTentativa.message
+                : String(erroPrimeiraTentativa);
+            if (msg.includes("5016") || msg.toLowerCase().includes("agree")) {
+              try {
+                await aiBinding.run(MODELO_VISION_MODERACAO, {
+                  prompt: "agree",
+                });
+              } catch (erroAgree) {
+                const msgAgree =
+                  erroAgree instanceof Error
+                    ? erroAgree.message
+                    : String(erroAgree);
+                if (
+                  !msgAgree.includes("5016") &&
+                  !msgAgree.toLowerCase().includes("agree")
+                ) {
+                  throw erroAgree;
+                }
+              }
+              respostaIa = await aiBinding.run(
+                MODELO_VISION_MODERACAO,
+                entradaIa,
+              );
+            } else {
+              throw erroPrimeiraTentativa;
             }
           }
-          respostaIa = await env.AI.run(MODELO_VISION_MODERACAO, entradaIa);
-        } else {
-          throw erroPrimeiraTentativa;
+          const bruto = respostaIa.response ?? respostaIa.description ?? "";
+          const textoIa =
+            typeof bruto === "object" && bruto !== null
+              ? JSON.stringify(bruto)
+              : String(bruto).trim();
+          if (!textoIa) {
+            throw new Error("Resposta vazia do modelo Workers AI Vision.");
+          }
+          return {
+            amostra,
+            erroIa: null as unknown,
+            interpretacao: interpretarRespostaModeracaoVision(textoIa),
+          };
+        } catch (erroIa) {
+          return {
+            amostra,
+            erroIa,
+            interpretacao: null,
+          };
         }
-      }
-      const bruto = respostaIa.response ?? respostaIa.description ?? "";
-      textoIa =
-        typeof bruto === "object" && bruto !== null
-          ? JSON.stringify(bruto)
-          : String(bruto).trim();
-      if (!textoIa) {
-        throw new Error("Resposta vazia do modelo Workers AI Vision.");
-      }
-    } catch (erroIa) {
-      return await bloquearVersao(
-        "ERRO_TECNICO_VERIFICACAO:WORKERS_AI_FALHA",
-        amostra.identificador,
-        "fatal",
-        erroIa,
-      );
-    }
+      }),
+    );
 
-    const interpretacaoIa = interpretarRespostaModeracaoVision(textoIa);
-    if (interpretacaoIa.veredito === "S4_CSAM") {
-      return await bloquearVersao(
-        "WORKERS_AI_S4_CSAM",
-        amostra.identificador,
-        "error",
-        undefined,
-        interpretacaoIa.reasoning,
-      );
-    }
-    if (interpretacaoIa.veredito === "S12_NSFW") {
-      return await bloquearVersao(
-        "WORKERS_AI_S12_NSFW",
-        amostra.identificador,
-        "error",
-        undefined,
-        interpretacaoIa.reasoning,
-      );
-    }
+    for (const item of resultadosLoteIa) {
+      if (item.erroIa || !item.interpretacao) {
+        return await bloquearVersao(
+          "ERRO_TECNICO_VERIFICACAO:WORKERS_AI_FALHA",
+          item.amostra.identificador,
+          "fatal",
+          item.erroIa,
+        );
+      }
+      if (item.interpretacao.veredito === "S4_CSAM") {
+        return await bloquearVersao(
+          "WORKERS_AI_S4_CSAM",
+          item.amostra.identificador,
+          "error",
+          undefined,
+          item.interpretacao.reasoning,
+        );
+      }
+      if (item.interpretacao.veredito === "S12_NSFW") {
+        return await bloquearVersao(
+          "WORKERS_AI_S12_NSFW",
+          item.amostra.identificador,
+          "error",
+          undefined,
+          item.interpretacao.reasoning,
+        );
+      }
 
-    etapasConcluidas++;
-    if (env.DB) {
-      await env.DB.prepare(
-        "UPDATE versoes_laudo_fixalog SET verificacao_concluida = ?, verificacao_total = ? WHERE id_sessao = ? AND versao = ?",
-      )
-        .bind(etapasConcluidas, totalEtapas, idSessao, versao)
-        .run();
+      etapasConcluidas++;
+      if (env.DB) {
+        await env.DB.prepare(
+          "UPDATE versoes_laudo_fixalog SET verificacao_concluida = ?, verificacao_total = ? WHERE id_sessao = ? AND versao = ?",
+        )
+          .bind(etapasConcluidas, totalEtapas, idSessao, versao)
+          .run();
+      }
     }
   }
 
