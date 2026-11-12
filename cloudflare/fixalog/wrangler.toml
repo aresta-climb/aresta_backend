@@ -26,5 +26,9 @@ custom_domain = true
 [observability]
 enabled = true
 
+[[services]]
+binding = "SELF"
+service = "aresta-fixalog-worker"
+
 [triggers]
-crons = ["* * * * *", "0 4 * * *"]
+crons = ["0 4 * * *"]

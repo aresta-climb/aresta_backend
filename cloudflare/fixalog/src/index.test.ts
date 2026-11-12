@@ -26,6 +26,7 @@ async function criarEpubAssinadoTeste(params: {
   incluirVideo?: boolean;
   incluirMaterialAnexo?: boolean;
   comprimirXhtmlComDeflate?: boolean;
+  quantidadeFotosExtras?: number;
 }): Promise<Uint8Array> {
   const encoder = new TextEncoder();
   const linkMaterial = params.incluirMaterialAnexo
@@ -40,6 +41,16 @@ async function criarEpubAssinadoTeste(params: {
   const xhtmlMatAnexo = encoder.encode(
     "<html><body><h2>Ficha Técnica Parabolt Inox</h2></body></html>",
   );
+
+  const fotosExtras: Array<{ nome: string; dados: Uint8Array; digest: string }> = [];
+  for (let i = 0; i < (params.quantidadeFotosExtras ?? 0); i++) {
+    const dadosExtra = new Uint8Array([10 + i, 20 + i, 30 + i, 40 + i]);
+    fotosExtras.push({
+      nome: `OEBPS/midias/foto_extra_${i + 2}.webp`,
+      dados: dadosExtra,
+      digest: await calcularSha256Base64(dadosExtra),
+    });
+  }
 
   const xhtmlBytesDescomprimidos = encoder.encode(xhtml);
   const cssBytesDescomprimidos = encoder.encode(css);
@@ -58,6 +69,12 @@ async function criarEpubAssinadoTeste(params: {
       <Reference URI="OEBPS/relatorio.xhtml"><DigestValue>${digestXhtml}</DigestValue></Reference>
       <Reference URI="OEBPS/estilo.css"><DigestValue>${digestCss}</DigestValue></Reference>
       <Reference URI="OEBPS/midias/foto_1.webp"><DigestValue>${digestFoto}</DigestValue></Reference>
+      ${fotosExtras
+        .map(
+          (f) =>
+            `<Reference URI="${f.nome}"><DigestValue>${f.digest}</DigestValue></Reference>`,
+        )
+        .join("\n      ")}
       ${
         params.incluirVideo
           ? `<Reference URI="OEBPS/midias/video_1.mp4"><DigestValue>${digestVideo}</DigestValue></Reference>
@@ -89,6 +106,7 @@ async function criarEpubAssinadoTeste(params: {
     { nome: "OEBPS/relatorio.xhtml", dados: xhtmlArmazenado, metodo: metodoTexto },
     { nome: "OEBPS/estilo.css", dados: cssArmazenado, metodo: metodoTexto },
     { nome: "OEBPS/midias/foto_1.webp", dados: foto },
+    ...fotosExtras.map((f) => ({ nome: f.nome, dados: f.dados })),
     ...(params.incluirVideo
       ? [
           { nome: "OEBPS/midias/video_1.mp4", dados: video },
@@ -955,4 +973,95 @@ Deno.test("fixalog-worker: reprocessa automaticamente laudo já enviado no R2 qu
   assertEquals(versaoAposCron?.status_moderacao, "ativo");
   assertEquals(versaoAposCron?.verificacao_concluida, 3);
   assertEquals(versaoAposCron?.verificacao_total, 3);
+});
+
+Deno.test("index: auto-encadeia lotes curtos via Service Binding env.SELF em POST /__internal/moderar com retentativa automática e rejeita token inválido com 403", async () => {
+  const env = new AmbienteFixalogFake();
+  const urlsInternasAcionadas: string[] = [];
+
+  // Conecta o Service Binding SELF de volta ao próprio Worker
+  env.SELF = {
+    fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
+      const reqInterna =
+        input instanceof Request
+          ? input
+          : new Request(input.toString(), init);
+      urlsInternasAcionadas.push(reqInterna.url);
+      return await workerDefault.fetch(reqInterna, env, env.contexto);
+    },
+  };
+
+  // 1. Chamada externa sem token HMAC válido na rota /__internal/moderar deve retornar 403
+  const resSemToken = await workerDefault.fetch(
+    new Request("https://fixalog.app/__internal/moderar/sessao_x/v1?token=invalido", {
+      method: "POST",
+    }),
+    env,
+    env.contexto,
+  );
+  assertEquals(resSemToken.status, 403);
+
+  // 2. Upload de laudo com 7 imagens dispara auto-encadeamento em lotes de 3 imagens via env.SELF
+  // e se recupera de 1 falha transitória da IA no meio do caminho sem intervenção do cliente
+  const tokens = await construirTokensAssinadosTeste({
+    userId: "usr_self_chain",
+    nome: "Renato Utsch",
+  });
+  const epub7Midias = await criarEpubAssinadoTeste({
+    titulo: "Laudo 7 Imagens Auto-Chaining",
+    atestadoOidcJwt: tokens.atestadoOidcJwt,
+    quantidadeFotosExtras: 6,
+  });
+  const sha7Midias = await calcularSha256Hex(epub7Midias);
+
+  // Simula 1 falha transitória na 4ª imagem (início do 2º lote), que deve ser retentada automaticamente
+  let chamadasIa = 0;
+  const runOriginal = env.AI.run.bind(env.AI);
+  env.AI.run = async (modelo: string, entrada: Record<string, unknown>) => {
+    chamadasIa++;
+    if (chamadasIa === 4) {
+      throw new Error("Timeout transitório no Workers AI.");
+    }
+    return await runOriginal(modelo, entrada);
+  };
+
+  const resChunk = await workerDefault.fetch(
+    new Request(
+      `https://fixalog.app/api/v1/laudos/sessao_self_7/chunk?sha256=${sha7Midias}&index=0&total=1`,
+      {
+        method: "PUT",
+        headers: {
+          "X-Firebase-AppCheck": "app_check_valido_123",
+          Authorization: `Bearer ${tokens.jwtSupabase}`,
+        },
+        body: new Uint8Array(epub7Midias),
+      },
+    ),
+    env,
+    env.contexto,
+  );
+  assertEquals(resChunk.status, 201);
+
+  // Aguarda toda a cadeia de chamadas assíncronas via waitUntil(env.SELF.fetch(...))
+  await env.aguardarTarefasBackground();
+
+  // Deve ter encadeado múltiplos lotes via /__internal/moderar (etapa=0, etapa=3 tentativa=1, etapa=3 tentativa=2, etapa=6)
+  assertEquals(urlsInternasAcionadas.length >= 4, true);
+  assertEquals(
+    urlsInternasAcionadas.some((u) => u.includes("tentativa=2")),
+    true,
+  );
+
+  const versaoFinal = await env.DB.prepare(
+    "SELECT * FROM versoes_laudo_fixalog WHERE id_sessao = ? AND versao = ?",
+  )
+    .bind("sessao_self_7", 1)
+    .first<{
+      status_moderacao: string;
+      verificacao_concluida: number;
+      verificacao_total: number;
+    }>();
+  assertEquals(versaoFinal?.status_moderacao, "ativo");
+  assertEquals(versaoFinal?.verificacao_concluida, 7);
+  assertEquals(versaoFinal?.verificacao_total, 7);
 });

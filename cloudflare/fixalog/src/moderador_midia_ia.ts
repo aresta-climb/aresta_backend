@@ -13,6 +13,7 @@ import {
 } from "./fakes/ambiente_fixalog_fake.ts";
 
 export const MODELO_VISION_MODERACAO = "@cf/meta/llama-3.2-11b-vision-instruct";
+export const TAMANHO_MAXIMO_LOTE_POR_INVOCACAO = 3;
 
 const falhasTecnicasPendentesNotificacao = new Set<string>();
 const moderacoesEmExecucaoTimestamp = new Map<string, number>();
@@ -93,10 +94,12 @@ export function consumirNotificacaoFalhaTecnicaRecente(
 }
 
 export interface ResultadoModeracaoLaudo {
-  status: "ativo" | "bloqueado";
+  status: "ativo" | "em_analise" | "retentar" | "bloqueado";
   motivo: string | null;
   totalImagensInspecionadas: number;
   totalIframesVideoInspecionados: number;
+  verificacaoConcluida: number;
+  verificacaoTotal: number;
 }
 
 /**
@@ -158,6 +161,41 @@ export async function verificarTokenHmacCsamScan(params: {
     diff |= esperado.charCodeAt(i) ^ params.token.charCodeAt(i);
   }
   return diff === 0;
+}
+
+/**
+ * Gera um token HMAC-SHA256 para autorizar a rota interna auto-encadeada
+ * `POST /__internal/moderar/:idSessao/v:versao?token=<hmac>`.
+ */
+export async function gerarTokenHmacModeracaoInterna(params: {
+  idSessao: string;
+  versao: number;
+  segredo?: string;
+}): Promise<string> {
+  return await gerarTokenHmacCsamScan({
+    idSessao: params.idSessao,
+    versao: params.versao,
+    caminho: "__internal_moderar_lote__",
+    segredo: params.segredo,
+  });
+}
+
+/**
+ * Verifica em tempo constante se o token HMAC da rota `POST /__internal/moderar/*` é válido.
+ */
+export async function verificarTokenHmacModeracaoInterna(params: {
+  idSessao: string;
+  versao: number;
+  token: string;
+  segredo?: string;
+}): Promise<boolean> {
+  return await verificarTokenHmacCsamScan({
+    idSessao: params.idSessao,
+    versao: params.versao,
+    caminho: "__internal_moderar_lote__",
+    token: params.token,
+    segredo: params.segredo,
+  });
 }
 
 export interface InterpretacaoModeracaoVision {
@@ -358,8 +396,11 @@ export async function executarModeracaoAssincronaLaudo(params: {
   epubBytes: Uint8Array;
   indicePreCalculado?: MapaIndiceZipEpub;
   etapaInicial?: number;
+  maximoImagensPorExecucao?: number;
+  tentativaAtual?: number;
+  maximoTentativas?: number;
 }): Promise<ResultadoModeracaoLaudo> {
-  const { env, idSessao, versao, userId, epubBytes } = params;
+  const { env, idSessao, versao } = params;
   registrarHeartbeatModeracaoEmExecucao(idSessao, versao);
   try {
     return await _executarModeracaoAssincronaLaudoInterno(params);
@@ -376,8 +417,13 @@ async function _executarModeracaoAssincronaLaudoInterno(params: {
   epubBytes: Uint8Array;
   indicePreCalculado?: MapaIndiceZipEpub;
   etapaInicial?: number;
+  maximoImagensPorExecucao?: number;
+  tentativaAtual?: number;
+  maximoTentativas?: number;
 }): Promise<ResultadoModeracaoLaudo> {
   const { env, idSessao, versao, userId, epubBytes } = params;
+  const tentativaAtual = params.tentativaAtual ?? 1;
+  const maximoTentativas = params.maximoTentativas ?? 1;
   const indice = params.indicePreCalculado ?? extrairIndiceZipEpub(epubBytes);
   const cacheBorda: CacheBordaFixalog | null =
     env.cacheBorda ??
@@ -401,7 +447,18 @@ async function _executarModeracaoAssincronaLaudoInterno(params: {
     erroOriginal?: unknown,
     reasoningIa?: string | null,
   ): Promise<ResultadoModeracaoLaudo> => {
-    if (motivo.startsWith("ERRO_TECNICO_VERIFICACAO:")) {
+    const ehFalhaTecnica = motivo.startsWith("ERRO_TECNICO_VERIFICACAO:");
+    if (ehFalhaTecnica && tentativaAtual < maximoTentativas) {
+      return {
+        status: "retentar",
+        motivo: `${motivo}:${identificadorMidia}`,
+        totalImagensInspecionadas,
+        totalIframesVideoInspecionados,
+        verificacaoConcluida: etapasConcluidas,
+        verificacaoTotal: totalEtapas,
+      };
+    }
+    if (ehFalhaTecnica) {
       registrarFalhaTecnicaRecente(idSessao, versao);
     }
     if (cacheBorda && urlsCsamCacheBorda.length > 0) {
@@ -446,6 +503,8 @@ async function _executarModeracaoAssincronaLaudoInterno(params: {
       motivo: motivoCompleto,
       totalImagensInspecionadas,
       totalIframesVideoInspecionados,
+      verificacaoConcluida: etapasConcluidas,
+      verificacaoTotal: totalEtapas,
     };
   };
 
@@ -531,14 +590,21 @@ async function _executarModeracaoAssincronaLaudoInterno(params: {
       .run();
   }
 
-  const amostrasRestantes = amostrasParaInspecionar.slice(etapasConcluidas);
+  const limiteNestaExecucao =
+    params.maximoImagensPorExecucao && params.maximoImagensPorExecucao > 0
+      ? params.maximoImagensPorExecucao
+      : amostrasParaInspecionar.length;
+  const amostrasRestantes = amostrasParaInspecionar.slice(
+    etapasConcluidas,
+    etapasConcluidas + limiteNestaExecucao,
+  );
   let cursorLote = 0;
 
   while (cursorLote < amostrasRestantes.length) {
     registrarHeartbeatModeracaoEmExecucao(idSessao, versao);
     // Processa a 1ª amostra isoladamente (para eventual aceite de licença 5016)
-    // e as demais em lotes paralelos de até 4 inferências simultâneas no Workers AI
-    const tamanhoLote = cursorLote === 0 && etapasConcluidas === 0 ? 1 : 4;
+    // e as demais em lotes paralelos de até 3 inferências simultâneas no Workers AI
+    const tamanhoLote = cursorLote === 0 && etapasConcluidas === 0 ? 1 : 3;
     const lote = amostrasRestantes.slice(cursorLote, cursorLote + tamanhoLote);
     cursorLote += lote.length;
 
@@ -753,6 +819,17 @@ async function _executarModeracaoAssincronaLaudoInterno(params: {
     }
   }
 
+  if (etapasConcluidas < amostrasParaInspecionar.length) {
+    return {
+      status: "em_analise",
+      motivo: null,
+      totalImagensInspecionadas,
+      totalIframesVideoInspecionados,
+      verificacaoConcluida: etapasConcluidas,
+      verificacaoTotal: totalEtapas,
+    };
+  }
+
   if (env.DB) {
     await env.DB.prepare(
       "UPDATE versoes_laudo_fixalog SET status_moderacao = ?, motivo_moderacao = ?, verificacao_concluida = ?, verificacao_total = ? WHERE id_sessao = ? AND versao = ?",
@@ -766,5 +843,7 @@ async function _executarModeracaoAssincronaLaudoInterno(params: {
     motivo: null,
     totalImagensInspecionadas,
     totalIframesVideoInspecionados,
+    verificacaoConcluida: totalEtapas,
+    verificacaoTotal: totalEtapas,
   };
 }

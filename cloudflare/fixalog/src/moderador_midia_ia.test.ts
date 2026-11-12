@@ -8,7 +8,9 @@ import {
   classificarRespostaModeracaoVision,
   executarModeracaoAssincronaLaudo,
   gerarTokenHmacCsamScan,
+  gerarTokenHmacModeracaoInterna,
   verificarTokenHmacCsamScan,
+  verificarTokenHmacModeracaoInterna,
 } from "./moderador_midia_ia.ts";
 
 Deno.test("moderador_midia_ia: aprova fotos, poster e keyframes de vídeo (_kf_*s.jpg), aceita licença 5016 automaticamente e promove status para ativo", async () => {
@@ -489,4 +491,105 @@ Deno.test("moderador_midia_ia: solicita JSON estruturado separando reasoning de 
     ),
     true,
   );
+});
+
+Deno.test("moderador_midia_ia: processa em lotes curtos (maximoImagensPorExecucao) mantendo em_analise até atingir o total e valida HMAC de moderação interna", async () => {
+  const env = new AmbienteFixalogFake();
+  await env.DB.prepare(
+    "INSERT INTO versoes_laudo_fixalog VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+  )
+    .bind(
+      "sessao_lotes_curtos",
+      1,
+      "laudos/sessao_lotes_curtos/v1.epub",
+      2500,
+      "hash_7_imgs",
+      "fp",
+      "Renato",
+      "FEMERJ",
+      "{}",
+      "[]",
+      "em_analise",
+      null,
+      0,
+      7,
+      "2026-11-12T00:00:00Z",
+    )
+    .run();
+
+  const epub7Imagens = construirZipEpubEmMemoria([
+    { nome: "OEBPS/midias/img_1.webp", dados: new Uint8Array(200) },
+    { nome: "OEBPS/midias/img_2.webp", dados: new Uint8Array(200) },
+    { nome: "OEBPS/midias/img_3.webp", dados: new Uint8Array(200) },
+    { nome: "OEBPS/midias/img_4.webp", dados: new Uint8Array(200) },
+    { nome: "OEBPS/midias/img_5.webp", dados: new Uint8Array(200) },
+    { nome: "OEBPS/midias/img_6.webp", dados: new Uint8Array(200) },
+    { nome: "OEBPS/midias/img_7.webp", dados: new Uint8Array(200) },
+  ]);
+
+  const tokenMod = await gerarTokenHmacModeracaoInterna({
+    idSessao: "sessao_lotes_curtos",
+    versao: 1,
+    segredo: env.SENTRY_DSN,
+  });
+  assertEquals(
+    await verificarTokenHmacModeracaoInterna({
+      idSessao: "sessao_lotes_curtos",
+      versao: 1,
+      token: tokenMod,
+      segredo: env.SENTRY_DSN,
+    }),
+    true,
+  );
+  assertEquals(
+    await verificarTokenHmacModeracaoInterna({
+      idSessao: "sessao_lotes_curtos",
+      versao: 1,
+      token: "token_adulterado",
+      segredo: env.SENTRY_DSN,
+    }),
+    false,
+  );
+
+  // Lote 1: processa 3 imagens (0 -> 3)
+  const lote1 = await executarModeracaoAssincronaLaudo({
+    env,
+    idSessao: "sessao_lotes_curtos",
+    versao: 1,
+    userId: "usr_1",
+    epubBytes: epub7Imagens,
+    etapaInicial: 0,
+    maximoImagensPorExecucao: 3,
+  });
+  assertEquals(lote1.status, "em_analise");
+  assertEquals(lote1.verificacaoConcluida, 3);
+  assertEquals(lote1.verificacaoTotal, 7);
+
+  // Lote 2: processa mais 3 imagens (3 -> 6)
+  const lote2 = await executarModeracaoAssincronaLaudo({
+    env,
+    idSessao: "sessao_lotes_curtos",
+    versao: 1,
+    userId: "usr_1",
+    epubBytes: epub7Imagens,
+    etapaInicial: 3,
+    maximoImagensPorExecucao: 3,
+  });
+  assertEquals(lote2.status, "em_analise");
+  assertEquals(lote2.verificacaoConcluida, 6);
+  assertEquals(lote2.verificacaoTotal, 7);
+
+  // Lote 3: processa a última imagem (6 -> 7) e promove para ativo
+  const lote3 = await executarModeracaoAssincronaLaudo({
+    env,
+    idSessao: "sessao_lotes_curtos",
+    versao: 1,
+    userId: "usr_1",
+    epubBytes: epub7Imagens,
+    etapaInicial: 6,
+    maximoImagensPorExecucao: 3,
+  });
+  assertEquals(lote3.status, "ativo");
+  assertEquals(lote3.verificacaoConcluida, 7);
+  assertEquals(lote3.verificacaoTotal, 7);
 });

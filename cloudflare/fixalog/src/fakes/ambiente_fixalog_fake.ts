@@ -86,12 +86,20 @@ export interface CacheBordaFixalog {
 }
 
 /**
+ * Interface de Service Binding do Cloudflare Workers (`env.SELF`).
+ */
+export interface ServicoWorkerFixalog {
+  fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response>;
+}
+
+/**
  * Bindings e dependências de ambiente do Worker `fixalog`.
  */
 export interface AmbienteFixalog {
   DB?: BancoD1Fixalog;
   LAUDOS_BUCKET?: BucketR2Fixalog;
   AI?: WorkersAiFixalog;
+  SELF?: ServicoWorkerFixalog;
   ALERTA_URL?: string;
   SENTRY_DSN?: string;
   cacheBorda?: CacheBordaFixalog;
@@ -535,6 +543,7 @@ export class AmbienteFixalogFake implements AmbienteFixalog {
   readonly cacheBorda = new CacheBordaFixalogFake();
   readonly ALERTA_URL = "https://alertas.arestaclimb.com/api/v1/alertas";
   SENTRY_DSN?: string = "https://chave_publica_fake@o1.ingest.us.sentry.io/4512313384239104";
+  SELF?: ServicoWorkerFixalog;
   readonly requisicoesExternas: Array<{ url: string; init?: RequestInit }> = [];
   readonly promessasBackground: Promise<unknown>[] = [];
   statusSubrequisicaoCsam = 200;

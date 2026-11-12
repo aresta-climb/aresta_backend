@@ -36,9 +36,12 @@ import {
   consumirNotificacaoFalhaTecnicaRecente,
   dispararAlertaSegurancaFixalog,
   executarModeracaoAssincronaLaudo,
+  gerarTokenHmacModeracaoInterna,
   moderacaoEstaAtivaRecentemente,
   registrarHeartbeatModeracaoEmExecucao,
+  TAMANHO_MAXIMO_LOTE_POR_INVOCACAO,
   verificarTokenHmacCsamScan,
+  verificarTokenHmacModeracaoInterna,
 } from "./moderador_midia_ia.ts";
 import {
   MaterialAnexoXhtml,
@@ -201,6 +204,28 @@ async function listarChunksRecebidosNoR2(
   return indices;
 }
 
+async function dispararProximoLoteModeracaoViaSelf(params: {
+  env: AmbienteFixalog;
+  idSessao: string;
+  versao: number;
+  etapa: number;
+  tentativa?: number;
+}): Promise<Response | null> {
+  const { env, idSessao, versao, etapa, tentativa = 1 } = params;
+  if (!env.SELF) {
+    return null;
+  }
+  const token = await gerarTokenHmacModeracaoInterna({
+    idSessao,
+    versao,
+    segredo: env.SENTRY_DSN,
+  });
+  const urlInterna = `https://fixalog.app/__internal/moderar/${encodeURIComponent(
+    idSessao,
+  )}/v${versao}?etapa=${etapa}&tentativa=${tentativa}&token=${token}`;
+  return await env.SELF.fetch(urlInterna, { method: "POST" });
+}
+
 /**
  * Se uma versão já armazenada no R2 estiver em `status_moderacao === "bloqueado"`
  * exclusivamente por falha técnica (`ERRO_TECNICO_VERIFICACAO:*`) de uma tentativa anterior,
@@ -269,34 +294,42 @@ async function reagendarModeracaoSeErroTecnico(params: {
     .run();
 
   registrarHeartbeatModeracaoEmExecucao(idSessao, versaoRow.versao);
-  const tarefaReprocessamento = (async () => {
-    const objR2 = await bucket.get(versaoRow.r2_key);
-    if (!objR2) {
-      return;
-    }
-    const epubBytes = new Uint8Array(await objR2.arrayBuffer());
-    let indicePreCalculado: MapaIndiceZipEpub | undefined;
-    try {
-      const parsed = JSON.parse(
-        versaoRow.indices_zip_json,
-      ) as MapaIndiceZipEpub;
-      if (parsed && Object.keys(parsed).length > 0) {
-        indicePreCalculado = parsed;
-      }
-    } catch {
-      indicePreCalculado = undefined;
-    }
-    await executarModeracaoAssincronaLaudo({
-      env,
-      idSessao,
-      versao: versaoRow.versao,
-      userId,
-      epubBytes,
-      indicePreCalculado,
-      etapaInicial: etapaRetomada,
-    });
-    await invalidarCacheBordaLaudo(env, idSessao, versaoRow.versao);
-  })();
+  const tarefaReprocessamento = env.SELF
+    ? dispararProximoLoteModeracaoViaSelf({
+        env,
+        idSessao,
+        versao: versaoRow.versao,
+        etapa: etapaRetomada,
+        tentativa: 1,
+      })
+    : (async () => {
+        const objR2 = await bucket.get(versaoRow.r2_key);
+        if (!objR2) {
+          return;
+        }
+        const epubBytes = new Uint8Array(await objR2.arrayBuffer());
+        let indicePreCalculado: MapaIndiceZipEpub | undefined;
+        try {
+          const parsed = JSON.parse(
+            versaoRow.indices_zip_json,
+          ) as MapaIndiceZipEpub;
+          if (parsed && Object.keys(parsed).length > 0) {
+            indicePreCalculado = parsed;
+          }
+        } catch {
+          indicePreCalculado = undefined;
+        }
+        await executarModeracaoAssincronaLaudo({
+          env,
+          idSessao,
+          versao: versaoRow.versao,
+          userId,
+          epubBytes,
+          indicePreCalculado,
+          etapaInicial: etapaRetomada,
+        });
+        await invalidarCacheBordaLaudo(env, idSessao, versaoRow.versao);
+      })();
 
   await invalidarCacheBordaLaudo(env, idSessao, versaoRow.versao);
   if (ctx) {
@@ -534,17 +567,25 @@ async function persistirVersaoEpubValidada(params: {
     )
     .run();
 
-  const tarefaModeracao = executarModeracaoAssincronaLaudo({
-    env,
-    idSessao,
-    versao: novaVersao,
-    userId,
-    epubBytes,
-    indicePreCalculado: indiceZip,
-  }).then(async (res) => {
-    await invalidarCacheBordaLaudo(env, idSessao, novaVersao);
-    return res;
-  });
+  const tarefaModeracao = env.SELF
+    ? dispararProximoLoteModeracaoViaSelf({
+        env,
+        idSessao,
+        versao: novaVersao,
+        etapa: 0,
+        tentativa: 1,
+      })
+    : executarModeracaoAssincronaLaudo({
+        env,
+        idSessao,
+        versao: novaVersao,
+        userId,
+        epubBytes,
+        indicePreCalculado: indiceZip,
+      }).then(async (res) => {
+        await invalidarCacheBordaLaudo(env, idSessao, novaVersao);
+        return res;
+      });
   await invalidarCacheBordaLaudo(env, idSessao, novaVersao);
   if (ctx) {
     ctx.waitUntil(tarefaModeracao);
@@ -696,6 +737,143 @@ export async function processarRequisicaoFixalog(
         "Cache-Control": "no-store",
       },
     });
+  }
+
+  // Rota interna autenticada por HMAC para processamento auto-encadeado em lotes curtos via Service Binding (env.SELF)
+  const matchModerarInterno = path.match(
+    /^\/__internal\/moderar\/([^/]+)\/v(\d+)$/,
+  );
+  if (req.method === "POST" && matchModerarInterno) {
+    const idSessao = decodeURIComponent(matchModerarInterno[1]);
+    const versao = Number.parseInt(matchModerarInterno[2], 10);
+    const token = url.searchParams.get("token") ?? "";
+    const etapaParam = Number.parseInt(url.searchParams.get("etapa") ?? "0", 10);
+    const tentativaParam = Number.parseInt(
+      url.searchParams.get("tentativa") ?? "1",
+      10,
+    );
+
+    const tokenValido = await verificarTokenHmacModeracaoInterna({
+      idSessao,
+      versao,
+      token,
+      segredo: env.SENTRY_DSN,
+    });
+    if (!tokenValido) {
+      return respostaJson(
+        { erro: "Token HMAC de moderação interna inválido." },
+        403,
+      );
+    }
+
+    await garantirColunasProgressoNoD1(env.DB);
+    const versaoRow = await env.DB.prepare(
+      "SELECT * FROM versoes_laudo_fixalog WHERE id_sessao = ? AND versao = ?",
+    )
+      .bind(idSessao, versao)
+      .first<LinhaVersoesLaudoFixalog>();
+    if (!versaoRow) {
+      return respostaJson({ erro: "Versão não encontrada." }, 404);
+    }
+    if (
+      versaoRow.status_moderacao === "ativo" ||
+      versaoRow.status_moderacao === "bloqueado"
+    ) {
+      return respostaJson(
+        {
+          status: versaoRow.status_moderacao,
+          verificacao_concluida: versaoRow.verificacao_concluida ?? 0,
+          verificacao_total: versaoRow.verificacao_total ?? 1,
+        },
+        200,
+      );
+    }
+
+    const objR2 = await env.LAUDOS_BUCKET.get(versaoRow.r2_key);
+    if (!objR2) {
+      return respostaJson({ erro: "Arquivo EPUB não encontrado no R2." }, 404);
+    }
+    const epubBytes = new Uint8Array(await objR2.arrayBuffer());
+    let indicePreCalculado: MapaIndiceZipEpub | undefined;
+    try {
+      const parsed = JSON.parse(
+        versaoRow.indices_zip_json,
+      ) as MapaIndiceZipEpub;
+      if (parsed && Object.keys(parsed).length > 0) {
+        indicePreCalculado = parsed;
+      }
+    } catch {
+      indicePreCalculado = undefined;
+    }
+
+    const laudo = await env.DB.prepare(
+      "SELECT * FROM laudos_fixalog WHERE id_sessao = ?",
+    )
+      .bind(idSessao)
+      .first<LinhaLaudosFixalog>();
+
+    const etapaInicial = Math.max(
+      Number.isNaN(etapaParam) ? 0 : etapaParam,
+      versaoRow.verificacao_concluida ?? 0,
+    );
+    const tentativaAtual = Math.max(
+      1,
+      Number.isNaN(tentativaParam) ? 1 : tentativaParam,
+    );
+
+    const resultadoLote = await executarModeracaoAssincronaLaudo({
+      env,
+      idSessao,
+      versao,
+      userId: laudo?.user_id ?? "sistema-self",
+      epubBytes,
+      indicePreCalculado,
+      etapaInicial,
+      maximoImagensPorExecucao: TAMANHO_MAXIMO_LOTE_POR_INVOCACAO,
+      tentativaAtual,
+      maximoTentativas: 3,
+    });
+
+    if (resultadoLote.status === "em_analise" && env.SELF) {
+      registrarHeartbeatModeracaoEmExecucao(idSessao, versao);
+      const proximoLotePromise = dispararProximoLoteModeracaoViaSelf({
+        env,
+        idSessao,
+        versao,
+        etapa: resultadoLote.verificacaoConcluida,
+        tentativa: 1,
+      });
+      if (ctx) {
+        ctx.waitUntil(proximoLotePromise);
+      } else {
+        await proximoLotePromise;
+      }
+    } else if (resultadoLote.status === "retentar" && env.SELF) {
+      registrarHeartbeatModeracaoEmExecucao(idSessao, versao);
+      const retentativaPromise = dispararProximoLoteModeracaoViaSelf({
+        env,
+        idSessao,
+        versao,
+        etapa: resultadoLote.verificacaoConcluida,
+        tentativa: tentativaAtual + 1,
+      });
+      if (ctx) {
+        ctx.waitUntil(retentativaPromise);
+      } else {
+        await retentativaPromise;
+      }
+    } else {
+      await invalidarCacheBordaLaudo(env, idSessao, versao);
+    }
+
+    return respostaJson(
+      {
+        status: resultadoLote.status,
+        verificacao_concluida: resultadoLote.verificacaoConcluida,
+        verificacao_total: resultadoLote.verificacaoTotal,
+      },
+      202,
+    );
   }
 
   // 1. POST /api/v1/chaves
