@@ -16,6 +16,14 @@ const REGEX_UID_CANONICO = /^[A-Za-z0-9]{14}$/;
 const REGEX_ROTA_THUMBNAIL_OG = /^\/og\/([a-z0-9_]+)\.webp$/;
 
 /**
+ * Resultado da análise de uma rota de entidade da vitrine `/croquis/<uid>[/<slug>]`.
+ */
+export interface RotaVitrineAnalisada {
+  metadados: MetadadosRotaLink;
+  slugInformado: string | null;
+}
+
+/**
  * Extrai o `id_slug` do croqui a partir de um caminho `/og/<id_slug>.webp`.
  * Retorna `null` se o caminho não corresponder ao formato esperado.
  */
@@ -24,9 +32,6 @@ export function extrairSlugThumbnailOg(caminho: string): string | null {
   return correspondencia ? correspondencia[1] : null;
 }
 
-/**
- * Configuração derivada de cada prefixo curto suportado em `aresta.cc`.
- */
 interface ConfiguracaoPrefixo {
   abrir_mapa: boolean;
   origem_link: "compartilhamento" | "qrcode" | null;
@@ -80,12 +85,9 @@ const PREFIXOS_SUPORTADOS: Record<string, ConfiguracaoPrefixo> = {
 };
 
 /**
- * Analisa uma URL de App Link (`https://aresta.cc/...`) e extrai o UID da entidade,
+ * Analisa uma URL de App Link curto (`https://aresta.cc/...`) e extrai o UID da entidade,
  * o prefixo de contexto (`m`, `s`, `sm`, `ms`, `q`, `qm`, `mq`), a flag de abertura no mapa
- * e os parâmetros UTM para telemetria no Umami.
- *
- * Retorna `null` se o caminho não corresponder ao formato `/<uid>` ou `/<prefixo>/<uid>`
- * com UID alfanumérico de 14 caracteres.
+ * e os parâmetros UTM.
  */
 export function analisarRotaLink(url: URL): MetadadosRotaLink | null {
   const segmentos = url.pathname
@@ -131,5 +133,56 @@ export function analisarRotaLink(url: URL): MetadadosRotaLink | null {
     origem_link: configPrefixo.origem_link,
     utm_source: utmSourceQuery ?? configPrefixo.utm_source_padrao,
     utm_medium: utmMediumQuery ?? configPrefixo.utm_medium_padrao,
+  };
+}
+
+/**
+ * Analisa uma rota da vitrine canônica `/croquis/<uid>` ou `/croquis/<uid>/<slug>`,
+ * extraindo o UID de 14 caracteres logo após `/croquis/`, o slug opcional e os CGI args (`mapa`, `utm_*`).
+ */
+export function analisarRotaVitrineEntidade(
+  url: URL
+): RotaVitrineAnalisada | null {
+  const segmentos = url.pathname
+    .split("/")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+
+  if (
+    segmentos[0] !== "croquis" ||
+    segmentos.length < 2 ||
+    segmentos.length > 3
+  ) {
+    return null;
+  }
+
+  const uid = segmentos[1];
+  if (!REGEX_UID_CANONICO.test(uid)) {
+    return null;
+  }
+
+  const slugInformado = segmentos.length === 3 ? segmentos[2] : null;
+  const mapaQuery = url.searchParams.get("mapa")?.trim().toLowerCase() ?? "";
+  const abrirMapa = mapaQuery === "1" || mapaQuery === "true";
+  const utmSource = url.searchParams.get("utm_source")?.trim() || null;
+  const utmMedium = url.searchParams.get("utm_medium")?.trim() || null;
+
+  let origemLink: "compartilhamento" | "qrcode" | null = null;
+  if (utmSource === "compartilhamento") {
+    origemLink = "compartilhamento";
+  } else if (utmSource === "placa_rocha" || utmMedium === "qrcode") {
+    origemLink = "qrcode";
+  }
+
+  return {
+    slugInformado,
+    metadados: {
+      uid,
+      prefixo: null,
+      abrir_mapa: abrirMapa,
+      origem_link: origemLink,
+      utm_source: utmSource,
+      utm_medium: utmMedium,
+    },
   };
 }

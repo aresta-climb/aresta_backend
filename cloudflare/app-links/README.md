@@ -1,41 +1,37 @@
-# Aresta App Links (`aresta.cc`)
+# Aresta App Links & Vitrine Web (`aresta.cc` e `arestaclimb.com/croquis`)
 
-Worker em borda (Cloudflare Worker + Cloudflare D1) responsável por atender o domínio curto `https://aresta.cc` (e `www.aresta.cc`), provendo verificação de App Links / Universal Links, páginas HTML SSR com meta tags OpenGraph para preview rico em redes sociais e mensageiros, fallback visual integrado ao Design System do Aresta Climb e telemetria de campanhas no Umami.
+Worker em borda (Cloudflare Worker + Cloudflare D1) responsável por atender tanto o encurtador `https://aresta.cc` (`www.aresta.cc`) quanto a vitrine pública indexável `https://arestaclimb.com/croquis*`, provendo verificação de App Links / Universal Links, redirecionamento permanente (`301`) preservando CGI args/UTMs, Mapão nacional leve de picos, JSON compacto para busca client-side, `sitemap.xml` e páginas HTML SSR de teaser com OpenGraph e telemetria Umami.
 
 ---
 
-## 🎯 Arquitetura, UI Responsiva, Cache na CDN e Telemetria Umami
+## 🎯 Arquitetura, Cache Agressivo na CDN e SEO
 
-1. **Resolução Instantânea via Cloudflare D1 (`aresta-catalogo`)**:
-   - O Worker compartilha o binding `DB` do banco D1 `aresta-catalogo` (alimentado pelo `sincronizar_d1_lib.py` no `aresta_db`), consultando em uma única query unificada (`UNION ALL`) as tabelas `catalogo_croquis` e `catalogo_aresta` para montar o resumo hierárquico da entidade (`croqui`, `grupo`, `setor` ou `escalada`) em um único round-trip.
-2. **Design System Light/Dark Mode e Layout Mobile-First**:
-   - As páginas HTML SSR (`200 OK` e `404 Not Found`) compartilham os tokens visuais de `arestaclimb.com` (Arenito, Terracota, Sálvia e Obsidian) com detecção automática de `prefers-color-scheme`, persistência em `localStorage('aresta-theme')`, botão `#themeToggle` e cabeçalho com a logo oficial (`logo_app.png`).
-   - **Mobile-First (inspirado na `PicoPage` do aplicativo)**: exibe a miniatura `600x600` (`1:1`) em largura total sem cortes (`aspect-ratio: 1 / 1`), com gradiente inferior fundindo ao fundo, título sobreposto, subtítulo em verde-musgo, banner de download estilo `BannerModoOnline` com os selos clássicos `.store-badge` (contendo os ícones SVG oficiais da Apple App Store e Google Play), link discreto *"Já tem o Aresta instalado? Abrir no aplicativo →"* (visível exclusivamente no mobile + meta tag `apple-itunes-app` para iOS) e cards de contexto estilo `PicoMenuCard`.
-   - **Desktop (`@media (min-width: 820px)`)**: transforma o contêiner em um Card de 2 Colunas com a miniatura `1:1` à esquerda (sem cortes) e as informações e botões das lojas à direita (ocultando o link `aresta://`).
-   - **Normalização de Metadados**: capitaliza a modalidade (`Boulder`, `Esportiva`, `Tradicional`, `Multienfiada`, `Highline`), usa etiqueta específica para `Boulder` e `Highline`, e remove os prefixos redundantes `"Setor "` e `"Grupo "` (`"Setor Tramontina"` $\rightarrow$ `"Setor: Tramontina"`).
-3. **Preview OpenGraph Instantâneo no WhatsApp, Cache na Borda da Cloudflare CDN e Telemetria Umami**:
-   - As meta tags OpenGraph (`og:locale`, `og:title`, `og:description`, `og:image`, `og:image:secure_url`, `og:image:type`, `og:image:width`, `og:image:height`, `og:image:alt`) são emitidas no topo imediato do `<head>` antes de qualquer `<script>` ou `<style>`, informando as dimensões exatas (`600x600` para miniaturas WebP e `1200x630` para o fallback `og.png`) para evitar o scraping assíncrono em segundo plano da Meta/WhatsApp no primeiro compartilhamento.
-   - As miniaturas são servidas sob o mesmo domínio em `/og/<id_slug>.webp` (`Cache-Control: public, max-age=86400, s-maxage=604800, stale-while-revalidate=86400`), reutilizando a mesma conexão HTTP/2 / TLS aberta pelo crawler no domínio `aresta.cc`.
-   - As páginas HTML SSR de entidades emitem `Cache-Control: public, max-age=14400, s-maxage=604800, stale-while-revalidate=86400` (4 horas no navegador, 7 dias na CDN da Cloudflare + 24 horas de revalidação em background), reduzindo leituras no D1 e invocações do Worker.
-   - Mesmo quando o HTML é entregue diretamente pelo cache da CDN da Cloudflare, o navegador do visitante executa o script oficial do Umami (`https://analytics.arestaclimb.com/script.js`) e dispara o evento customizado `app-link-acesso`, registrando `uid`, `tipo`, `id_slug`, `abrir_mapa`, `origem_link`, `utm_source` e `utm_medium`.
-4. **Mapeamento Automático de Prefixos para UTM**:
-   - `/s/<uid>`, `/sm/<uid>`, `/ms/<uid>` $\rightarrow$ `utm_source: "compartilhamento"`, `utm_medium: "social"`
-   - `/q/<uid>`, `/qm/<uid>`, `/mq/<uid>` $\rightarrow$ `utm_source: "placa_rocha"`, `utm_medium: "qrcode"`
-   - Parâmetros explícitos na query string (`?utm_source=...&utm_medium=...`) têm precedência sobre os valores derivados do prefixo.
+1. **Vitrine Centralizada em `arestaclimb.com/croquis*`**:
+   - **`GET /croquis`**: Renderiza o diretório público agrupado por estado unido ao **Mapão Nacional** (Leaflet + tiles gratuitos CARTO/OSM sem chave de API paga) e barra de busca instantânea que consome `/croquis/busca.json` sob demanda no navegador.
+   - **`GET /croquis/busca.json`**: Índice compacto cacheado na CDN por 7 dias com croquis, grupos, setores e escaladas para filtragem em `0ms` sem acionar o Worker a cada tecla digitada.
+   - **`GET /croquis/sitemap.xml`**: Sitemap XML dinâmico de todas as ~5.000 URLs canônicas para indexação orgânica no Google.
+   - **`GET /croquis/<uid>/<slug>`**: Página SSR de teaser com os 14 caracteres do UID na frente (redirecionando `301` caso falte o `<slug>` ou este tenha mudado após renomeação), `<link rel="canonical">`, JSON-LD `BreadcrumbList`, trilha de breadcrumbs clicáveis, botão de localização no Google Maps, listagem clicável de subentidades (setores do pico / vias do setor) e CTAs de download/abertura do app.
+2. **Redirecionamento Permanente de `aresta.cc`**:
+   - Rotas `/{uid}` e `/{prefixo}/{uid}` (`m`, `s`, `sm`, `ms`, `q`, `qm`, `mq`) consultam o D1 em uma única query leve e emitem `301 Moved Permanently` (`s-maxage=2592000`, 30 dias na CDN) para `https://arestaclimb.com/croquis/<uid>/<slug>` preservando todos os CGI args existentes e adicionando `?mapa=1`, `utm_source` e `utm_medium` derivados do prefixo.
+   - `/.well-known/assetlinks.json`, `/.well-known/apple-app-site-association` e `/og/<id_slug>.webp` permanecem respondendo `200 OK` diretamente em `aresta.cc`.
+3. **Cache Key sem Query String + Telemetria Umami Client-Side**:
+   - Com a Cache Rule ativa na zona `arestaclimb.com` (*Eligible for cache* + *Ignore query string*), o HTML SSR é entregue em `~15ms` diretamente da borda da Cloudflare CDN com zero invocações do Worker, enquanto o script no navegador lê `window.location.search` para registrar os parâmetros CGI/UTM no Umami e repassá-los ao link mobile `aresta://`.
 
 ---
 
 ## 🛣️ Rotas
 
-| Rota | Método | Descrição |
+| Domínio / Rota | Método | Descrição |
 | :--- | :--- | :--- |
-| `/` | `GET` | Redireciona (`302 Found`) para `https://arestaclimb.com`. |
-| `/health` | `GET` | Healthcheck operacional (`200 OK`, `Cache-Control: no-store`). |
-| `/.well-known/assetlinks.json` | `GET` | Declaração Digital Asset Links para Android App Links (`app.escalada.croquis`). |
-| `/.well-known/apple-app-site-association` | `GET` | Declaração AASA para iOS Universal Links (`Z74K7R3WU7.app.escalada.croquis`). |
-| `/og/<id_slug>.webp` | `GET`, `HEAD` | Proxy de miniatura OpenGraph `600x600` WebP sob o domínio `aresta.cc` com cache de 7 dias na borda. |
-| `/<uid>` | `GET` | Página HTML SSR com OpenGraph e fallback de lojas para o UID de 14 caracteres. |
-| `/<prefixo>/<uid>` | `GET` | Página HTML SSR com suporte aos prefixos `m`, `s`, `sm`, `ms`, `q`, `qm` e `mq`. |
+| `aresta.cc/` | `GET` | Redireciona (`302 Found`) para `https://arestaclimb.com/croquis`. |
+| `aresta.cc/health` | `GET` | Healthcheck operacional (`200 OK`, `Cache-Control: no-store`). |
+| `aresta.cc/.well-known/*` | `GET` | Declarações Digital Asset Links (Android) e AASA (iOS). |
+| `aresta.cc/og/<id_slug>.webp` | `GET`, `HEAD` | Proxy de miniatura OpenGraph `600x600` WebP com cache de 7 dias na borda. |
+| `aresta.cc/[<prefixo>/]<uid>` | `GET` | Redireciona (`301`) para `https://arestaclimb.com/croquis/<uid>/<slug>` preservando CGI args/UTMs. |
+| `arestaclimb.com/croquis` | `GET` | Página índice com Mapão nacional, busca rápida e diretório por estado. |
+| `arestaclimb.com/croquis/busca.json` | `GET` | Índice JSON compacto para busca client-side instantânea. |
+| `arestaclimb.com/croquis/sitemap.xml` | `GET` | Sitemap XML completo do catálogo público. |
+| `arestaclimb.com/croquis/<uid>[/<slug>]` | `GET` | Teaser SSR hierárquico da entidade (`301` automático para o `<slug>` canônico). |
 
 ---
 
@@ -43,7 +39,7 @@ Worker em borda (Cloudflare Worker + Cloudflare D1) responsável por atender o d
 
 ```bash
 cd cloudflare/app-links
-deno test -A --coverage
+deno test -A --coverage test/
 ```
 
 ---

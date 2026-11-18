@@ -2,22 +2,43 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import {
+  ROTA_LISTAR_VITRINE_CROQUIS,
   ROTA_OBTER_ASSETLINKS_ANDROID,
   ROTA_OBTER_ASSOCIACAO_IOS,
   ROTA_OBTER_FAVICON_ICO,
   ROTA_OBTER_FAVICON_SVG,
+  ROTA_OBTER_INDICE_BUSCA_VITRINE,
   ROTA_OBTER_ROBOTS_TXT,
+  ROTA_OBTER_SITEMAP_VITRINE,
   ROTA_VERIFICAR_SAUDE_APP_LINKS,
 } from "../../../aresta_api/openapi/generated/ts/app_links.ts";
 import {
   analisarRotaLink,
+  analisarRotaVitrineEntidade,
   extrairSlugThumbnailOg,
 } from "./analisador_rota_link.ts";
 import {
+  URL_VITRINE_CROQUIS,
   renderizarPaginaEntidade,
   renderizarPaginaNaoEncontrada,
 } from "./renderizador_pagina_link.ts";
-import { BancoD1, resolverEntidadePorUid } from "./resolvedor_entidade_d1.ts";
+import {
+  renderizarPaginaIndiceVitrine,
+  renderizarSitemapVitrine,
+} from "./renderizador_vitrine_indice.ts";
+import {
+  BancoD1,
+  listarCroquisVitrine,
+  listarItensBuscaESitemap,
+  resolverEntidadePorUid,
+} from "./resolvedor_entidade_d1.ts";
+import {
+  DOMINIO_VITRINE_CANONICO,
+  construirCaminhoVitrineEntidade,
+  construirSlugCanonicoEntidade,
+  construirUrlCanonicaVitrine,
+  construirUrlRedirecionamentoArestaCc,
+} from "./slug_vitrine.ts";
 import * as Sentry from "@sentry/cloudflare";
 import {
   ContextoExecucaoAssincrona,
@@ -25,30 +46,22 @@ import {
   relatarErroSentry,
 } from "../../../supabase/functions/compartilhado/relator_sentry.ts";
 
-/**
- * Resposta de uma busca de miniatura OpenGraph.
- */
 export interface RespostaThumbnailOg {
   status: number;
   corpo: BodyInit | null;
   contentType: string;
 }
 
-/**
- * Contrato de fronteira para busca de miniaturas OpenGraph na CDN do Aresta.
- */
 export interface ClienteThumbnailOg {
   obterThumbnail(idSlug: string, metodo: string): Promise<RespostaThumbnailOg>;
 }
 
 const URL_ORIGEM_THUMBNAILS = "https://serving.arestaclimb.com/v4/thumbnails";
 const TTL_BORDA_UM_ANO_SEGUNDOS = 31536000;
+const TTL_BORDA_TRINTA_DIAS_SEGUNDOS = 2592000;
 const TTL_BORDA_SETE_DIAS_SEGUNDOS = 604800;
 const TTL_BORDA_UM_DIA_SEGUNDOS = 86400;
 
-/**
- * Implementação HTTP real que busca a miniatura na CDN `serving.arestaclimb.com`.
- */
 export class ClienteThumbnailHttp implements ClienteThumbnailOg {
   constructor(private readonly fetchFn: typeof fetch = globalThis.fetch) {}
 
@@ -75,9 +88,6 @@ export class ClienteThumbnailHttp implements ClienteThumbnailOg {
   }
 }
 
-/**
- * Interface com os bindings de ambiente do Worker `aresta-app-links` (`aresta.cc`).
- */
 export interface AmbienteAppLinks {
   DB?: BancoD1;
   SENTRY_DSN?: string;
@@ -85,9 +95,8 @@ export interface AmbienteAppLinks {
   clienteThumbnail?: ClienteThumbnailOg;
 }
 
-const URL_SITE_PRINCIPAL = "https://arestaclimb.com";
 const URL_FAVICON_OFICIAL = "https://arestaclimb.com/favicon.svg";
-const CONTEUDO_ROBOTS_TXT = "User-agent: *\nAllow: /\n";
+const CONTEUDO_ROBOTS_TXT = `User-agent: *\nAllow: /\nSitemap: ${DOMINIO_VITRINE_CANONICO}${ROTA_OBTER_SITEMAP_VITRINE}\n`;
 
 export const cabecalhosCors = {
   "Access-Control-Allow-Origin": "*",
@@ -95,23 +104,13 @@ export const cabecalhosCors = {
   "Access-Control-Allow-Headers": "Content-Type",
 };
 
-/**
- * Cabeçalho de cache para arquivos `.well-known` (24 horas no navegador, 1 ano na borda da Cloudflare).
- */
-export const CABECALHO_CACHE_WELL_KNOWN =
-  `public, max-age=86400, s-maxage=${TTL_BORDA_UM_ANO_SEGUNDOS}`;
+export const CABECALHO_CACHE_WELL_KNOWN = `public, max-age=86400, s-maxage=${TTL_BORDA_UM_ANO_SEGUNDOS}`;
 
-/**
- * Cabeçalho de cache para páginas HTML SSR de App Links (4 horas no navegador, 7 dias na borda da Cloudflare + 24h stale-while-revalidate).
- */
-export const CABECALHO_CACHE_PAGINA_LINK =
-  `public, max-age=14400, s-maxage=${TTL_BORDA_SETE_DIAS_SEGUNDOS}, stale-while-revalidate=${TTL_BORDA_UM_DIA_SEGUNDOS}`;
+export const CABECALHO_CACHE_PAGINA_LINK = `public, max-age=14400, s-maxage=${TTL_BORDA_SETE_DIAS_SEGUNDOS}, stale-while-revalidate=${TTL_BORDA_UM_DIA_SEGUNDOS}`;
 
-/**
- * Cabeçalho de cache para miniaturas OpenGraph `/og/<id_slug>.webp` (24 horas no navegador, 7 dias na borda da Cloudflare + 24h stale-while-revalidate).
- */
-export const CABECALHO_CACHE_THUMBNAIL_OG =
-  `public, max-age=86400, s-maxage=${TTL_BORDA_SETE_DIAS_SEGUNDOS}, stale-while-revalidate=${TTL_BORDA_UM_DIA_SEGUNDOS}`;
+export const CABECALHO_CACHE_REDIRECIONAMENTO_LONGO = `public, max-age=86400, s-maxage=${TTL_BORDA_TRINTA_DIAS_SEGUNDOS}, stale-while-revalidate=${TTL_BORDA_UM_DIA_SEGUNDOS}`;
+
+export const CABECALHO_CACHE_THUMBNAIL_OG = `public, max-age=86400, s-maxage=${TTL_BORDA_SETE_DIAS_SEGUNDOS}, stale-while-revalidate=${TTL_BORDA_UM_DIA_SEGUNDOS}`;
 
 const CONTEUDO_ASSETLINKS_ANDROID = [
   {
@@ -157,8 +156,184 @@ function responderHtml(
   });
 }
 
+function responderRedirecionamento(
+  destino: string,
+  status: 301 | 302,
+  cacheControl: string
+): Response {
+  return new Response(null, {
+    status,
+    headers: {
+      ...cabecalhosCors,
+      Location: destino,
+      "Cache-Control": cacheControl,
+    },
+  });
+}
+
+async function responderErroBancoAusente(
+  req: Request,
+  env: AmbienteAppLinks,
+  ctx?: ContextoExecucaoAssincrona
+): Promise<Response> {
+  await relatarErroSentry(
+    new Error("Binding DB do Cloudflare D1 não configurado"),
+    {
+      dsn: env.SENTRY_DSN,
+      servico: "cloudflare-app-links",
+      requisicao: req,
+      contextoExecucao: ctx,
+    },
+    env.relatorSentry
+  );
+  return new Response("Binding DB do Cloudflare D1 não configurado", {
+    status: 500,
+    headers: {
+      ...cabecalhosCors,
+      "Content-Type": "text/plain; charset=utf-8",
+      "Cache-Control": "no-store",
+    },
+  });
+}
+
+async function responderErroConsultaD1(
+  erro: unknown,
+  req: Request,
+  env: AmbienteAppLinks,
+  ctx?: ContextoExecucaoAssincrona
+): Promise<Response> {
+  await relatarErroSentry(
+    erro,
+    {
+      dsn: env.SENTRY_DSN,
+      servico: "cloudflare-app-links",
+      requisicao: req,
+      contextoExecucao: ctx,
+    },
+    env.relatorSentry
+  );
+  const mensagem = erro instanceof Error ? erro.message : String(erro);
+  return new Response(`Erro ao consultar entidade no D1: ${mensagem}`, {
+    status: 500,
+    headers: {
+      ...cabecalhosCors,
+      "Content-Type": "text/plain; charset=utf-8",
+      "Cache-Control": "no-store",
+    },
+  });
+}
+
+async function processarRotaVitrineCroquis(
+  req: Request,
+  url: URL,
+  env: AmbienteAppLinks,
+  ctx?: ContextoExecucaoAssincrona
+): Promise<Response> {
+  const caminho = url.pathname;
+
+  if (caminho === "/croquis/") {
+    return responderRedirecionamento(
+      `${URL_VITRINE_CROQUIS}${url.search}`,
+      301,
+      `public, max-age=86400, s-maxage=${TTL_BORDA_UM_ANO_SEGUNDOS}`
+    );
+  }
+
+  if (caminho === ROTA_LISTAR_VITRINE_CROQUIS) {
+    if (!env.DB) return responderErroBancoAusente(req, env, ctx);
+    try {
+      const croquis = await listarCroquisVitrine(env.DB);
+      return responderHtml(
+        renderizarPaginaIndiceVitrine(croquis),
+        200,
+        CABECALHO_CACHE_PAGINA_LINK
+      );
+    } catch (erro: unknown) {
+      return responderErroConsultaD1(erro, req, env, ctx);
+    }
+  }
+
+  if (caminho === ROTA_OBTER_INDICE_BUSCA_VITRINE) {
+    if (!env.DB) return responderErroBancoAusente(req, env, ctx);
+    try {
+      const itens = await listarItensBuscaESitemap(env.DB);
+      return new Response(JSON.stringify(itens), {
+        status: 200,
+        headers: {
+          ...cabecalhosCors,
+          "Content-Type": "application/json; charset=utf-8",
+          "Cache-Control": CABECALHO_CACHE_PAGINA_LINK,
+        },
+      });
+    } catch (erro: unknown) {
+      return responderErroConsultaD1(erro, req, env, ctx);
+    }
+  }
+
+  if (caminho === ROTA_OBTER_SITEMAP_VITRINE) {
+    if (!env.DB) return responderErroBancoAusente(req, env, ctx);
+    try {
+      const itens = await listarItensBuscaESitemap(env.DB);
+      return new Response(renderizarSitemapVitrine(itens), {
+        status: 200,
+        headers: {
+          ...cabecalhosCors,
+          "Content-Type": "application/xml; charset=utf-8",
+          "Cache-Control": CABECALHO_CACHE_PAGINA_LINK,
+        },
+      });
+    } catch (erro: unknown) {
+      return responderErroConsultaD1(erro, req, env, ctx);
+    }
+  }
+
+  const rotaVitrine = analisarRotaVitrineEntidade(url);
+  if (!rotaVitrine) {
+    return responderHtml(
+      renderizarPaginaNaoEncontrada(),
+      404,
+      `public, max-age=300, s-maxage=${TTL_BORDA_UM_ANO_SEGUNDOS}`
+    );
+  }
+
+  if (!env.DB) return responderErroBancoAusente(req, env, ctx);
+
+  try {
+    const entidade = await resolverEntidadePorUid(
+      env.DB,
+      rotaVitrine.metadados.uid,
+      { incluirSubentidades: true }
+    );
+    if (!entidade) {
+      return responderHtml(
+        renderizarPaginaNaoEncontrada(),
+        404,
+        `public, max-age=300, s-maxage=${TTL_BORDA_UM_DIA_SEGUNDOS}`
+      );
+    }
+
+    const slugCanonico = construirSlugCanonicoEntidade(entidade);
+    if (rotaVitrine.slugInformado !== slugCanonico) {
+      const caminhoCanonico = construirCaminhoVitrineEntidade(
+        entidade.uid,
+        slugCanonico
+      );
+      return responderRedirecionamento(
+        `${DOMINIO_VITRINE_CANONICO}${caminhoCanonico}${url.search}`,
+        301,
+        CABECALHO_CACHE_REDIRECIONAMENTO_LONGO
+      );
+    }
+
+    const html = renderizarPaginaEntidade(entidade, rotaVitrine.metadados);
+    return responderHtml(html, 200, CABECALHO_CACHE_PAGINA_LINK);
+  } catch (erro: unknown) {
+    return responderErroConsultaD1(erro, req, env, ctx);
+  }
+}
+
 /**
- * Roteador principal do Worker `aresta-app-links` (`https://aresta.cc`).
+ * Roteador principal unificado do Worker `aresta-app-links` (`aresta.cc` e `arestaclimb.com/croquis*`).
  */
 export async function processarRequisicao(
   req: Request,
@@ -180,14 +355,19 @@ export async function processarRequisicao(
   }
 
   if (url.hostname === "www.aresta.cc") {
-    return new Response(null, {
-      status: 301,
-      headers: {
-        ...cabecalhosCors,
-        Location: `https://aresta.cc${url.pathname}${url.search}`,
-        "Cache-Control": `public, max-age=86400, s-maxage=${TTL_BORDA_UM_ANO_SEGUNDOS}`,
-      },
-    });
+    return responderRedirecionamento(
+      `https://aresta.cc${url.pathname}${url.search}`,
+      301,
+      `public, max-age=86400, s-maxage=${TTL_BORDA_UM_ANO_SEGUNDOS}`
+    );
+  }
+
+  if (url.hostname === "www.arestaclimb.com") {
+    return responderRedirecionamento(
+      `${DOMINIO_VITRINE_CANONICO}${url.pathname}${url.search}`,
+      301,
+      `public, max-age=86400, s-maxage=${TTL_BORDA_UM_ANO_SEGUNDOS}`
+    );
   }
 
   if (caminho === ROTA_VERIFICAR_SAUDE_APP_LINKS) {
@@ -201,15 +381,16 @@ export async function processarRequisicao(
     });
   }
 
+  if (caminho === "/croquis" || caminho.startsWith("/croquis/")) {
+    return processarRotaVitrineCroquis(req, url, env, ctx);
+  }
+
   if (caminho === "/") {
-    return new Response(null, {
-      status: 302,
-      headers: {
-        ...cabecalhosCors,
-        Location: URL_SITE_PRINCIPAL,
-        "Cache-Control": `public, max-age=3600, s-maxage=${TTL_BORDA_UM_ANO_SEGUNDOS}`,
-      },
-    });
+    return responderRedirecionamento(
+      URL_VITRINE_CROQUIS,
+      302,
+      `public, max-age=3600, s-maxage=${TTL_BORDA_UM_ANO_SEGUNDOS}`
+    );
   }
 
   if (caminho === ROTA_OBTER_ROBOTS_TXT) {
@@ -227,14 +408,11 @@ export async function processarRequisicao(
     caminho === ROTA_OBTER_FAVICON_ICO ||
     caminho === ROTA_OBTER_FAVICON_SVG
   ) {
-    return new Response(null, {
-      status: 301,
-      headers: {
-        ...cabecalhosCors,
-        Location: URL_FAVICON_OFICIAL,
-        "Cache-Control": `public, max-age=86400, s-maxage=${TTL_BORDA_UM_ANO_SEGUNDOS}, immutable`,
-      },
-    });
+    return responderRedirecionamento(
+      URL_FAVICON_OFICIAL,
+      301,
+      `public, max-age=86400, s-maxage=${TTL_BORDA_UM_ANO_SEGUNDOS}, immutable`
+    );
   }
 
   if (caminho === ROTA_OBTER_ASSETLINKS_ANDROID) {
@@ -318,26 +496,7 @@ export async function processarRequisicao(
     );
   }
 
-  if (!env.DB) {
-    await relatarErroSentry(
-      new Error("Binding DB do Cloudflare D1 não configurado"),
-      {
-        dsn: env.SENTRY_DSN,
-        servico: "cloudflare-app-links",
-        requisicao: req,
-        contextoExecucao: ctx,
-      },
-      env.relatorSentry
-    );
-    return new Response("Binding DB do Cloudflare D1 não configurado", {
-      status: 500,
-      headers: {
-        ...cabecalhosCors,
-        "Content-Type": "text/plain; charset=utf-8",
-        "Cache-Control": "no-store",
-      },
-    });
-  }
+  if (!env.DB) return responderErroBancoAusente(req, env, ctx);
 
   try {
     const entidade = await resolverEntidadePorUid(env.DB, metadadosRota.uid);
@@ -349,35 +508,22 @@ export async function processarRequisicao(
       );
     }
 
-    const html = renderizarPaginaEntidade(entidade, metadadosRota);
-    return responderHtml(html, 200, CABECALHO_CACHE_PAGINA_LINK);
-  } catch (erro: unknown) {
-    await relatarErroSentry(
-      erro,
-      {
-        dsn: env.SENTRY_DSN,
-        servico: "cloudflare-app-links",
-        requisicao: req,
-        contextoExecucao: ctx,
-      },
-      env.relatorSentry
+    const urlCanonica = construirUrlCanonicaVitrine(entidade);
+    const urlDestino = construirUrlRedirecionamentoArestaCc(
+      url,
+      metadadosRota,
+      urlCanonica
     );
-    const mensagem = erro instanceof Error ? erro.message : String(erro);
-    return new Response(`Erro ao consultar entidade no D1: ${mensagem}`, {
-      status: 500,
-      headers: {
-        ...cabecalhosCors,
-        "Content-Type": "text/plain; charset=utf-8",
-        "Cache-Control": "no-store",
-      },
-    });
+    return responderRedirecionamento(
+      urlDestino,
+      301,
+      CABECALHO_CACHE_REDIRECIONAMENTO_LONGO
+    );
+  } catch (erro: unknown) {
+    return responderErroConsultaD1(erro, req, env, ctx);
   }
 }
 
-/**
- * Constrói a configuração do Sentry para o Worker `aresta-app-links`,
- * removendo cabeçalhos sensíveis (`authorization`, `cookie`, `x-api-key`).
- */
 export function criarOpcoesSentry(env: AmbienteAppLinks) {
   return {
     dsn: env.SENTRY_DSN,

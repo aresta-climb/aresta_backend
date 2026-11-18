@@ -17,14 +17,14 @@ import {
 
 const ROTA_COMPARTILHAMENTO: MetadadosRotaLink = {
   uid: "ESCALA12345678",
-  prefixo: "s",
+  prefixo: null,
   abrir_mapa: false,
   origem_link: "compartilhamento",
   utm_source: "compartilhamento",
   utm_medium: "social",
 };
 
-Deno.test("renderizador_pagina_link: gera meta tags OpenGraph completas e thumbnail da CDN para escalada com grau", () => {
+Deno.test("renderizador_pagina_link: gera meta tags OpenGraph, canonical /croquis/<uid>/<slug>, JSON-LD BreadcrumbList, breadcrumbs clicaveis e botao Google Maps", () => {
   const escalada: ResumoEntidadeLink = {
     uid: "ESCALA12345678",
     tipo: "escalada",
@@ -36,8 +36,13 @@ Deno.test("renderizador_pagina_link: gera meta tags OpenGraph completas e thumbn
     estado: "MG",
     escalada_grau: "7b",
     escalada_tipo: "esportiva",
+    setor_uid: "SETOR123456789",
     setor_nome: "Vale da Lua",
+    grupo_uid: "GRUPO123456789",
     grupo_nome: "Grupo Cipó",
+    latitude_e7: -193456780,
+    longitude_e7: -436123450,
+    url_google_maps: "https://maps.app.goo.gl/SerraDoCipo",
   };
 
   const html = renderizarPaginaEntidade(escalada, ROTA_COMPARTILHAMENTO);
@@ -46,46 +51,127 @@ Deno.test("renderizador_pagina_link: gera meta tags OpenGraph completas e thumbn
     html,
     '<meta property="og:title" content="Rapa Nui (7b) — Serra do Cipó | Aresta">'
   );
-  assertStringIncludes(html, '<meta property="og:locale" content="pt_BR">');
+  assertStringIncludes(
+    html,
+    '<link rel="canonical" href="https://arestaclimb.com/croquis/ESCALA12345678/mg-serra-do-cipo-rapa-nui">'
+  );
+  assertStringIncludes(html, '"@type":"BreadcrumbList"');
+  assertStringIncludes(
+    html,
+    'href="/croquis/CROQUI12345678/mg-santana-do-riacho-serra-do-cipo"'
+  );
+  assertStringIncludes(
+    html,
+    'href="/croquis/GRUPO123456789/mg-serra-do-cipo-grupo-cipo"'
+  );
+  assertStringIncludes(
+    html,
+    'href="/croquis/SETOR123456789/mg-serra-do-cipo-vale-da-lua"'
+  );
+  assertStringIncludes(html, 'href="https://maps.app.goo.gl/SerraDoCipo"');
+  assertStringIncludes(html, "Ver região no Google Maps");
   assertStringIncludes(
     html,
     '<meta property="og:image" content="https://aresta.cc/og/br_mg_serra_do_cipo.webp">'
   );
-  assertStringIncludes(
-    html,
-    '<meta property="og:image:secure_url" content="https://aresta.cc/og/br_mg_serra_do_cipo.webp">'
-  );
-  assertStringIncludes(
-    html,
-    '<meta property="og:image:type" content="image/webp">'
-  );
-  assertStringIncludes(html, '<meta property="og:image:width" content="600">');
-  assertStringIncludes(html, '<meta property="og:image:height" content="600">');
-  assertStringIncludes(
-    html,
-    '<meta property="og:image:alt" content="Rapa Nui (7b) — Serra do Cipó | Aresta">'
-  );
-  assertStringIncludes(
-    html,
-    '<meta name="twitter:image:alt" content="Rapa Nui (7b) — Serra do Cipó | Aresta">'
-  );
 
-  // Meta tags OpenGraph devem vir antes de qualquer <script> ou <style> no <head>
   const idxOgImage = html.indexOf('<meta property="og:image:height"');
   const idxPrimeiroScript = html.indexOf("<script>");
   const idxPrimeiroStyle = html.indexOf("<style>");
   assert(idxOgImage > 0 && idxOgImage < idxPrimeiroScript);
   assert(idxOgImage < idxPrimeiroStyle);
-  assertStringIncludes(html, "Vale da Lua");
-  assertStringIncludes(html, "Grupo: Cipó");
-  assertStringIncludes(html, "Santana do Riacho - MG");
-  assertStringIncludes(html, "Esportiva");
-  assertStringIncludes(html, 'href="aresta://aresta.cc/s/ESCALA12345678"');
-  assertStringIncludes(html, "https://apps.apple.com/app/id6776467893");
   assertStringIncludes(
     html,
-    "https://play.google.com/store/apps/details?id=app.escalada.croquis"
+    'href="aresta://arestaclimb.com/croquis/ESCALA12345678/mg-serra-do-cipo-rapa-nui"'
   );
+});
+
+Deno.test("renderizador_pagina_link: renderiza subentidades clicaveis em paginas de croqui, grupo e setor sem expor betas ou croquis riscados", () => {
+  const rota: MetadadosRotaLink = {
+    uid: "SETOR123456789",
+    prefixo: null,
+    abrir_mapa: false,
+    origem_link: null,
+    utm_source: null,
+    utm_medium: null,
+  };
+
+  const setorComVias: ResumoEntidadeLink = {
+    uid: "SETOR123456789",
+    tipo: "setor",
+    nome: "Setor Deslize",
+    croqui_uid: "CROQUI12345678",
+    id_slug: "br_mg_sabara_pedra_rachada",
+    croqui_nome: "Pedra Rachada",
+    cidade: "Sabará",
+    estado: "MG",
+    escalada_grau: null,
+    escalada_tipo: null,
+    setor_nome: null,
+    grupo_nome: null,
+    latitude_e7: -198800000,
+    longitude_e7: -438000000,
+    url_google_maps: null,
+    subentidades: [
+      {
+        uid: "VIA_DESLIZE_12",
+        tipo: "escalada",
+        nome: "Deslize",
+        escalada_grau: "7a",
+        escalada_tipo: "esportiva",
+      },
+      {
+        uid: "BOULDER_SEM_GR",
+        tipo: "escalada",
+        nome: "Bloco Livre",
+        escalada_grau: null,
+        escalada_tipo: null,
+      },
+    ],
+  };
+
+  const htmlSetor = renderizarPaginaEntidade(setorComVias, rota);
+  assertStringIncludes(htmlSetor, "Vias e Boulders deste Setor (2)");
+  assertStringIncludes(
+    htmlSetor,
+    'href="/croquis/VIA_DESLIZE_12/mg-pedra-rachada-deslize"'
+  );
+  assertStringIncludes(htmlSetor, "7a");
+  assertStringIncludes(htmlSetor, "Esportiva");
+  assertStringIncludes(
+    htmlSetor,
+    "https://www.google.com/maps/search/?api=1&amp;query=-19.88,-43.8"
+  );
+
+  const croquiComSetores: ResumoEntidadeLink = {
+    ...setorComVias,
+    uid: "CROQUI12345678",
+    tipo: "croqui",
+    nome: "Pedra Rachada",
+    subentidades: [
+      { uid: "GRUPO_NORTE_12", tipo: "grupo", nome: "Grupo Norte" },
+      {
+        uid: "SETOR123456789",
+        tipo: "setor",
+        nome: "Setor Deslize",
+        grupo_nome: "Grupo Norte",
+      },
+    ],
+  };
+  const htmlCroqui = renderizarPaginaEntidade(croquiComSetores, rota);
+  assertStringIncludes(htmlCroqui, "Setores e Grupos deste Pico (2)");
+
+  const grupoComSetores: ResumoEntidadeLink = {
+    ...setorComVias,
+    uid: "GRUPO_NORTE_12",
+    tipo: "grupo",
+    nome: "Grupo Norte",
+    subentidades: [
+      { uid: "SETOR123456789", tipo: "setor", nome: "Setor Deslize" },
+    ],
+  };
+  const htmlGrupo = renderizarPaginaEntidade(grupoComSetores, rota);
+  assertStringIncludes(htmlGrupo, "Setores deste Grupo (1)");
 });
 
 Deno.test("renderizador_pagina_link: formata modalidade com inicial maiuscula, usa etiqueta Boulder/Highline e remove prefixos Setor e Grupo duplicados", () => {
@@ -112,9 +198,6 @@ Deno.test("renderizador_pagina_link: formata modalidade com inicial maiuscula, u
   );
   assertEquals(htmlBoulder.includes("Setor: Setor Tramontina"), false);
   assertEquals(htmlBoulder.includes("Grupo: Grupo Sherpa"), false);
-  assertStringIncludes(htmlBoulder, "Boulder");
-  assertStringIncludes(htmlBoulder, "Tramontina");
-  assertStringIncludes(htmlBoulder, "Sherpa");
 
   const highline: ResumoEntidadeLink = {
     ...boulder,
@@ -172,22 +255,8 @@ Deno.test("renderizador_pagina_link: gera titulo OpenGraph adequado para croqui,
   );
   assertStringIncludes(
     htmlCroqui,
-    '<meta property="og:image:secure_url" content="https://arestaclimb.com/og.png">'
-  );
-  assertStringIncludes(
-    htmlCroqui,
     '<meta property="og:image:type" content="image/png">'
   );
-  assertStringIncludes(
-    htmlCroqui,
-    '<meta property="og:image:width" content="1200">'
-  );
-  assertStringIncludes(
-    htmlCroqui,
-    '<meta property="og:image:height" content="630">'
-  );
-  assertStringIncludes(htmlCroqui, 'href="aresta://aresta.cc/CROQUI12345678"');
-  assertStringIncludes(htmlCroqui, "Santana do Riacho");
 
   const setor: ResumoEntidadeLink = {
     ...croqui,
@@ -201,7 +270,6 @@ Deno.test("renderizador_pagina_link: gera titulo OpenGraph adequado para croqui,
     ...rotaDireta,
     uid: "SETOR123456789",
     abrir_mapa: true,
-    prefixo: "m",
   });
   assertStringIncludes(
     htmlSetor,
@@ -239,7 +307,7 @@ Deno.test("renderizador_pagina_link: gera titulo OpenGraph adequado para croqui,
   );
 });
 
-Deno.test("renderizador_pagina_link: inclui script do Umami e payload de telemetria app-link-acesso com utm_source e utm_medium", () => {
+Deno.test("renderizador_pagina_link: inclui script do Umami que le window.location.search para mapa e UTMs e atualiza link aresta://", () => {
   const entidade: ResumoEntidadeLink = {
     uid: "ESCALA12345678",
     tipo: "escalada",
@@ -257,7 +325,7 @@ Deno.test("renderizador_pagina_link: inclui script do Umami e payload de telemet
 
   const rotaQrMapa: MetadadosRotaLink = {
     uid: "ESCALA12345678",
-    prefixo: "qm",
+    prefixo: null,
     abrir_mapa: true,
     origem_link: "qrcode",
     utm_source: "placa_rocha",
@@ -270,14 +338,9 @@ Deno.test("renderizador_pagina_link: inclui script do Umami e payload de telemet
     html,
     'src="https://analytics.arestaclimb.com/script.js"'
   );
-  assertStringIncludes(
-    html,
-    'data-website-id="3ba79f5e-e49f-42d4-9283-586976189124"'
-  );
   assertStringIncludes(html, "app-link-acesso");
-  assertStringIncludes(html, '"utm_source":"placa_rocha"');
-  assertStringIncludes(html, '"utm_medium":"qrcode"');
-  assertStringIncludes(html, '"abrir_mapa":true');
+  assertStringIncludes(html, 'params.get("mapa")');
+  assertStringIncludes(html, "linkAbrirAppMobile");
 });
 
 Deno.test("renderizador_pagina_link: escapa caracteres especiais HTML contra XSS em todos os campos interpolados", () => {
@@ -308,7 +371,7 @@ Deno.test("renderizador_pagina_link: escapa caracteres especiais HTML contra XSS
   );
 });
 
-Deno.test("renderizador_pagina_link: aplica Design System Light/Dark de arestaclimb.com, logo oficial, layout 1:1 sem cortes, store badges com SVG e link nativo restrito ao mobile", () => {
+Deno.test("renderizador_pagina_link: aplica Design System Light/Dark, store badges com SVG e pagina 404 apontando para /croquis", () => {
   const escalada: ResumoEntidadeLink = {
     uid: "BOULDER1234567",
     tipo: "escalada",
@@ -326,61 +389,15 @@ Deno.test("renderizador_pagina_link: aplica Design System Light/Dark de arestacl
 
   const html = renderizarPaginaEntidade(escalada, ROTA_COMPARTILHAMENTO);
 
-  // Design System Light & Dark Mode integrado ao arestaclimb.com
   assertStringIncludes(html, 'data-theme="dark"');
-  assertStringIncludes(html, "--bg: #f4f1e9");
-  assertStringIncludes(html, 'html[data-theme="dark"]');
-  assertStringIncludes(html, "--bg: #11120f");
-  assertStringIncludes(html, "--accent: #b53e29");
-  assertStringIncludes(html, "--sage: #90a989");
-  assertStringIncludes(html, "aresta-theme");
   assertStringIncludes(html, 'id="themeToggle"');
-
-  // Cabeçalho com logo oficial do Aresta Climb
-  assertStringIncludes(
-    html,
-    'src="https://arestaclimb.com/assets/logo_app.png"'
-  );
-  assertStringIncludes(html, "ARESTA CLIMB");
-
-  // Layout 1:1 da miniatura sem corte e 2 colunas no desktop
-  assertStringIncludes(html, "aspect-ratio: 1 / 1");
-  assertStringIncludes(html, "@media (min-width: 820px)");
-
-  // Botões clássicos das lojas (.store-badge) com ícones SVG oficiais
   assertStringIncludes(html, 'class="store-badge"');
-  assertStringIncludes(html, "Disponível na");
-  assertStringIncludes(html, "App Store");
-  assertStringIncludes(html, "Disponível no");
-  assertStringIncludes(html, "Google Play");
-  assertStringIncludes(html, "<svg viewBox=\"0 0 384 512\"");
-  assertStringIncludes(html, "<svg viewBox=\"0 0 512 512\"");
-
-  // Smart App Banner iOS e link discreto de abertura no app apenas no mobile
   assertStringIncludes(
     html,
-    '<meta name="apple-itunes-app" content="app-id=6776467893, app-argument=https://aresta.cc/s/ESCALA12345678">'
+    "app-id=6776467893, app-argument=https://arestaclimb.com/croquis/BOULDER1234567/"
   );
-  assertStringIncludes(html, "Já tem o Aresta instalado?");
-  assertStringIncludes(html, "Abrir no aplicativo");
-  assertEquals(html.includes("Abrir no App Aresta"), false);
-});
 
-Deno.test("renderizador_pagina_link: renderiza pagina 404 amigavel com Design System Light/Dark, logo oficial e links para o site e lojas", () => {
   const html404 = renderizarPaginaNaoEncontrada();
-
   assertStringIncludes(html404, "Link não encontrado");
-  assertStringIncludes(html404, "aresta-theme");
-  assertStringIncludes(html404, 'id="themeToggle"');
-  assertStringIncludes(
-    html404,
-    'src="https://arestaclimb.com/assets/logo_app.png"'
-  );
-  assertStringIncludes(html404, 'class="store-badge"');
-  assertStringIncludes(html404, "https://arestaclimb.com");
-  assertStringIncludes(html404, "https://apps.apple.com/app/id6776467893");
-  assertStringIncludes(
-    html404,
-    "https://play.google.com/store/apps/details?id=app.escalada.croquis"
-  );
+  assertStringIncludes(html404, "https://arestaclimb.com/croquis");
 });

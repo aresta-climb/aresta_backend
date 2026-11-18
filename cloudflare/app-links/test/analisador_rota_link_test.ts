@@ -4,6 +4,7 @@
 import { assertEquals } from "https://deno.land/std@0.192.0/testing/asserts.ts";
 import {
   analisarRotaLink,
+  analisarRotaVitrineEntidade,
   extrairSlugThumbnailOg,
 } from "../src/analisador_rota_link.ts";
 
@@ -153,4 +154,57 @@ Deno.test("analisador_rota_link: extrairSlugThumbnailOg extrai id_slug valido de
   assertEquals(extrairSlugThumbnailOg("/og/../segredo.webp"), null);
   assertEquals(extrairSlugThumbnailOg("/og/br_mg_cipo.png"), null);
   assertEquals(extrairSlugThumbnailOg("/thumbnails/br_mg_cipo.webp"), null);
+});
+
+Deno.test("analisador_rota_link: analisarRotaVitrineEntidade extrai UID na frente, slug opcional, mapa e UTMs em /croquis/<uid>[/<slug>]", () => {
+  const semSlug = analisarRotaVitrineEntidade(
+    new URL(`https://arestaclimb.com/croquis/${UID_VALIDO}`)
+  );
+  assertEquals(semSlug, {
+    slugInformado: null,
+    metadados: {
+      uid: UID_VALIDO,
+      prefixo: null,
+      abrir_mapa: false,
+      origem_link: null,
+      utm_source: null,
+      utm_medium: null,
+    },
+  });
+
+  const comSlugMapaCompartilhamento = analisarRotaVitrineEntidade(
+    new URL(
+      `https://arestaclimb.com/croquis/${UID_VALIDO}/mg-pedra-rachada?mapa=1&utm_source=compartilhamento&utm_medium=social`
+    )
+  );
+  assertEquals(comSlugMapaCompartilhamento, {
+    slugInformado: "mg-pedra-rachada",
+    metadados: {
+      uid: UID_VALIDO,
+      prefixo: null,
+      abrir_mapa: true,
+      origem_link: "compartilhamento",
+      utm_source: "compartilhamento",
+      utm_medium: "social",
+    },
+  });
+
+  const comQrCodeTrue = analisarRotaVitrineEntidade(
+    new URL(
+      `https://arestaclimb.com/croquis/${UID_VALIDO}/setor?mapa=true&utm_source=placa_rocha&utm_medium=qrcode`
+    )
+  );
+  assertEquals(comQrCodeTrue?.metadados.abrir_mapa, true);
+  assertEquals(comQrCodeTrue?.metadados.origem_link, "qrcode");
+
+  for (const invalida of [
+    "https://arestaclimb.com/",
+    "https://arestaclimb.com/croquis",
+    "https://arestaclimb.com/croquis/busca.json",
+    "https://arestaclimb.com/croquis/sitemap.xml",
+    `https://arestaclimb.com/outro/${UID_VALIDO}`,
+    `https://arestaclimb.com/croquis/${UID_VALIDO}/slug/extra`,
+  ]) {
+    assertEquals(analisarRotaVitrineEntidade(new URL(invalida)), null);
+  }
 });

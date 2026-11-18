@@ -4,17 +4,26 @@
 import {
   MetadadosRotaLink,
   ResumoEntidadeLink,
+  SubentidadeVitrine,
 } from "../../../aresta_api/openapi/generated/ts/app_links.ts";
+import {
+  DOMINIO_VITRINE_CANONICO,
+  construirCaminhoVitrineEntidade,
+  construirSlugCanonicoEntidade,
+  construirUrlCanonicaVitrine,
+  resolverUrlGoogleMapsCroqui,
+} from "./slug_vitrine.ts";
 
-const URL_BASE_THUMBNAILS_OG = "https://aresta.cc/og";
-const URL_IMAGEM_PADRAO_OG = "https://arestaclimb.com/og.png";
-const URL_LOGO_APP = "https://arestaclimb.com/assets/logo_app.png";
-const URL_SITE_PRINCIPAL = "https://arestaclimb.com";
-const URL_LOJA_IOS = "https://apps.apple.com/app/id6776467893";
-const URL_LOJA_ANDROID =
+export const URL_BASE_THUMBNAILS_OG = "https://aresta.cc/og";
+export const URL_IMAGEM_PADRAO_OG = "https://arestaclimb.com/og.png";
+export const URL_LOGO_APP = "https://arestaclimb.com/assets/logo_app.png";
+export const URL_SITE_PRINCIPAL = DOMINIO_VITRINE_CANONICO;
+export const URL_VITRINE_CROQUIS = `${DOMINIO_VITRINE_CANONICO}/croquis`;
+export const URL_LOJA_IOS = "https://apps.apple.com/app/id6776467893";
+export const URL_LOJA_ANDROID =
   "https://play.google.com/store/apps/details?id=app.escalada.croquis";
-const URL_SCRIPT_UMAMI = "https://analytics.arestaclimb.com/script.js";
-const ID_WEBSITE_UMAMI = "3ba79f5e-e49f-42d4-9283-586976189124";
+export const URL_SCRIPT_UMAMI = "https://analytics.arestaclimb.com/script.js";
+export const ID_WEBSITE_UMAMI = "3ba79f5e-e49f-42d4-9283-586976189124";
 
 const ROTULO_TIPO: Record<ResumoEntidadeLink["tipo"], string> = {
   croqui: "Croqui de Escalada",
@@ -29,7 +38,7 @@ const SVG_APPLE_STORE =
 const SVG_GOOGLE_PLAY =
   '<svg viewBox="0 0 512 512" aria-hidden="true"><path d="M325.3 234.3L104.6 13l280.8 161.2-60.1 60.1zM47 0C34 6.8 25.3 19.2 25.3 35.3v441.3c0 16.1 8.7 28.5 21.7 35.3l256.6-256L47 0zm425.2 225.6l-58.9-34.1-65.7 64.5 65.7 64.5 60.1-34.1c18-14.3 18-46.5-1.2-60.8zM104.6 499l280.8-161.2-60.1-60.1L104.6 499z"/></svg>';
 
-const ESTILOS_BASE_DESIGN_SYSTEM = `
+export const ESTILOS_BASE_DESIGN_SYSTEM = `
     :root {
       --bg: #f4f1e9;
       --bg-soft: #ece7dd;
@@ -97,21 +106,21 @@ const ESTILOS_BASE_DESIGN_SYSTEM = `
     .header {
       position: sticky;
       top: 0;
-      z-index: 100;
+      z-index: 500;
       backdrop-filter: blur(18px);
       -webkit-backdrop-filter: blur(18px);
       background: color-mix(in srgb, var(--bg) 85%, transparent);
       border-bottom: 1px solid color-mix(in srgb, var(--line) 75%, transparent);
     }
     .nav {
-      max-width: 960px;
+      max-width: 1080px;
       margin: 0 auto;
       height: 64px;
       padding: 0 20px;
       display: flex;
       align-items: center;
       justify-content: space-between;
-      gap: 16px;
+      gap: 12px;
     }
     .logo {
       display: inline-flex;
@@ -131,7 +140,7 @@ const ESTILOS_BASE_DESIGN_SYSTEM = `
     .nav-actions {
       display: flex;
       align-items: center;
-      gap: 10px;
+      gap: 8px;
     }
     .theme-toggle {
       width: 38px;
@@ -151,7 +160,7 @@ const ESTILOS_BASE_DESIGN_SYSTEM = `
       border-color: var(--accent);
     }
     .btn-site {
-      padding: 8px 16px;
+      padding: 8px 14px;
       border-radius: var(--radius-full);
       background: var(--surface);
       border: 1px solid var(--line);
@@ -214,7 +223,7 @@ const ESTILOS_BASE_DESIGN_SYSTEM = `
       font-size: 0.82rem;
     }
     .footer-inner {
-      max-width: 960px;
+      max-width: 1080px;
       margin: 0 auto;
       display: flex;
       justify-content: space-between;
@@ -233,9 +242,9 @@ const ESTILOS_BASE_DESIGN_SYSTEM = `
     }
 `;
 
-const SCRIPT_INICIALIZACAO_TEMA = `<script>try{var t=localStorage.getItem('aresta-theme')||(window.matchMedia('(prefers-color-scheme: light)').matches?'light':'dark');document.documentElement.setAttribute('data-theme',t);}catch(e){}</script>`;
+export const SCRIPT_INICIALIZACAO_TEMA = `<script>try{var t=localStorage.getItem('aresta-theme')||(window.matchMedia('(prefers-color-scheme: light)').matches?'light':'dark');document.documentElement.setAttribute('data-theme',t);}catch(e){}</script>`;
 
-const SCRIPT_ALTERNANCIA_TEMA = `
+export const SCRIPT_ALTERNANCIA_TEMA = `
       var btnTema = document.getElementById("themeToggle");
       if (btnTema) {
         btnTema.addEventListener("click", function () {
@@ -247,8 +256,7 @@ const SCRIPT_ALTERNANCIA_TEMA = `
       }`;
 
 /**
- * Escapa caracteres especiais HTML (`&`, `<`, `>`, `"`, `'`) para evitar
- * vulnerabilidades de Cross-Site Scripting (XSS) ao interpolar nomes do catálogo.
+ * Escapa caracteres especiais HTML (`&`, `<`, `>`, `"`, `'`) contra XSS.
  */
 export function escaparHtml(texto: string): string {
   return texto
@@ -260,7 +268,7 @@ export function escaparHtml(texto: string): string {
 }
 
 /**
- * Formata a modalidade de escalada com a primeira letra maiúscula (ex.: `boulder` -> `Boulder`).
+ * Formata a modalidade de escalada com a primeira letra maiúscula.
  */
 export function formatarModalidade(modalidade: string | null): string | null {
   if (!modalidade) {
@@ -271,8 +279,7 @@ export function formatarModalidade(modalidade: string | null): string | null {
 }
 
 /**
- * Remove prefixos redundantes (`Setor ` ou `Grupo `) do início do nome para evitar
- * repetições como `Setor: Setor Tramontina` ou `Grupo: Grupo Sherpa`.
+ * Remove prefixos redundantes (`Setor ` ou `Grupo `) do início do nome.
  */
 export function removerPrefixoRedundante(
   nome: string,
@@ -282,8 +289,7 @@ export function removerPrefixoRedundante(
 }
 
 /**
- * Resolve o rótulo semântico principal da entidade, distinguindo `Boulder` e `Highline`
- * de `Via de Escalada` quando a entidade é do tipo `escalada`.
+ * Resolve o rótulo semântico principal da entidade.
  */
 export function obterRotuloTipoEntidade(entidade: ResumoEntidadeLink): string {
   const modalidadeMinuscula = entidade.escalada_tipo?.trim().toLowerCase();
@@ -296,7 +302,7 @@ export function obterRotuloTipoEntidade(entidade: ResumoEntidadeLink): string {
   return ROTULO_TIPO[entidade.tipo];
 }
 
-function formatarLocalizacao(
+export function formatarLocalizacao(
   cidade: string | null,
   estado: string | null
 ): string | null {
@@ -352,7 +358,7 @@ function construirDescricaoOpenGraph(
   return `${partes.join(" • ")}. Abra no aplicativo Aresta para visualizar croquis e rotas offline.`;
 }
 
-function renderizarBotoesLojas(): string {
+export function renderizarBotoesLojas(): string {
   return `<div class="store-badge-group">
               <a class="store-badge" href="${URL_LOJA_IOS}" target="_blank" rel="noopener noreferrer" aria-label="Baixar na Apple App Store">
                 ${SVG_APPLE_STORE}
@@ -371,7 +377,7 @@ function renderizarBotoesLojas(): string {
             </div>`;
 }
 
-function renderizarCabecalhoSite(): string {
+export function renderizarCabecalhoSite(): string {
   return `<header class="header">
     <div class="nav">
       <a href="${URL_SITE_PRINCIPAL}" class="logo" aria-label="Aresta Climb - Início">
@@ -380,17 +386,19 @@ function renderizarCabecalhoSite(): string {
       </a>
       <div class="nav-actions">
         <button class="theme-toggle" id="themeToggle" type="button" aria-label="Alternar tema claro e escuro">◐</button>
-        <a href="${URL_SITE_PRINCIPAL}" class="btn-site">Conhecer o Aresta ↗</a>
+        <a href="/croquis" class="btn-site">Croquis</a>
+        <a href="${URL_SITE_PRINCIPAL}" class="btn-site">Conhecer o App ↗</a>
       </div>
     </div>
   </header>`;
 }
 
-function renderizarRodapeSite(): string {
+export function renderizarRodapeSite(): string {
   return `<footer class="site-footer">
     <div class="footer-inner">
       <span>© 2026 Aresta Climb · Croquis de escalada 100% offline</span>
       <div class="footer-links">
+        <a href="/croquis">Explorar Croquis</a>
         <a href="${URL_SITE_PRINCIPAL}">arestaclimb.com</a>
         <a href="${URL_LOJA_IOS}" target="_blank" rel="noopener noreferrer">App Store</a>
         <a href="${URL_LOJA_ANDROID}" target="_blank" rel="noopener noreferrer">Google Play</a>
@@ -399,11 +407,144 @@ function renderizarRodapeSite(): string {
   </footer>`;
 }
 
+interface ItemBreadcrumb {
+  nome: string;
+  caminho: string | null;
+}
+
+function construirBreadcrumbs(entidade: ResumoEntidadeLink): ItemBreadcrumb[] {
+  const itens: ItemBreadcrumb[] = [{ nome: "Croquis", caminho: "/croquis" }];
+
+  if (entidade.tipo !== "croqui") {
+    const slugCroqui = construirSlugCanonicoEntidade({
+      tipo: "croqui",
+      nome: entidade.croqui_nome,
+      croqui_nome: entidade.croqui_nome,
+      cidade: entidade.cidade,
+      estado: entidade.estado,
+    });
+    itens.push({
+      nome: entidade.croqui_nome,
+      caminho: construirCaminhoVitrineEntidade(entidade.croqui_uid, slugCroqui),
+    });
+  }
+
+  if (entidade.tipo !== "grupo" && entidade.grupo_uid && entidade.grupo_nome) {
+    const slugGrupo = construirSlugCanonicoEntidade({
+      tipo: "grupo",
+      nome: entidade.grupo_nome,
+      croqui_nome: entidade.croqui_nome,
+      cidade: entidade.cidade,
+      estado: entidade.estado,
+    });
+    itens.push({
+      nome: removerPrefixoRedundante(entidade.grupo_nome, "Grupo"),
+      caminho: construirCaminhoVitrineEntidade(entidade.grupo_uid, slugGrupo),
+    });
+  }
+
+  if (entidade.tipo === "escalada" && entidade.setor_uid && entidade.setor_nome) {
+    const slugSetor = construirSlugCanonicoEntidade({
+      tipo: "setor",
+      nome: entidade.setor_nome,
+      croqui_nome: entidade.croqui_nome,
+      cidade: entidade.cidade,
+      estado: entidade.estado,
+    });
+    itens.push({
+      nome: removerPrefixoRedundante(entidade.setor_nome, "Setor"),
+      caminho: construirCaminhoVitrineEntidade(entidade.setor_uid, slugSetor),
+    });
+  }
+
+  itens.push({ nome: entidade.nome, caminho: null });
+  return itens;
+}
+
+function renderizarJsonLdBreadcrumbs(
+  itens: ItemBreadcrumb[],
+  urlCanonico: string
+): string {
+  const payload = {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    itemListElement: itens.map((item, idx) => ({
+      "@type": "ListItem",
+      position: idx + 1,
+      name: item.nome,
+      item: item.caminho
+        ? `${DOMINIO_VITRINE_CANONICO}${item.caminho}`
+        : urlCanonico,
+    })),
+  };
+  return `<script type="application/ld+json">${JSON.stringify(payload).replace(/</g, "\\u003c")}</script>`;
+}
+
+function renderizarSecaoSubentidades(
+  entidade: ResumoEntidadeLink,
+  subentidades: SubentidadeVitrine[]
+): string {
+  if (subentidades.length === 0) {
+    return "";
+  }
+
+  const tituloSecao =
+    entidade.tipo === "croqui"
+      ? `Setores e Grupos deste Pico (${subentidades.length})`
+      : entidade.tipo === "grupo"
+        ? `Setores deste Grupo (${subentidades.length})`
+        : `Vias e Boulders deste Setor (${subentidades.length})`;
+
+  const itensHtml = subentidades.map((sub) => {
+    const slugSub = construirSlugCanonicoEntidade({
+      tipo: sub.tipo,
+      nome: sub.nome,
+      croqui_nome: entidade.croqui_nome,
+      cidade: entidade.cidade,
+      estado: entidade.estado,
+    });
+    const hrefSub = construirCaminhoVitrineEntidade(sub.uid, slugSub);
+    const modSub = formatarModalidade(sub.escalada_tipo ?? null);
+    const metaPartes: string[] = [];
+    if (sub.tipo === "grupo") metaPartes.push("Grupo de setores");
+    if (sub.tipo === "setor") {
+      metaPartes.push(
+        sub.grupo_nome
+          ? `Setor • ${removerPrefixoRedundante(sub.grupo_nome, "Grupo")}`
+          : "Setor de escalada"
+      );
+    }
+    if (modSub) metaPartes.push(modSub);
+
+    const badgeGrauHtml = sub.escalada_grau
+      ? `<span class="sub-grau">${escaparHtml(sub.escalada_grau)}</span>`
+      : `<span class="sub-seta" aria-hidden="true">→</span>`;
+
+    return `<li>
+            <a class="item-subentidade" href="${escaparHtml(hrefSub)}">
+              <div class="sub-info">
+                <strong>${escaparHtml(sub.nome)}</strong>
+                ${metaPartes.length > 0 ? `<span>${escaparHtml(metaPartes.join(" • "))}</span>` : ""}
+              </div>
+              ${badgeGrauHtml}
+            </a>
+          </li>`;
+  });
+
+  return `<section class="secao-subentidades" aria-label="${escaparHtml(tituloSecao)}">
+        <div class="cabecalho-subentidades">
+          <h2>${escaparHtml(tituloSecao)}</h2>
+          <span>Fotos traçadas das paredes e betas completos disponíveis offline no app Aresta.</span>
+        </div>
+        <ul class="lista-subentidades">
+          ${itensHtml.join("\n          ")}
+        </ul>
+      </section>`;
+}
+
 /**
- * Renderiza a página HTML SSR de uma entidade compartilhada (`croqui`, `grupo`, `setor` ou `escalada`),
- * incluindo meta tags OpenGraph para preview rico em redes sociais, layout Mobile-First inspirado
- * na `PicoPage` do aplicativo (e Card de 2 Colunas no Desktop), botões clássicos das lojas com SVG
- * e script Umami para telemetria de campanha.
+ * Renderiza a página HTML SSR de teaser de uma entidade (`croqui`, `grupo`, `setor` ou `escalada`)
+ * na rota canônica `https://arestaclimb.com/croquis/<uid>/<slug>`.
  */
 export function renderizarPaginaEntidade(
   entidade: ResumoEntidadeLink,
@@ -421,11 +562,22 @@ export function renderizarPaginaEntidade(
   const larguraImagemOg = possuiThumbnailPropria ? "600" : "1200";
   const alturaImagemOg = possuiThumbnailPropria ? "600" : "630";
 
-  const sufixoCaminho = rota.prefixo
-    ? `${rota.prefixo}/${rota.uid}`
-    : rota.uid;
-  const urlCanonico = `https://aresta.cc/${sufixoCaminho}`;
-  const deepLinkApp = `aresta://aresta.cc/${sufixoCaminho}`;
+  const slugCanonico = construirSlugCanonicoEntidade(entidade);
+  const caminhoCanonico = construirCaminhoVitrineEntidade(
+    entidade.uid,
+    slugCanonico
+  );
+  const urlCanonico = construirUrlCanonicaVitrine(entidade);
+  const deepLinkApp = `aresta://arestaclimb.com${caminhoCanonico}`;
+
+  const breadcrumbs = construirBreadcrumbs(entidade);
+  const breadcrumbsHtml = breadcrumbs
+    .map((b) =>
+      b.caminho
+        ? `<a href="${escaparHtml(b.caminho)}">${escaparHtml(b.nome)}</a>`
+        : `<span aria-current="page">${escaparHtml(b.nome)}</span>`
+    )
+    .join('<span class="sep-bc" aria-hidden="true">›</span>');
 
   const localizacao = formatarLocalizacao(entidade.cidade, entidade.estado);
   const rotuloTipo = obterRotuloTipoEntidade(entidade);
@@ -436,20 +588,15 @@ export function renderizarPaginaEntidade(
   const nomeGrupoLimpo = entidade.grupo_nome
     ? removerPrefixoRedundante(entidade.grupo_nome, "Grupo")
     : null;
+  const urlGoogleMaps = resolverUrlGoogleMapsCroqui(entidade);
 
   const partesSubtitulo: string[] = [];
-  if (localizacao) {
-    partesSubtitulo.push(localizacao);
-  }
-  if (modalidadeFormatada) {
-    partesSubtitulo.push(modalidadeFormatada);
-  }
+  if (localizacao) partesSubtitulo.push(localizacao);
+  if (modalidadeFormatada) partesSubtitulo.push(modalidadeFormatada);
   if (entidade.escalada_grau) {
     partesSubtitulo.push(`Graduação ${entidade.escalada_grau}`);
   }
-  if (partesSubtitulo.length === 0) {
-    partesSubtitulo.push(rotuloTipo);
-  }
+  if (partesSubtitulo.length === 0) partesSubtitulo.push(rotuloTipo);
   const subtituloResumo = escaparHtml(partesSubtitulo.join(" • "));
 
   const payloadTelemetriaJson = JSON.stringify({
@@ -464,36 +611,72 @@ export function renderizarPaginaEntidade(
 
   const cardsContextoHtml: string[] = [];
   if (entidade.tipo !== "croqui") {
+    const hrefCroqui = construirCaminhoVitrineEntidade(
+      entidade.croqui_uid,
+      construirSlugCanonicoEntidade({
+        tipo: "croqui",
+        nome: entidade.croqui_nome,
+        croqui_nome: entidade.croqui_nome,
+        cidade: entidade.cidade,
+        estado: entidade.estado,
+      })
+    );
     cardsContextoHtml.push(
-      `<li class="card-contexto">
+      `<li><a class="card-contexto card-contexto-link" href="${escaparHtml(hrefCroqui)}">
               <span class="icone-contexto" aria-hidden="true">⛰</span>
               <div class="texto-contexto">
                 <strong>Croqui: ${escaparHtml(entidade.croqui_nome)}</strong>
-                <span>Guia completo disponível para download offline</span>
+                <span>Ver todos os setores deste pico →</span>
               </div>
-            </li>`
+            </a></li>`
     );
   }
   if (nomeGrupoLimpo) {
-    cardsContextoHtml.push(
-      `<li class="card-contexto">
-              <span class="icone-contexto" aria-hidden="true">🧭</span>
+    const hrefGrupo = entidade.grupo_uid
+      ? construirCaminhoVitrineEntidade(
+          entidade.grupo_uid,
+          construirSlugCanonicoEntidade({
+            tipo: "grupo",
+            nome: entidade.grupo_nome!,
+            croqui_nome: entidade.croqui_nome,
+            cidade: entidade.cidade,
+            estado: entidade.estado,
+          })
+        )
+      : null;
+    const conteudoGrupo = `<span class="icone-contexto" aria-hidden="true">🧭</span>
               <div class="texto-contexto">
                 <strong>Grupo: ${escaparHtml(nomeGrupoLimpo)}</strong>
                 <span>Agrupamento de setores do pico</span>
-              </div>
-            </li>`
+              </div>`;
+    cardsContextoHtml.push(
+      hrefGrupo
+        ? `<li><a class="card-contexto card-contexto-link" href="${escaparHtml(hrefGrupo)}">${conteudoGrupo}</a></li>`
+        : `<li class="card-contexto">${conteudoGrupo}</li>`
     );
   }
   if (nomeSetorLimpo) {
-    cardsContextoHtml.push(
-      `<li class="card-contexto">
-              <span class="icone-contexto" aria-hidden="true">📍</span>
+    const hrefSetor = entidade.setor_uid
+      ? construirCaminhoVitrineEntidade(
+          entidade.setor_uid,
+          construirSlugCanonicoEntidade({
+            tipo: "setor",
+            nome: entidade.setor_nome!,
+            croqui_nome: entidade.croqui_nome,
+            cidade: entidade.cidade,
+            estado: entidade.estado,
+          })
+        )
+      : null;
+    const conteudoSetor = `<span class="icone-contexto" aria-hidden="true">📍</span>
               <div class="texto-contexto">
                 <strong>Setor: ${escaparHtml(nomeSetorLimpo)}</strong>
-                <span>Setor de escalada e croqui de parede</span>
-              </div>
-            </li>`
+                <span>Ver todas as vias deste setor →</span>
+              </div>`;
+    cardsContextoHtml.push(
+      hrefSetor
+        ? `<li><a class="card-contexto card-contexto-link" href="${escaparHtml(hrefSetor)}">${conteudoSetor}</a></li>`
+        : `<li class="card-contexto">${conteudoSetor}</li>`
     );
   }
   if (entidade.escalada_grau) {
@@ -518,7 +701,17 @@ export function renderizarPaginaEntidade(
             </li>`
     );
   }
-  if (localizacao) {
+  if (urlGoogleMaps) {
+    cardsContextoHtml.push(
+      `<li><a class="card-contexto card-contexto-link" href="${escaparHtml(urlGoogleMaps)}" target="_blank" rel="noopener noreferrer">
+              <span class="icone-contexto" aria-hidden="true">🗺</span>
+              <div class="texto-contexto">
+                <strong>Ver região no Google Maps ↗</strong>
+                <span>${localizacao ? `${escaparHtml(localizacao)} • ` : ""}Trilhas internas e GPS offline no app</span>
+              </div>
+            </a></li>`
+    );
+  } else if (localizacao) {
     cardsContextoHtml.push(
       `<li class="card-contexto">
               <span class="icone-contexto" aria-hidden="true">🗺</span>
@@ -530,6 +723,11 @@ export function renderizarPaginaEntidade(
     );
   }
 
+  const secaoSubentidadesHtml = renderizarSecaoSubentidades(
+    entidade,
+    entidade.subentidades ?? []
+  );
+
   return `<!DOCTYPE html>
 <html lang="pt-BR" data-theme="dark">
 <head>
@@ -537,6 +735,7 @@ export function renderizarPaginaEntidade(
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>${tituloOg}</title>
   <meta name="description" content="${descricaoOg}">
+  <link rel="canonical" href="${escaparHtml(urlCanonico)}">
   <meta property="og:type" content="website">
   <meta property="og:locale" content="pt_BR">
   <meta property="og:site_name" content="Aresta Croquis de Escalada">
@@ -556,6 +755,7 @@ export function renderizarPaginaEntidade(
   <meta name="twitter:image:alt" content="${tituloOg}">
   <meta name="apple-itunes-app" content="app-id=6776467893, app-argument=${escaparHtml(urlCanonico)}">
   <link rel="icon" type="image/svg+xml" href="https://arestaclimb.com/favicon.svg">
+  ${renderizarJsonLdBreadcrumbs(breadcrumbs, urlCanonico)}
   ${SCRIPT_INICIALIZACAO_TEMA}
   <script defer src="${URL_SCRIPT_UMAMI}" data-website-id="${ID_WEBSITE_UMAMI}"></script>
   <style>${ESTILOS_BASE_DESIGN_SYSTEM}
@@ -563,12 +763,20 @@ export function renderizarPaginaEntidade(
       flex: 1;
       width: 100%;
       display: flex;
-      justify-content: center;
-      align-items: flex-start;
+      flex-direction: column;
+      align-items: center;
+    }
+    .envoltorio-vitrine {
+      width: 100%;
+      max-width: 960px;
+      display: flex;
+      flex-direction: column;
+      gap: 24px;
     }
     .cartao-entidade {
       width: 100%;
       max-width: 540px;
+      margin: 0 auto;
       display: flex;
       flex-direction: column;
     }
@@ -600,10 +808,25 @@ export function renderizarPaginaEntidade(
       position: relative;
       z-index: 2;
       margin-top: -54px;
-      padding: 0 20px 36px;
+      padding: 0 20px 28px;
       display: flex;
       flex-direction: column;
-      gap: 16px;
+      gap: 14px;
+    }
+    .breadcrumbs {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 6px;
+      font-size: 12.5px;
+      color: var(--muted);
+    }
+    .breadcrumbs a:hover {
+      color: var(--accent);
+      text-decoration: underline;
+    }
+    .sep-bc {
+      opacity: 0.6;
     }
     .etiqueta {
       display: inline-flex;
@@ -690,6 +913,11 @@ export function renderizarPaginaEntidade(
       display: flex;
       align-items: center;
       gap: 14px;
+      transition: border-color 0.15s ease, transform 0.15s ease;
+    }
+    .card-contexto-link:hover {
+      border-color: var(--accent);
+      transform: translateY(-1px);
     }
     .icone-contexto {
       width: 42px;
@@ -721,13 +949,78 @@ export function renderizarPaginaEntidade(
       font-size: 12.5px;
       color: var(--muted);
     }
+    .secao-subentidades {
+      width: 100%;
+      max-width: 540px;
+      margin: 0 auto 36px;
+      padding: 0 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+    .cabecalho-subentidades h2 {
+      font-size: 19px;
+      font-weight: 850;
+      letter-spacing: -0.02em;
+    }
+    .cabecalho-subentidades span {
+      font-size: 13px;
+      color: var(--muted);
+    }
+    .lista-subentidades {
+      list-style: none;
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 8px;
+    }
+    .item-subentidade {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: var(--radius-sm);
+      padding: 12px 16px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      transition: border-color 0.15s ease, transform 0.15s ease;
+    }
+    .item-subentidade:hover {
+      border-color: var(--accent);
+      transform: translateY(-1px);
+    }
+    .sub-info {
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+    }
+    .sub-info strong {
+      font-size: 14.5px;
+      font-weight: 750;
+    }
+    .sub-info span {
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .sub-grau {
+      padding: 4px 10px;
+      border-radius: var(--radius-full);
+      background: color-mix(in srgb, var(--accent) 14%, transparent);
+      border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+      color: var(--accent);
+      font-size: 12.5px;
+      font-weight: 800;
+      flex-shrink: 0;
+    }
+    .sub-seta {
+      color: var(--muted);
+      font-weight: 700;
+    }
     @media (min-width: 820px) {
       .pagina-main {
-        align-items: center;
         padding: 40px 24px;
       }
       .cartao-entidade {
-        max-width: 920px;
+        max-width: 960px;
         display: grid;
         grid-template-columns: 400px 1fr;
         background: var(--surface);
@@ -735,11 +1028,11 @@ export function renderizarPaginaEntidade(
         border-radius: var(--radius-lg);
         box-shadow: var(--shadow);
         overflow: hidden;
-        align-items: center;
+        align-items: stretch;
       }
       .hero-midia {
         height: 100%;
-        min-height: 400px;
+        min-height: 420px;
       }
       .hero-gradiente {
         display: none;
@@ -754,61 +1047,73 @@ export function renderizarPaginaEntidade(
       .acao-abrir-app-mobile {
         display: none;
       }
+      .secao-subentidades {
+        max-width: 960px;
+        padding: 0;
+      }
+      .lista-subentidades {
+        grid-template-columns: 1fr 1fr;
+      }
     }
   </style>
 </head>
 <body>
   ${renderizarCabecalhoSite()}
   <main class="pagina-main">
-    <article class="cartao-entidade">
-      <div class="hero-midia">
-        <img class="miniatura" src="${escaparHtml(imagemOg)}" alt="${tituloOg}">
-        <div class="hero-gradiente"></div>
-      </div>
-      <div class="conteudo-entidade">
-        <div class="cabecalho-entidade">
-          <div class="etiqueta">${escaparHtml(rotuloTipo)}${rota.abrir_mapa ? " • Mapa interativo" : ""}</div>
-          <h1>${escaparHtml(entidade.nome)}${entidade.escalada_grau ? ` (${escaparHtml(entidade.escalada_grau)})` : ""}</h1>
+    <div class="envoltorio-vitrine">
+      <article class="cartao-entidade">
+        <div class="hero-midia">
+          <img class="miniatura" src="${escaparHtml(imagemOg)}" alt="${tituloOg}">
+          <div class="hero-gradiente"></div>
         </div>
-        <p class="subtitulo-entidade">${subtituloResumo}</p>
-        <section class="banner-app" aria-label="Download do aplicativo Aresta Climb">
-          <div class="banner-app-topo">
-            <span aria-hidden="true">☁</span>
-            <span>CROQUI OFFLINE NO APLICATIVO</span>
+        <div class="conteudo-entidade">
+          <nav class="breadcrumbs" aria-label="Navegação estrutural">${breadcrumbsHtml}</nav>
+          <div class="cabecalho-entidade">
+            <div class="etiqueta">${escaparHtml(rotuloTipo)}${rota.abrir_mapa ? " • Mapa interativo" : ""}</div>
+            <h1>${escaparHtml(entidade.nome)}${entidade.escalada_grau ? ` (${escaparHtml(entidade.escalada_grau)})` : ""}</h1>
           </div>
-          <p class="banner-app-desc">
-            Salve o guia completo no celular para consultar fotos da parede, linhas das vias e mapas 100% offline na rocha.
-          </p>
-          ${renderizarBotoesLojas()}
-          <div class="acao-abrir-app-mobile">
-            Já tem o Aresta instalado?
-            <a class="link-abrir-app" href="${escaparHtml(deepLinkApp)}">Abrir no aplicativo →</a>
-          </div>
-        </section>
-        <ul class="lista-cards-contexto">
-          ${cardsContextoHtml.join("\n          ")}
-        </ul>
-      </div>
-    </article>
+          <p class="subtitulo-entidade">${subtituloResumo}</p>
+          <section class="banner-app" aria-label="Download do aplicativo Aresta Climb">
+            <div class="banner-app-topo">
+              <span aria-hidden="true">☁</span>
+              <span>CROQUI OFFLINE NO APLICATIVO</span>
+            </div>
+            <p class="banner-app-desc">
+              Salve o guia completo no celular para consultar fotos da parede, linhas das vias, betas e mapas 100% offline na rocha.
+            </p>
+            ${renderizarBotoesLojas()}
+            <div class="acao-abrir-app-mobile">
+              Já tem o Aresta instalado?
+              <a class="link-abrir-app" id="linkAbrirAppMobile" href="${escaparHtml(deepLinkApp)}">Abrir no aplicativo →</a>
+            </div>
+          </section>
+          <ul class="lista-cards-contexto">
+            ${cardsContextoHtml.join("\n            ")}
+          </ul>
+        </div>
+      </article>
+      ${secaoSubentidadesHtml}
+    </div>
   </main>
   ${renderizarRodapeSite()}
   <script>
     (function () {${SCRIPT_ALTERNANCIA_TEMA}
       var dadosBase = ${payloadTelemetriaJson};
       var params = new URLSearchParams(window.location.search);
+      var mapaParam = (params.get("mapa") || "").toLowerCase();
+      if (mapaParam === "1" || mapaParam === "true") {
+        dadosBase.abrir_mapa = true;
+      }
       if (params.get("utm_source")) {
         dadosBase.utm_source = params.get("utm_source");
-      } else if (dadosBase.utm_source) {
-        params.set("utm_source", dadosBase.utm_source);
       }
       if (params.get("utm_medium")) {
         dadosBase.utm_medium = params.get("utm_medium");
-      } else if (dadosBase.utm_medium) {
-        params.set("utm_medium", dadosBase.utm_medium);
       }
-      var novaQuery = params.toString();
-      if (novaQuery && window.history && typeof window.history.replaceState === "function") {
-        window.history.replaceState(null, "", window.location.pathname + "?" + novaQuery);
+      var queryAtual = params.toString();
+      var linkMobile = document.getElementById("linkAbrirAppMobile");
+      if (linkMobile && queryAtual) {
+        linkMobile.setAttribute("href", linkMobile.getAttribute("href") + "?" + queryAtual);
       }
       function registrarTelemetria() {
         if (window.umami && typeof window.umami.track === "function") {
@@ -827,8 +1132,7 @@ export function renderizarPaginaEntidade(
 }
 
 /**
- * Renderiza uma página HTML amigável para status `404 Not Found` quando a rota
- * ou o UID solicitado não existir no catálogo, seguindo o mesmo Design System Light/Dark.
+ * Renderiza uma página HTML amigável para status `404 Not Found`.
  */
 export function renderizarPaginaNaoEncontrada(): string {
   return `<!DOCTYPE html>
@@ -909,7 +1213,7 @@ export function renderizarPaginaNaoEncontrada(): string {
       <span class="badge-erro">Erro 404</span>
       <h1>Link não encontrado</h1>
       <p>O croqui, setor ou via de escalada solicitado não foi encontrado ou o endereço está incorreto.</p>
-      <a class="btn-primario" href="${URL_SITE_PRINCIPAL}">Ir para arestaclimb.com</a>
+      <a class="btn-primario" href="${URL_VITRINE_CROQUIS}">Explorar croquis no Aresta</a>
       ${renderizarBotoesLojas()}
     </section>
   </main>

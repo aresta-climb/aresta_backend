@@ -12,7 +12,7 @@ Este repositório contém a infraestrutura de backend e as Edge Functions do **A
 3. **Cloudflare Workers em Borda (`cloudflare/`)**:
    - `catalogo` (`catalogo.arestaclimb.com`): Sincronização incremental (Delta Squash) do catálogo SQLite (`catalogo.db`) via Cloudflare D1.
    - `feedback` (`feedback.arestaclimb.com`): Proxy com cache imutável para anexos de feedback e redirecionamento para diagnóstico no Supabase.
-   - `app-links` (`aresta.cc`): Verificação de Android App Links / iOS Universal Links (`.well-known`), páginas HTML SSR com preview OpenGraph, fallback para lojas e telemetria Umami (`utm_source` / `utm_medium`).
+   - `app-links` (`aresta.cc` e `arestaclimb.com/croquis*`): Verificação de Android App Links / iOS Universal Links (`.well-known`), redirecionamento `301` de links curtos preservando CGI args/UTMs e vitrine web SSR indexável (Mapão nacional, `/croquis/busca.json`, `/croquis/sitemap.xml`, teasers hierárquicos com OpenGraph e telemetria Umami).
    - `previa` (`previa.arestaclimb.com`): Proxy de artefatos de prévia de Pull Requests e túnel WebSocket do Editor Desktop.
    - `alertas` (`alertas.arestaclimb.com`): Roteador central de webhooks assinados (Sentry e GitHub) para notificações push móveis imediatas via `ntfy` (`ntfy.arestaclimb.com`), mural visual somente-leitura no Discord e grupos do WhatsApp via WAHA (`NOWEB` em *standby*), com fallback automático de e-mail via Resend (`contato@arestaclimb.com`) e fila de retentativas no Cloudflare KV. Consulte o guia completo em `../aresta_app/docs/guia_configuracao_observabilidade_e_alertas.md`.
 

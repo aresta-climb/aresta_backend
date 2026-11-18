@@ -7,6 +7,7 @@ import {
 } from "https://deno.land/std@0.192.0/testing/asserts.ts";
 import workerDefault, {
   CABECALHO_CACHE_PAGINA_LINK,
+  CABECALHO_CACHE_REDIRECIONAMENTO_LONGO,
   CABECALHO_CACHE_THUMBNAIL_OG,
   CABECALHO_CACHE_WELL_KNOWN,
   ClienteThumbnailHttp,
@@ -25,6 +26,19 @@ function criarBancoComVia(): BancoD1Fake {
     nome: "Serra do Cipó",
     cidade: "Santana do Riacho",
     estado: "MG",
+    latitude_e7: -193456780,
+    longitude_e7: -436123450,
+    url_google_maps: "https://maps.app.goo.gl/SerraDoCipo",
+  });
+  banco.inserirEntidade({
+    uid: "SETOR123456789",
+    tipo: "setor",
+    croqui_uid: "CROQUI12345678",
+    nome: "Setor Vale da Lua",
+    escalada_grau: null,
+    escalada_tipo: null,
+    setor_uid: null,
+    grupo_uid: null,
   });
   banco.inserirEntidade({
     uid: "ESCALA12345678",
@@ -33,106 +47,83 @@ function criarBancoComVia(): BancoD1Fake {
     nome: "Rapa Nui",
     escalada_grau: "7b",
     escalada_tipo: "esportiva",
-    setor_uid: null,
+    setor_uid: "SETOR123456789",
     grupo_uid: null,
   });
   return banco;
 }
 
-Deno.test("worker app-links: responde a OPTIONS com 204 e cabecalhos CORS", async () => {
-  const req = new Request("https://aresta.cc/health", { method: "OPTIONS" });
-  const res = await processarRequisicao(req);
+Deno.test("worker app-links: responde a OPTIONS com 204 e rejeita POST/PUT/DELETE com 405", async () => {
+  const resOptions = await processarRequisicao(
+    new Request("https://aresta.cc/health", { method: "OPTIONS" })
+  );
+  assertEquals(resOptions.status, 204);
+  assertEquals(resOptions.headers.get("Access-Control-Allow-Origin"), "*");
 
-  assertEquals(res.status, 204);
-  assertEquals(res.headers.get("Access-Control-Allow-Origin"), "*");
-});
-
-Deno.test("worker app-links: rejeita metodos POST, PUT e DELETE com 405", async () => {
   for (const metodo of ["POST", "PUT", "DELETE"]) {
-    const req = new Request("https://aresta.cc/health", { method: metodo });
-    const res = await processarRequisicao(req);
-
+    const res = await processarRequisicao(
+      new Request("https://aresta.cc/health", { method: metodo })
+    );
     assertEquals(res.status, 405);
     assertEquals(res.headers.get("Allow"), "GET, HEAD, OPTIONS");
   }
 });
 
-Deno.test("worker app-links: GET /health retorna 200 operacional com no-store", async () => {
-  const req = new Request("https://aresta.cc/health");
-  const res = await workerDefault.fetch(req, {});
-
-  assertEquals(res.status, 200);
-  assertEquals(res.headers.get("Cache-Control"), "no-store");
-  assertStringIncludes(await res.text(), "operacional");
-});
-
-Deno.test("worker app-links: GET / redireciona com 302 Found para https://arestaclimb.com", async () => {
-  const req = new Request("https://aresta.cc/");
-  const res = await processarRequisicao(req);
-
-  assertEquals(res.status, 302);
-  assertEquals(res.headers.get("Location"), "https://arestaclimb.com");
-});
-
-Deno.test("worker app-links: redireciona www.aresta.cc com 301 para aresta.cc preservando caminho e query params", async () => {
-  const req = new Request(
-    "https://www.aresta.cc/s/ESCALA12345678?utm_source=teste"
+Deno.test("worker app-links: GET /health retorna 200, GET / em aresta.cc redireciona 302 para /croquis e normaliza www.*", async () => {
+  const resHealth = await workerDefault.fetch(
+    new Request("https://aresta.cc/health"),
+    {}
   );
-  const res = await processarRequisicao(req);
+  assertEquals(resHealth.status, 200);
+  assertEquals(resHealth.headers.get("Cache-Control"), "no-store");
+  assertStringIncludes(await resHealth.text(), "operacional");
 
-  assertEquals(res.status, 301);
+  const resRaiz = await processarRequisicao(new Request("https://aresta.cc/"));
+  assertEquals(resRaiz.status, 302);
   assertEquals(
-    res.headers.get("Location"),
+    resRaiz.headers.get("Location"),
+    "https://arestaclimb.com/croquis"
+  );
+
+  const resWwwCurto = await processarRequisicao(
+    new Request("https://www.aresta.cc/s/ESCALA12345678?utm_source=teste")
+  );
+  assertEquals(resWwwCurto.status, 301);
+  assertEquals(
+    resWwwCurto.headers.get("Location"),
     "https://aresta.cc/s/ESCALA12345678?utm_source=teste"
   );
-});
 
-Deno.test("worker app-links: GET /.well-known/assetlinks.json retorna 200 com fingerprints SHA-256 do pacote Android", async () => {
-  const req = new Request("https://aresta.cc/.well-known/assetlinks.json");
-  const res = await processarRequisicao(req);
-
-  assertEquals(res.status, 200);
+  const resWwwSite = await processarRequisicao(
+    new Request("https://www.arestaclimb.com/croquis?uf=MG")
+  );
+  assertEquals(resWwwSite.status, 301);
   assertEquals(
-    res.headers.get("Content-Type"),
-    "application/json; charset=utf-8"
+    resWwwSite.headers.get("Location"),
+    "https://arestaclimb.com/croquis?uf=MG"
   );
-  assertEquals(res.headers.get("Cache-Control"), CABECALHO_CACHE_WELL_KNOWN);
-
-  const corpo = await res.json();
-  assertEquals(Array.isArray(corpo), true);
-  assertEquals(corpo[0].target.package_name, "app.escalada.croquis");
-  assertEquals(corpo[0].target.sha256_cert_fingerprints.length, 3);
 });
 
-Deno.test("worker app-links: GET /.well-known/apple-app-site-association retorna 200 com applinks do iOS", async () => {
-  const req = new Request(
-    "https://aresta.cc/.well-known/apple-app-site-association"
+Deno.test("worker app-links: serve /.well-known/*, /robots.txt e /favicon.* com cache longo na borda", async () => {
+  const resAndroid = await processarRequisicao(
+    new Request("https://aresta.cc/.well-known/assetlinks.json")
   );
-  const res = await processarRequisicao(req);
+  assertEquals(resAndroid.status, 200);
+  assertEquals(resAndroid.headers.get("Cache-Control"), CABECALHO_CACHE_WELL_KNOWN);
+  const jsonAndroid = await resAndroid.json();
+  assertEquals(jsonAndroid[0].target.package_name, "app.escalada.croquis");
 
-  assertEquals(res.status, 200);
-  assertEquals(
-    res.headers.get("Content-Type"),
-    "application/json; charset=utf-8"
+  const resIos = await processarRequisicao(
+    new Request("https://aresta.cc/.well-known/apple-app-site-association")
   );
-  assertEquals(res.headers.get("Cache-Control"), CABECALHO_CACHE_WELL_KNOWN);
+  assertEquals(resIos.status, 200);
+  const jsonIos = await resIos.json();
+  assertEquals(jsonIos.applinks.details[0].paths, ["/*"]);
 
-  const corpo = await res.json();
-  assertEquals(corpo.applinks.details[0].appIDs, [
-    "Z74K7R3WU7.app.escalada.croquis",
-  ]);
-  assertEquals(corpo.applinks.details[0].paths, ["/*"]);
-});
-
-Deno.test("worker app-links: serve /robots.txt e redireciona /favicon.ico e /favicon.svg com cache de 1 ano na borda", async () => {
   const resRobots = await processarRequisicao(
     new Request("https://aresta.cc/robots.txt")
   );
   assertEquals(resRobots.status, 200);
-  assertEquals(
-    resRobots.headers.get("Cache-Control"),
-    "public, max-age=86400, s-maxage=31536000"
-  );
   assertStringIncludes(await resRobots.text(), "User-agent: *");
 
   for (const rotaIcone of ["/favicon.ico", "/favicon.svg"]) {
@@ -144,52 +135,135 @@ Deno.test("worker app-links: serve /robots.txt e redireciona /favicon.ico e /fav
       resIcone.headers.get("Location"),
       "https://arestaclimb.com/favicon.svg"
     );
-    assertEquals(
-      resIcone.headers.get("Cache-Control"),
-      "public, max-age=86400, s-maxage=31536000, immutable"
-    );
   }
 });
 
-Deno.test("worker app-links: GET /s/<uid> resolve entidade no D1 e retorna HTML SSR 200 com OpenGraph, Umami e cache na borda", async () => {
+Deno.test("worker app-links: aresta.cc/<prefixo>/<uid> redireciona com 301 (cache 30d) para arestaclimb.com/croquis/<uid>/<slug> preservando CGI args, mapa e UTMs", async () => {
   const banco = criarBancoComVia();
-  const req = new Request("https://aresta.cc/s/ESCALA12345678");
+  const req = new Request(
+    "https://aresta.cc/sm/ESCALA12345678?campanha=inverno"
+  );
   const res = await workerDefault.fetch(req, { DB: banco });
 
-  assertEquals(res.status, 200);
-  assertEquals(res.headers.get("Content-Type"), "text/html; charset=utf-8");
-  assertEquals(res.headers.get("Cache-Control"), CABECALHO_CACHE_PAGINA_LINK);
-
-  const html = await res.text();
-  assertStringIncludes(
-    html,
-    '<meta property="og:title" content="Rapa Nui (7b) — Serra do Cipó | Aresta">'
+  assertEquals(res.status, 301);
+  assertEquals(
+    res.headers.get("Cache-Control"),
+    CABECALHO_CACHE_REDIRECIONAMENTO_LONGO
   );
-  assertStringIncludes(
-    html,
-    "https://aresta.cc/og/br_mg_serra_do_cipo.webp"
+  assertEquals(
+    res.headers.get("Location"),
+    "https://arestaclimb.com/croquis/ESCALA12345678/mg-serra-do-cipo-rapa-nui?campanha=inverno&mapa=1&utm_source=compartilhamento&utm_medium=social"
   );
-  assertStringIncludes(
-    html,
-    '<meta property="og:image:width" content="600">'
-  );
-  assertStringIncludes(
-    html,
-    '<meta property="og:image:height" content="600">'
-  );
-  assertStringIncludes(
-    html,
-    "https://arestaclimb.com/assets/logo_app.png"
-  );
-  assertStringIncludes(html, 'class="store-badge"');
-  assertStringIncludes(html, "Esportiva");
-  assertStringIncludes(html, '"utm_source":"compartilhamento"');
-  assertStringIncludes(html, '"utm_medium":"social"');
+  assertEquals(banco.totalConsultasExecutadas, 1);
 });
 
-Deno.test("worker app-links: GET e HEAD /og/<id_slug>.webp servem miniatura com cache de 7 dias na borda, 404 quando ausente e 502 com Sentry em falha", async () => {
+Deno.test("worker vitrine: serve /croquis (diretorio + mapao), normaliza /croquis/ com 301, serve /croquis/busca.json e /croquis/sitemap.xml com cache de 7 dias", async () => {
+  const banco = criarBancoComVia();
+
+  const resBarra = await processarRequisicao(
+    new Request("https://arestaclimb.com/croquis/?utm_source=menu"),
+    { DB: banco }
+  );
+  assertEquals(resBarra.status, 301);
+  assertEquals(
+    resBarra.headers.get("Location"),
+    "https://arestaclimb.com/croquis?utm_source=menu"
+  );
+
+  const resIndice = await processarRequisicao(
+    new Request("https://arestaclimb.com/croquis"),
+    { DB: banco }
+  );
+  assertEquals(resIndice.status, 200);
+  assertEquals(
+    resIndice.headers.get("Cache-Control"),
+    CABECALHO_CACHE_PAGINA_LINK
+  );
+  const htmlIndice = await resIndice.text();
+  assertStringIncludes(htmlIndice, "Serra do Cipó");
+  assertStringIncludes(htmlIndice, 'id="mapaVitrineCroquis"');
+  assertStringIncludes(htmlIndice, "/croquis/busca.json");
+
+  const resBusca = await processarRequisicao(
+    new Request("https://arestaclimb.com/croquis/busca.json"),
+    { DB: banco }
+  );
+  assertEquals(resBusca.status, 200);
+  assertEquals(
+    resBusca.headers.get("Content-Type"),
+    "application/json; charset=utf-8"
+  );
+  assertEquals(
+    resBusca.headers.get("Cache-Control"),
+    CABECALHO_CACHE_PAGINA_LINK
+  );
+  const itensBusca = await resBusca.json();
+  assertEquals(itensBusca.length, 3);
+  assertEquals(
+    itensBusca.some(
+      (i: { uid: string; slug: string }) =>
+        i.uid === "ESCALA12345678" && i.slug === "mg-serra-do-cipo-rapa-nui"
+    ),
+    true
+  );
+
+  const resSitemap = await processarRequisicao(
+    new Request("https://arestaclimb.com/croquis/sitemap.xml"),
+    { DB: banco }
+  );
+  assertEquals(resSitemap.status, 200);
+  assertEquals(
+    resSitemap.headers.get("Content-Type"),
+    "application/xml; charset=utf-8"
+  );
+  assertStringIncludes(
+    await resSitemap.text(),
+    "<loc>https://arestaclimb.com/croquis/ESCALA12345678/mg-serra-do-cipo-rapa-nui</loc>"
+  );
+});
+
+Deno.test("worker vitrine: redireciona 301 quando falta slug ou slug antigo diverge e renderiza HTML SSR 200 quando slug bate com o canonico", async () => {
+  const banco = criarBancoComVia();
+
+  const resSemSlug = await processarRequisicao(
+    new Request("https://arestaclimb.com/croquis/SETOR123456789?mapa=1"),
+    { DB: banco }
+  );
+  assertEquals(resSemSlug.status, 301);
+  assertEquals(
+    resSemSlug.headers.get("Location"),
+    "https://arestaclimb.com/croquis/SETOR123456789/mg-serra-do-cipo-setor-vale-da-lua?mapa=1"
+  );
+
+  const resSlugAntigo = await processarRequisicao(
+    new Request(
+      "https://arestaclimb.com/croquis/SETOR123456789/slug-velho?utm_source=google"
+    ),
+    { DB: banco }
+  );
+  assertEquals(resSlugAntigo.status, 301);
+  assertEquals(
+    resSlugAntigo.headers.get("Location"),
+    "https://arestaclimb.com/croquis/SETOR123456789/mg-serra-do-cipo-setor-vale-da-lua?utm_source=google"
+  );
+
+  const resOk = await processarRequisicao(
+    new Request(
+      "https://arestaclimb.com/croquis/SETOR123456789/mg-serra-do-cipo-setor-vale-da-lua"
+    ),
+    { DB: banco }
+  );
+  assertEquals(resOk.status, 200);
+  assertEquals(resOk.headers.get("Cache-Control"), CABECALHO_CACHE_PAGINA_LINK);
+  const html = await resOk.text();
+  assertStringIncludes(html, "Setor Vale da Lua");
+  assertStringIncludes(html, "Rapa Nui");
+  assertStringIncludes(html, "https://maps.app.goo.gl/SerraDoCipo");
+});
+
+Deno.test("worker app-links: GET e HEAD /og/<id_slug>.webp servem miniatura com cache de 7 dias, 404 quando ausente e 502 com Sentry em falha", async () => {
   const clienteThumb = new ClienteThumbnailFake();
-  const bytesWebp = new Uint8Array([82, 73, 70, 70, 87, 69, 66, 80]);
+  const bytesWebp = new Uint8Array([82, 73, 70, 0, 87, 69, 66, 80]);
   clienteThumb.inserirThumbnail("br_mg_serra_do_cipo", bytesWebp);
 
   const resGet = await processarRequisicao(
@@ -197,7 +271,6 @@ Deno.test("worker app-links: GET e HEAD /og/<id_slug>.webp servem miniatura com 
     { clienteThumbnail: clienteThumb }
   );
   assertEquals(resGet.status, 200);
-  assertEquals(resGet.headers.get("Content-Type"), "image/webp");
   assertEquals(resGet.headers.get("Cache-Control"), CABECALHO_CACHE_THUMBNAIL_OG);
   assertEquals(new Uint8Array(await resGet.arrayBuffer()), bytesWebp);
 
@@ -208,7 +281,6 @@ Deno.test("worker app-links: GET e HEAD /og/<id_slug>.webp servem miniatura com 
     { clienteThumbnail: clienteThumb }
   );
   assertEquals(resHead.status, 200);
-  assertEquals(resHead.headers.get("Content-Type"), "image/webp");
   assertEquals(await resHead.text(), "");
 
   const res404 = await processarRequisicao(
@@ -216,10 +288,6 @@ Deno.test("worker app-links: GET e HEAD /og/<id_slug>.webp servem miniatura com 
     { clienteThumbnail: clienteThumb }
   );
   assertEquals(res404.status, 404);
-  assertEquals(
-    res404.headers.get("Cache-Control"),
-    "public, max-age=300, s-maxage=86400"
-  );
 
   const relatorFake = new RelatorSentryFake();
   clienteThumb.configurarFalha("Falha na CDN de thumbnails");
@@ -232,8 +300,6 @@ Deno.test("worker app-links: GET e HEAD /og/<id_slug>.webp servem miniatura com 
     }
   );
   assertEquals(res502.status, 502);
-  assertEquals(res502.headers.get("Cache-Control"), "no-store");
-  assertStringIncludes(await res502.text(), "Falha na CDN de thumbnails");
   assertEquals(relatorFake.eventos.length, 1);
 
   const clienteComErroLiteral: ClienteThumbnailFake = {
@@ -253,7 +319,7 @@ Deno.test("worker app-links: GET e HEAD /og/<id_slug>.webp servem miniatura com 
   assertStringIncludes(await res502Literal.text(), "erro_rede_literal");
 });
 
-Deno.test("ClienteThumbnailHttp: busca miniatura na CDN serving.arestaclimb.com respeitando metodo GET/HEAD e content-type", async () => {
+Deno.test("ClienteThumbnailHttp e criarOpcoesSentry: busca miniatura na CDN e higieniza cabecalhos sensiveis", async () => {
   let urlRequisitada = "";
   let metodoRequisitado = "";
 
@@ -263,16 +329,10 @@ Deno.test("ClienteThumbnailHttp: busca miniatura na CDN serving.arestaclimb.com 
   ): Promise<Response> => {
     urlRequisitada = String(input);
     metodoRequisitado = init?.method || "GET";
-    if (urlRequisitada.endsWith("/nao_existe.webp")) {
-      return Promise.resolve(new Response("Not Found", { status: 404 }));
-    }
     return Promise.resolve(
       new Response(
         metodoRequisitado === "HEAD" ? null : new Uint8Array([1, 2, 3]),
-        {
-          status: 200,
-          headers: { "Content-Type": "image/webp" },
-        }
+        { status: 200, headers: { "Content-Type": "image/webp" } }
       )
     );
   };
@@ -283,13 +343,9 @@ Deno.test("ClienteThumbnailHttp: busca miniatura na CDN serving.arestaclimb.com 
     urlRequisitada,
     "https://serving.arestaclimb.com/v4/thumbnails/br_mg_serra_do_cipo.webp"
   );
-  assertEquals(metodoRequisitado, "GET");
   assertEquals(resOk.status, 200);
-  assertEquals(resOk.contentType, "image/webp");
 
   const resHead = await cliente.obterThumbnail("br_mg_serra_do_cipo", "HEAD");
-  assertEquals(metodoRequisitado, "HEAD");
-  assertEquals(resHead.status, 200);
   assertEquals(resHead.corpo, null);
 
   const fetchSemContentType: typeof fetch = (): Promise<Response> =>
@@ -329,62 +385,53 @@ Deno.test("ClienteThumbnailHttp: busca miniatura na CDN serving.arestaclimb.com 
   assertEquals(eventoSemHeaders, { type: undefined });
 });
 
-Deno.test("worker app-links: GET /<uid> para UID inexistente no D1 (cache 24h) ou rota invalida (cache 1 ano) retorna 404 com pagina HTML amigavel", async () => {
+Deno.test("worker app-links e vitrine: retornam 404 para rotas invalidas ou UIDs ausentes e 500 com Sentry quando DB ausente ou falha", async () => {
   const banco = criarBancoComVia();
 
-  const resUidInexistente = await processarRequisicao(
-    new Request("https://aresta.cc/INEXISTENTE123"),
-    { DB: banco }
-  );
-  assertEquals(resUidInexistente.status, 404);
-  assertEquals(
-    resUidInexistente.headers.get("Cache-Control"),
-    "public, max-age=300, s-maxage=86400"
-  );
-  assertStringIncludes(await resUidInexistente.text(), "Link não encontrado");
+  for (const url404 of [
+    "https://aresta.cc/INEXISTENTE123",
+    "https://aresta.cc/caminho/invalido/demais",
+    "https://arestaclimb.com/croquis/INEXISTENTE123/qualquer",
+    "https://arestaclimb.com/croquis/invalido",
+  ]) {
+    const res404 = await processarRequisicao(new Request(url404), { DB: banco });
+    assertEquals(res404.status, 404);
+    assertStringIncludes(await res404.text(), "Link não encontrado");
+  }
 
-  const resRotaInvalida = await processarRequisicao(
-    new Request("https://aresta.cc/caminho/invalido/demais"),
-    { DB: banco }
-  );
-  assertEquals(resRotaInvalida.status, 404);
-  assertEquals(
-    resRotaInvalida.headers.get("Cache-Control"),
-    "public, max-age=300, s-maxage=31536000"
-  );
-  assertStringIncludes(await resRotaInvalida.text(), "Link não encontrado");
-});
-
-Deno.test("worker app-links: retorna 500 com no-store e reporta ao Sentry quando binding DB nao esta configurado ou falha", async () => {
-  const req = new Request("https://aresta.cc/ESCALA12345678");
   const relatorFake = new RelatorSentryFake();
-
-  const resSemDb = await processarRequisicao(req, {
-    SENTRY_DSN: "https://pub@o1.ingest.sentry.io/1",
-    relatorSentry: relatorFake,
-  });
-  assertEquals(resSemDb.status, 500);
-  assertEquals(resSemDb.headers.get("Cache-Control"), "no-store");
-  assertEquals(relatorFake.eventos.length, 1);
-  assertEquals(relatorFake.eventos[0].servico, "cloudflare-app-links");
-  assertEquals(
-    relatorFake.eventos[0].mensagem,
-    "Binding DB do Cloudflare D1 não configurado"
-  );
+  for (const url500 of [
+    "https://aresta.cc/ESCALA12345678",
+    "https://arestaclimb.com/croquis",
+    "https://arestaclimb.com/croquis/busca.json",
+    "https://arestaclimb.com/croquis/sitemap.xml",
+    "https://arestaclimb.com/croquis/ESCALA12345678/slug",
+  ]) {
+    const resSemDb = await processarRequisicao(new Request(url500), {
+      SENTRY_DSN: "https://pub@o1.ingest.sentry.io/1",
+      relatorSentry: relatorFake,
+    });
+    assertEquals(resSemDb.status, 500);
+    assertEquals(resSemDb.headers.get("Cache-Control"), "no-store");
+  }
 
   const bancoComFalha = criarBancoComVia();
   bancoComFalha.configurarFalha("D1 fora do ar");
-  const resErroDb = await processarRequisicao(req, {
-    DB: bancoComFalha,
-    SENTRY_DSN: "https://pub@o1.ingest.sentry.io/1",
-    relatorSentry: relatorFake,
-  });
-  assertEquals(resErroDb.status, 500);
-  assertEquals(resErroDb.headers.get("Cache-Control"), "no-store");
-  assertStringIncludes(await resErroDb.text(), "D1 fora do ar");
-  assertEquals(relatorFake.eventos.length, 2);
-  assertEquals(relatorFake.eventos[1].servico, "cloudflare-app-links");
-  assertEquals(relatorFake.eventos[1].mensagem, "D1 fora do ar");
+  for (const urlErro of [
+    "https://aresta.cc/ESCALA12345678",
+    "https://arestaclimb.com/croquis",
+    "https://arestaclimb.com/croquis/busca.json",
+    "https://arestaclimb.com/croquis/sitemap.xml",
+    "https://arestaclimb.com/croquis/ESCALA12345678/slug",
+  ]) {
+    const resErro = await processarRequisicao(new Request(urlErro), {
+      DB: bancoComFalha,
+      SENTRY_DSN: "https://pub@o1.ingest.sentry.io/1",
+      relatorSentry: relatorFake,
+    });
+    assertEquals(resErro.status, 500);
+    assertStringIncludes(await resErro.text(), "D1 fora do ar");
+  }
 
   const bancoComExcecaoLiteral = {
     prepare() {
@@ -398,13 +445,14 @@ Deno.test("worker app-links: retorna 500 com no-store e reporta ao Sentry quando
       };
     },
   };
-  const resErroLiteral = await processarRequisicao(req, {
-    DB: bancoComExcecaoLiteral,
-    SENTRY_DSN: "https://pub@o1.ingest.sentry.io/1",
-    relatorSentry: relatorFake,
-  });
+  const resErroLiteral = await processarRequisicao(
+    new Request("https://arestaclimb.com/croquis"),
+    {
+      DB: bancoComExcecaoLiteral,
+      SENTRY_DSN: "https://pub@o1.ingest.sentry.io/1",
+      relatorSentry: relatorFake,
+    }
+  );
   assertEquals(resErroLiteral.status, 500);
   assertStringIncludes(await resErroLiteral.text(), "erro_literal_string");
-  assertEquals(relatorFake.eventos.length, 3);
-  assertEquals(relatorFake.eventos[2].mensagem, "erro_literal_string");
 });

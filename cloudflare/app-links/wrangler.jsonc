@@ -22,6 +22,14 @@
     {
       "pattern": "www.aresta.cc",
       "custom_domain": true
+    },
+    {
+      "pattern": "arestaclimb.com/croquis*",
+      "zone_name": "arestaclimb.com"
+    },
+    {
+      "pattern": "www.arestaclimb.com/croquis*",
+      "zone_name": "arestaclimb.com"
     }
   ],
   "observability": {
