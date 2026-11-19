@@ -51,7 +51,7 @@ Deno.test("renderizador_vitrine_indice: gera sitemap XML com /croquis e todas as
   );
 });
 
-Deno.test("renderizador_vitrine_indice: renderiza pagina /croquis com Mapao Leaflet, busca lazy busca.json e agrupamento por estado", () => {
+Deno.test("renderizador_vitrine_indice: renderiza pagina /croquis com Mapao MapLibre + OpenFreeMap (sem API key), busca lazy busca.json e agrupamento por estado", () => {
   const croquis: ResumoCroquiVitrine[] = [
     {
       croqui_uid: "CROQUI_MG_1234",
@@ -88,8 +88,11 @@ Deno.test("renderizador_vitrine_indice: renderiza pagina /croquis com Mapao Leaf
   assertStringIncludes(html, 'id="campoBuscaVitrine"');
   assertStringIncludes(html, "/croquis/busca.json");
   assertStringIncludes(html, 'id="mapaVitrineCroquis"');
-  assertStringIncludes(html, "leaflet");
-  assertStringIncludes(html, "cartocdn.com");
+  assertStringIncludes(html, "maplibre-gl");
+  assertStringIncludes(html, "https://tiles.openfreemap.org/styles/dark");
+  assertStringIncludes(html, "https://tiles.openfreemap.org/styles/liberty");
+  assertEquals(html.includes("cartocdn.com"), false);
+  assertEquals(html.includes('<a href="/croquis" class="btn-site">Croquis</a>'), false);
   assertStringIncludes(
     html,
     "/croquis/CROQUI_MG_1234/mg-sabara-pedra-rachada"

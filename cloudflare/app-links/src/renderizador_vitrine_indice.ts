@@ -181,8 +181,8 @@ export function renderizarPaginaIndiceVitrine(
       ? `<p class="estado-vazio">Nenhum croqui publicado no momento.</p>`
       : secoesEstadosHtml.join("\n        ");
 
-  const leafletHeadHtml = temMapa
-    ? `<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">`
+  const maplibreHeadHtml = temMapa
+    ? `<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.3.0/dist/maplibre-gl.css" crossorigin="">`
     : "";
 
   const blocoMapaHtml = temMapa
@@ -192,8 +192,8 @@ export function renderizarPaginaIndiceVitrine(
     : "";
 
   const scriptMapaJson = JSON.stringify(pinosMapa).replace(/</g, "\\u003c");
-  const scriptLeafletHtml = temMapa
-    ? `<script defer src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>`
+  const scriptMaplibreHtml = temMapa
+    ? `<script defer src="https://unpkg.com/maplibre-gl@5.3.0/dist/maplibre-gl.js" crossorigin=""></script>`
     : "";
 
   const titulo = "Croquis de Escalada no Brasil | Aresta Climb";
@@ -219,9 +219,9 @@ export function renderizarPaginaIndiceVitrine(
   <meta name="twitter:card" content="summary_large_image">
   <link rel="icon" type="image/svg+xml" href="https://arestaclimb.com/favicon.svg">
   ${SCRIPT_INICIALIZACAO_TEMA}
-  ${leafletHeadHtml}
+  ${maplibreHeadHtml}
   <script defer src="${URL_SCRIPT_UMAMI}" data-website-id="${ID_WEBSITE_UMAMI}"></script>
-  ${scriptLeafletHtml}
+  ${scriptMaplibreHtml}
   <style>${ESTILOS_BASE_DESIGN_SYSTEM}
     .vitrine-main {
       flex: 1;
@@ -353,6 +353,54 @@ export function renderizarPaginaIndiceVitrine(
       height: 360px;
       z-index: 1;
     }
+    .pino-mapa-aresta {
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      background: var(--accent);
+      border: 2.5px solid #ffffff;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
+      cursor: pointer;
+      padding: 0;
+    }
+    .maplibregl-popup-content {
+      background: var(--surface) !important;
+      color: var(--text) !important;
+      border: 1px solid var(--line);
+      border-radius: 14px !important;
+      padding: 12px 14px !important;
+      box-shadow: var(--shadow-sm) !important;
+      font-family: inherit;
+    }
+    .maplibregl-popup-tip {
+      border-top-color: var(--surface) !important;
+      border-bottom-color: var(--surface) !important;
+    }
+    .popup-pico {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      font-size: 12.5px;
+    }
+    .popup-pico strong {
+      font-size: 14px;
+      font-weight: 800;
+    }
+    .popup-pico span {
+      color: var(--muted);
+    }
+    .popup-acoes {
+      display: flex;
+      gap: 10px;
+      margin-top: 4px;
+    }
+    .popup-link-acao {
+      color: var(--accent);
+      font-weight: 750;
+    }
+    .popup-link-acao:hover {
+      text-decoration: underline;
+    }
     .secao-uf {
       display: flex;
       flex-direction: column;
@@ -443,7 +491,7 @@ export function renderizarPaginaIndiceVitrine(
   </style>
 </head>
 <body>
-  ${renderizarCabecalhoSite()}
+  ${renderizarCabecalhoSite(true)}
   <main class="vitrine-main">
     <section class="hero-vitrine">
       <div>
@@ -571,33 +619,53 @@ export function renderizarPaginaIndiceVitrine(
       }
 
       var pinos = ${scriptMapaJson};
+      var instanciaMapa = null;
+      function obterEstiloMapa() {
+        var tema = document.documentElement.getAttribute("data-theme") || "dark";
+        return tema === "dark"
+          ? "https://tiles.openfreemap.org/styles/dark"
+          : "https://tiles.openfreemap.org/styles/liberty";
+      }
       function iniciarMapa() {
         var elMapa = document.getElementById("mapaVitrineCroquis");
-        if (!elMapa || !window.L || pinos.length === 0) return;
-        var mapa = window.L.map(elMapa, { scrollWheelZoom: false });
-        window.L.tileLayer("https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png", {
-          maxZoom: 18,
-          attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> &copy; <a href="https://carto.com/attributions">CARTO</a>'
-        }).addTo(mapa);
-        var limites = [];
+        if (!elMapa || !window.maplibregl || pinos.length === 0) return;
+        var mapa = new window.maplibregl.Map({
+          container: elMapa,
+          style: obterEstiloMapa(),
+          center: [-44.0, -19.9],
+          zoom: 5,
+          attributionControl: true
+        });
+        instanciaMapa = mapa;
+        mapa.scrollZoom.disable();
+        mapa.addControl(new window.maplibregl.NavigationControl({ showCompass: false }), "top-left");
+        var limites = new window.maplibregl.LngLatBounds();
         for (var i = 0; i < pinos.length; i++) {
           var p = pinos[i];
-          limites.push([p.lat, p.lng]);
-          var m = window.L.circleMarker([p.lat, p.lng], {
-            radius: 8,
-            fillColor: "#b53e29",
-            color: "#ffffff",
-            weight: 2,
-            fillOpacity: 0.92
-          }).addTo(mapa);
-          var linkMaps = p.urlMaps ? ' · <a href="' + esc(p.urlMaps) + '" target="_blank" rel="noopener noreferrer">Google Maps ↗</a>' : '';
-          m.bindPopup('<strong>' + esc(p.nome) + '</strong><br><small>' + esc(p.local || "") + ' · ' + p.setores + ' setores · ' + p.escaladas + ' escaladas</small><br><a href="' + esc(p.href) + '"><strong>Ver guia →</strong></a>' + linkMaps);
+          limites.extend([p.lng, p.lat]);
+          var elPino = document.createElement("button");
+          elPino.type = "button";
+          elPino.className = "pino-mapa-aresta";
+          elPino.setAttribute("aria-label", p.nome);
+          var linkMaps = p.urlMaps ? '<a class="popup-link-acao" href="' + esc(p.urlMaps) + '" target="_blank" rel="noopener noreferrer">Google Maps ↗</a>' : '';
+          var popup = new window.maplibregl.Popup({ offset: 12, closeButton: false, maxWidth: "260px" })
+            .setHTML('<div class="popup-pico"><strong>' + esc(p.nome) + '</strong><span>' + esc(p.local || "") + ' · ' + p.setores + ' setores · ' + p.escaladas + ' escaladas</span><div class="popup-acoes"><a class="popup-link-acao" href="' + esc(p.href) + '">Ver guia →</a>' + linkMaps + '</div></div>');
+          new window.maplibregl.Marker({ element: elPino })
+            .setLngLat([p.lng, p.lat])
+            .setPopup(popup)
+            .addTo(mapa);
         }
-        if (limites.length === 1) {
-          mapa.setView(limites[0], 11);
+        if (pinos.length === 1) {
+          mapa.jumpTo({ center: [pinos[0].lng, pinos[0].lat], zoom: 11 });
         } else {
-          mapa.fitBounds(limites, { padding: [32, 32] });
+          mapa.fitBounds(limites, { padding: 42, maxZoom: 12, duration: 0 });
         }
+      }
+      var btnTemaMapa = document.getElementById("themeToggle");
+      if (btnTemaMapa) {
+        btnTemaMapa.addEventListener("click", function () {
+          if (instanciaMapa) instanciaMapa.setStyle(obterEstiloMapa());
+        });
       }
       if (document.readyState === "complete") {
         iniciarMapa();

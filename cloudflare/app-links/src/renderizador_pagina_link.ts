@@ -125,17 +125,20 @@ export const ESTILOS_BASE_DESIGN_SYSTEM = `
     .logo {
       display: inline-flex;
       align-items: center;
-      gap: 10px;
+      gap: 9px;
       font-weight: 850;
       letter-spacing: -0.04em;
-      font-size: 1.05rem;
+      font-size: 1rem;
       color: var(--text);
+      white-space: nowrap;
+      flex-shrink: 0;
     }
     .logo-img {
       width: 32px;
       height: 32px;
       border-radius: 8px;
       display: block;
+      flex-shrink: 0;
     }
     .nav-actions {
       display: flex;
@@ -153,6 +156,7 @@ export const ESTILOS_BASE_DESIGN_SYSTEM = `
       place-items: center;
       font-size: 1.05rem;
       cursor: pointer;
+      flex-shrink: 0;
       transition: transform 0.15s ease, border-color 0.15s ease;
     }
     .theme-toggle:hover {
@@ -160,17 +164,50 @@ export const ESTILOS_BASE_DESIGN_SYSTEM = `
       border-color: var(--accent);
     }
     .btn-site {
-      padding: 8px 14px;
+      padding: 7px 13px;
       border-radius: var(--radius-full);
       background: var(--surface);
       border: 1px solid var(--line);
       color: var(--text);
-      font-size: 0.84rem;
+      font-size: 0.82rem;
       font-weight: 650;
+      white-space: nowrap;
       transition: border-color 0.15s ease;
     }
     .btn-site:hover {
       border-color: var(--accent);
+    }
+    .texto-desktop-curto {
+      display: none;
+    }
+    @media (max-width: 520px) {
+      .nav {
+        padding: 0 14px;
+        gap: 8px;
+      }
+      .logo {
+        font-size: 0.92rem;
+        gap: 7px;
+      }
+      .logo-img {
+        width: 28px;
+        height: 28px;
+      }
+      .theme-toggle {
+        width: 34px;
+        height: 34px;
+        font-size: 0.95rem;
+      }
+      .btn-site {
+        padding: 6px 11px;
+        font-size: 0.78rem;
+      }
+      .texto-desktop-longo {
+        display: none;
+      }
+      .texto-desktop-curto {
+        display: inline;
+      }
     }
     .store-badge-group {
       display: grid;
@@ -377,7 +414,10 @@ export function renderizarBotoesLojas(): string {
             </div>`;
 }
 
-export function renderizarCabecalhoSite(): string {
+export function renderizarCabecalhoSite(naPaginaIndice = false): string {
+  const botaoCroquis = naPaginaIndice
+    ? ""
+    : `\n        <a href="/croquis" class="btn-site">Croquis</a>`;
   return `<header class="header">
     <div class="nav">
       <a href="${URL_SITE_PRINCIPAL}" class="logo" aria-label="Aresta Climb - Início">
@@ -385,9 +425,8 @@ export function renderizarCabecalhoSite(): string {
         <span>ARESTA CLIMB</span>
       </a>
       <div class="nav-actions">
-        <button class="theme-toggle" id="themeToggle" type="button" aria-label="Alternar tema claro e escuro">◐</button>
-        <a href="/croquis" class="btn-site">Croquis</a>
-        <a href="${URL_SITE_PRINCIPAL}" class="btn-site">Conhecer o App ↗</a>
+        <button class="theme-toggle" id="themeToggle" type="button" aria-label="Alternar tema claro e escuro">◐</button>${botaoCroquis}
+        <a href="${URL_SITE_PRINCIPAL}" class="btn-site"><span class="texto-desktop-longo">Conhecer o App ↗</span><span class="texto-desktop-curto">App ↗</span></a>
       </div>
     </div>
   </header>`;

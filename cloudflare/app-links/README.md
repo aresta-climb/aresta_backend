@@ -7,7 +7,7 @@ Worker em borda (Cloudflare Worker + Cloudflare D1) responsável por atender tan
 ## 🎯 Arquitetura, Cache Agressivo na CDN e SEO
 
 1. **Vitrine Centralizada em `arestaclimb.com/croquis*`**:
-   - **`GET /croquis`**: Renderiza o diretório público agrupado por estado unido ao **Mapão Nacional** (Leaflet + tiles gratuitos CARTO/OSM sem chave de API paga) e barra de busca instantânea que consome `/croquis/busca.json` sob demanda no navegador.
+   - **`GET /croquis`**: Renderiza o diretório público agrupado por estado unido ao **Mapão Nacional** (MapLibre GL JS + tiles vetoriais gratuitos do OpenFreeMap em modo claro/escuro, sem chave de API nem marca d'água) e barra de busca instantânea que consome `/croquis/busca.json` sob demanda no navegador.
    - **`GET /croquis/busca.json`**: Índice compacto cacheado na CDN por 7 dias com croquis, grupos, setores e escaladas para filtragem em `0ms` sem acionar o Worker a cada tecla digitada.
    - **`GET /croquis/sitemap.xml`**: Sitemap XML dinâmico de todas as ~5.000 URLs canônicas para indexação orgânica no Google.
    - **`GET /croquis/<uid>/<slug>`**: Página SSR de teaser com os 14 caracteres do UID na frente (redirecionando `301` caso falte o `<slug>` ou este tenha mudado após renomeação), `<link rel="canonical">`, JSON-LD `BreadcrumbList`, trilha de breadcrumbs clicáveis, botão de localização no Google Maps, listagem clicável de subentidades (setores do pico / vias do setor) e CTAs de download/abertura do app.
