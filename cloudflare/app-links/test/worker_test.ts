@@ -126,16 +126,21 @@ Deno.test("worker app-links: serve /.well-known/*, /robots.txt e /favicon.* com 
   assertEquals(resRobots.status, 200);
   assertStringIncludes(await resRobots.text(), "User-agent: *");
 
-  for (const rotaIcone of ["/favicon.ico", "/favicon.svg"]) {
-    const resIcone = await processarRequisicao(
-      new Request(`https://aresta.cc${rotaIcone}`)
-    );
-    assertEquals(resIcone.status, 301);
-    assertEquals(
-      resIcone.headers.get("Location"),
-      "https://arestaclimb.com/favicon.svg"
-    );
-  }
+  const resSvg = await processarRequisicao(
+    new Request("https://aresta.cc/favicon.svg")
+  );
+  assertEquals(resSvg.status, 200);
+  assertEquals(resSvg.headers.get("Content-Type"), "image/svg+xml; charset=utf-8");
+  assertStringIncludes(await resSvg.text(), "#ea5341");
+
+  const resIco = await processarRequisicao(
+    new Request("https://aresta.cc/favicon.ico")
+  );
+  assertEquals(resIco.status, 301);
+  assertEquals(
+    resIco.headers.get("Location"),
+    "https://arestaclimb.com/favicon.ico"
+  );
 });
 
 Deno.test("worker app-links: aresta.cc/<prefixo>/<uid> redireciona com 301 (cache 30d) para arestaclimb.com/croquis/<uid>/<slug> preservando CGI args, mapa e UTMs", async () => {

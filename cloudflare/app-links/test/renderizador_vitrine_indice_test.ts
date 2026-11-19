@@ -85,6 +85,14 @@ Deno.test("renderizador_vitrine_indice: renderiza pagina /croquis com Mapao MapL
     html,
     '<link rel="canonical" href="https://arestaclimb.com/croquis">'
   );
+  assertStringIncludes(
+    html,
+    '<link rel="icon" type="image/svg+xml" href="https://arestaclimb.com/favicon.svg">'
+  );
+  assertStringIncludes(
+    html,
+    '<link rel="apple-touch-icon" href="https://arestaclimb.com/assets/logo_app.png">'
+  );
   assertStringIncludes(html, 'id="campoBuscaVitrine"');
   assertStringIncludes(html, "/croquis/busca.json");
   assertStringIncludes(html, 'id="mapaVitrineCroquis"');

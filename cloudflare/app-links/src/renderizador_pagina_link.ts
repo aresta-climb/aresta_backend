@@ -17,6 +17,11 @@ import {
 export const URL_BASE_THUMBNAILS_OG = "https://aresta.cc/og";
 export const URL_IMAGEM_PADRAO_OG = "https://arestaclimb.com/og.png";
 export const URL_LOGO_APP = "https://arestaclimb.com/assets/logo_app.png";
+export const CONTEUDO_FAVICON_SVG =
+  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><rect width="512" height="512" rx="108" fill="#ea5341"/><path fill="#ffffff" fill-rule="evenodd" d="M 55.0 356.4 L 165.3 216.4 L 192.9 246.9 L 278.9 141.0 L 360.6 261.8 L 380.7 242.0 L 471.0 355.8 L 449.7 356.0 L 381.7 269.0 L 359.7 292.7 L 283.2 175.4 L 274.8 241.7 L 294.6 274.4 L 246.1 357.0 L 226.7 357.0 L 275.7 272.7 L 257.6 244.8 L 264.8 184.9 L 126.6 356.7 Z M 86.2 342.1 L 117.0 342.0 L 182.0 260.8 L 165.5 241.3 Z"/></svg>\n';
+export const TAGS_FAVICON_SITE = `<link rel="icon" type="image/svg+xml" href="https://arestaclimb.com/favicon.svg">
+  <link rel="icon" type="image/png" href="${URL_LOGO_APP}">
+  <link rel="apple-touch-icon" href="${URL_LOGO_APP}">`;
 export const URL_SITE_PRINCIPAL = DOMINIO_VITRINE_CANONICO;
 export const URL_VITRINE_CROQUIS = `${DOMINIO_VITRINE_CANONICO}/croquis`;
 export const URL_LOJA_IOS = "https://apps.apple.com/app/id6776467893";
@@ -793,7 +798,7 @@ export function renderizarPaginaEntidade(
   <meta name="twitter:image" content="${escaparHtml(imagemOg)}">
   <meta name="twitter:image:alt" content="${tituloOg}">
   <meta name="apple-itunes-app" content="app-id=6776467893, app-argument=${escaparHtml(urlCanonico)}">
-  <link rel="icon" type="image/svg+xml" href="https://arestaclimb.com/favicon.svg">
+  ${TAGS_FAVICON_SITE}
   ${renderizarJsonLdBreadcrumbs(breadcrumbs, urlCanonico)}
   ${SCRIPT_INICIALIZACAO_TEMA}
   <script defer src="${URL_SCRIPT_UMAMI}" data-website-id="${ID_WEBSITE_UMAMI}"></script>
@@ -1180,7 +1185,7 @@ export function renderizarPaginaNaoEncontrada(): string {
   ${SCRIPT_INICIALIZACAO_TEMA}
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <link rel="icon" type="image/svg+xml" href="https://arestaclimb.com/favicon.svg">
+  ${TAGS_FAVICON_SITE}
   <title>Link não encontrado | Aresta Croquis de Escalada</title>
   <meta name="robots" content="noindex">
   <style>${ESTILOS_BASE_DESIGN_SYSTEM}

@@ -18,6 +18,7 @@ import {
   extrairSlugThumbnailOg,
 } from "./analisador_rota_link.ts";
 import {
+  CONTEUDO_FAVICON_SVG,
   URL_VITRINE_CROQUIS,
   renderizarPaginaEntidade,
   renderizarPaginaNaoEncontrada,
@@ -95,7 +96,7 @@ export interface AmbienteAppLinks {
   clienteThumbnail?: ClienteThumbnailOg;
 }
 
-const URL_FAVICON_OFICIAL = "https://arestaclimb.com/favicon.svg";
+const URL_FAVICON_ICO_OFICIAL = "https://arestaclimb.com/favicon.ico";
 const CONTEUDO_ROBOTS_TXT = `User-agent: *\nAllow: /\nSitemap: ${DOMINIO_VITRINE_CANONICO}${ROTA_OBTER_SITEMAP_VITRINE}\n`;
 
 export const cabecalhosCors = {
@@ -404,12 +405,20 @@ export async function processarRequisicao(
     });
   }
 
-  if (
-    caminho === ROTA_OBTER_FAVICON_ICO ||
-    caminho === ROTA_OBTER_FAVICON_SVG
-  ) {
+  if (caminho === ROTA_OBTER_FAVICON_SVG) {
+    return new Response(CONTEUDO_FAVICON_SVG, {
+      status: 200,
+      headers: {
+        ...cabecalhosCors,
+        "Content-Type": "image/svg+xml; charset=utf-8",
+        "Cache-Control": `public, max-age=86400, s-maxage=${TTL_BORDA_UM_ANO_SEGUNDOS}, immutable`,
+      },
+    });
+  }
+
+  if (caminho === ROTA_OBTER_FAVICON_ICO) {
     return responderRedirecionamento(
-      URL_FAVICON_OFICIAL,
+      URL_FAVICON_ICO_OFICIAL,
       301,
       `public, max-age=86400, s-maxage=${TTL_BORDA_UM_ANO_SEGUNDOS}, immutable`
     );

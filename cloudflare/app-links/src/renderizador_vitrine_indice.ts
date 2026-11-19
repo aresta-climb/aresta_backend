@@ -10,6 +10,7 @@ import {
   ID_WEBSITE_UMAMI,
   SCRIPT_ALTERNANCIA_TEMA,
   SCRIPT_INICIALIZACAO_TEMA,
+  TAGS_FAVICON_SITE,
   URL_BASE_THUMBNAILS_OG,
   URL_IMAGEM_PADRAO_OG,
   URL_SCRIPT_UMAMI,
@@ -217,7 +218,7 @@ export function renderizarPaginaIndiceVitrine(
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="630">
   <meta name="twitter:card" content="summary_large_image">
-  <link rel="icon" type="image/svg+xml" href="https://arestaclimb.com/favicon.svg">
+  ${TAGS_FAVICON_SITE}
   ${SCRIPT_INICIALIZACAO_TEMA}
   ${maplibreHeadHtml}
   <script defer src="${URL_SCRIPT_UMAMI}" data-website-id="${ID_WEBSITE_UMAMI}"></script>
