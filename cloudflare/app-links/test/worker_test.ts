@@ -7,6 +7,7 @@ import {
 } from "https://deno.land/std@0.192.0/testing/asserts.ts";
 import workerDefault, {
   CABECALHO_CACHE_PAGINA_LINK,
+  CABECALHO_CACHE_REDIRECIONAMENTO_HOST_PRIVADO,
   CABECALHO_CACHE_REDIRECIONAMENTO_LONGO,
   CABECALHO_CACHE_THUMBNAIL_OG,
   CABECALHO_CACHE_WELL_KNOWN,
@@ -69,7 +70,7 @@ Deno.test("worker app-links: responde a OPTIONS com 204 e rejeita POST/PUT/DELET
   }
 });
 
-Deno.test("worker app-links: GET /health retorna 200, GET / em aresta.cc redireciona 302 para /croquis e normaliza www.*", async () => {
+Deno.test("worker app-links: GET /health retorna 200, aresta.cc e www.aresta.cc redirecionam 301 em 1 pulo e /croquis fora do host canonico usa cache private", async () => {
   const resHealth = await workerDefault.fetch(
     new Request("https://aresta.cc/health"),
     {}
@@ -79,29 +80,97 @@ Deno.test("worker app-links: GET /health retorna 200, GET / em aresta.cc redirec
   assertStringIncludes(await resHealth.text(), "operacional");
 
   const resRaiz = await processarRequisicao(new Request("https://aresta.cc/"));
-  assertEquals(resRaiz.status, 302);
+  assertEquals(resRaiz.status, 301);
   assertEquals(
     resRaiz.headers.get("Location"),
     "https://arestaclimb.com/croquis"
   );
+  assertEquals(
+    resRaiz.headers.get("Cache-Control"),
+    "public, max-age=86400, s-maxage=31536000"
+  );
 
+  const resRaizWww = await processarRequisicao(
+    new Request("https://www.aresta.cc/?utm_source=bio")
+  );
+  assertEquals(resRaizWww.status, 301);
+  assertEquals(
+    resRaizWww.headers.get("Location"),
+    "https://arestaclimb.com/croquis?utm_source=bio"
+  );
+  assertEquals(
+    resRaizWww.headers.get("Cache-Control"),
+    "public, max-age=86400, s-maxage=31536000"
+  );
+
+  const banco = criarBancoComVia();
   const resWwwCurto = await processarRequisicao(
-    new Request("https://www.aresta.cc/s/ESCALA12345678?utm_source=teste")
+    new Request("https://www.aresta.cc/s/ESCALA12345678?campanha=verao"),
+    { DB: banco }
   );
   assertEquals(resWwwCurto.status, 301);
   assertEquals(
     resWwwCurto.headers.get("Location"),
-    "https://aresta.cc/s/ESCALA12345678?utm_source=teste"
+    "https://arestaclimb.com/croquis/ESCALA12345678/mg-serra-do-cipo-rapa-nui?campanha=verao&utm_source=compartilhamento&utm_medium=social"
+  );
+  assertEquals(
+    resWwwCurto.headers.get("Cache-Control"),
+    CABECALHO_CACHE_REDIRECIONAMENTO_LONGO
   );
 
-  const resWwwSite = await processarRequisicao(
-    new Request("https://www.arestaclimb.com/croquis?uf=MG")
+  const urlsNaoCanonicasMesmoCaminho = [
+    [
+      "https://www.arestaclimb.com/croquis?uf=MG",
+      "https://arestaclimb.com/croquis?uf=MG",
+    ],
+    [
+      "https://aresta.cc/croquis",
+      "https://arestaclimb.com/croquis",
+    ],
+    [
+      "https://www.aresta.cc/croquis/ESCALA12345678/mg-serra-do-cipo-rapa-nui",
+      "https://arestaclimb.com/croquis/ESCALA12345678/mg-serra-do-cipo-rapa-nui",
+    ],
+  ];
+
+  for (const [origem, destinoEsperado] of urlsNaoCanonicasMesmoCaminho) {
+    const resHostNaoCanonico = await processarRequisicao(new Request(origem));
+    assertEquals(resHostNaoCanonico.status, 301);
+    assertEquals(resHostNaoCanonico.headers.get("Location"), destinoEsperado);
+    assertEquals(
+      resHostNaoCanonico.headers.get("Cache-Control"),
+      CABECALHO_CACHE_REDIRECIONAMENTO_HOST_PRIVADO
+    );
+    assertEquals(CABECALHO_CACHE_REDIRECIONAMENTO_HOST_PRIVADO, "private, max-age=86400");
+  }
+
+  const resWwwBarraFinal = await processarRequisicao(
+    new Request("https://www.arestaclimb.com/croquis/?uf=MG")
   );
-  assertEquals(resWwwSite.status, 301);
+  assertEquals(resWwwBarraFinal.status, 301);
   assertEquals(
-    resWwwSite.headers.get("Location"),
+    resWwwBarraFinal.headers.get("Location"),
     "https://arestaclimb.com/croquis?uf=MG"
   );
+
+  // Invariante anti-loop: nenhum redirect publico com s-maxage pode apontar para o mesmo pathname da origem
+  const paresPublicos = [
+    ["https://aresta.cc/", resRaiz],
+    ["https://www.aresta.cc/?utm_source=bio", resRaizWww],
+    ["https://www.aresta.cc/s/ESCALA12345678?campanha=verao", resWwwCurto],
+    ["https://www.arestaclimb.com/croquis/?uf=MG", resWwwBarraFinal],
+  ] as const;
+
+  for (const [urlOrigem, resposta] of paresPublicos) {
+    const cacheControl = resposta.headers.get("Cache-Control") ?? "";
+    const location = resposta.headers.get("Location") ?? "";
+    if (cacheControl.includes("public") || cacheControl.includes("s-maxage")) {
+      assertEquals(
+        new URL(location).pathname === new URL(urlOrigem).pathname,
+        false
+      );
+    }
+  }
 });
 
 Deno.test("worker app-links: serve /.well-known/*, /robots.txt e /favicon.* com cache longo na borda", async () => {

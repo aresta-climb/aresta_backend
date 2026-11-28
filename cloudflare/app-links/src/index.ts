@@ -111,6 +111,9 @@ export const CABECALHO_CACHE_PAGINA_LINK = `public, max-age=14400, s-maxage=${TT
 
 export const CABECALHO_CACHE_REDIRECIONAMENTO_LONGO = `public, max-age=86400, s-maxage=${TTL_BORDA_TRINTA_DIAS_SEGUNDOS}, stale-while-revalidate=${TTL_BORDA_UM_DIA_SEGUNDOS}`;
 
+export const CABECALHO_CACHE_REDIRECIONAMENTO_HOST_PRIVADO =
+  "private, max-age=86400";
+
 export const CABECALHO_CACHE_THUMBNAIL_OG = `public, max-age=86400, s-maxage=${TTL_BORDA_SETE_DIAS_SEGUNDOS}, stale-while-revalidate=${TTL_BORDA_UM_DIA_SEGUNDOS}`;
 
 const CONTEUDO_ASSETLINKS_ANDROID = [
@@ -240,6 +243,14 @@ async function processarRotaVitrineCroquis(
     );
   }
 
+  if (url.hostname !== "arestaclimb.com") {
+    return responderRedirecionamento(
+      `${DOMINIO_VITRINE_CANONICO}${caminho}${url.search}`,
+      301,
+      CABECALHO_CACHE_REDIRECIONAMENTO_HOST_PRIVADO
+    );
+  }
+
   if (caminho === ROTA_LISTAR_VITRINE_CROQUIS) {
     if (!env.DB) return responderErroBancoAusente(req, env, ctx);
     try {
@@ -355,22 +366,6 @@ export async function processarRequisicao(
     });
   }
 
-  if (url.hostname === "www.aresta.cc") {
-    return responderRedirecionamento(
-      `https://aresta.cc${url.pathname}${url.search}`,
-      301,
-      `public, max-age=86400, s-maxage=${TTL_BORDA_UM_ANO_SEGUNDOS}`
-    );
-  }
-
-  if (url.hostname === "www.arestaclimb.com") {
-    return responderRedirecionamento(
-      `${DOMINIO_VITRINE_CANONICO}${url.pathname}${url.search}`,
-      301,
-      `public, max-age=86400, s-maxage=${TTL_BORDA_UM_ANO_SEGUNDOS}`
-    );
-  }
-
   if (caminho === ROTA_VERIFICAR_SAUDE_APP_LINKS) {
     return new Response("Aresta App Links operacional", {
       status: 200,
@@ -388,9 +383,9 @@ export async function processarRequisicao(
 
   if (caminho === "/") {
     return responderRedirecionamento(
-      URL_VITRINE_CROQUIS,
-      302,
-      `public, max-age=3600, s-maxage=${TTL_BORDA_UM_ANO_SEGUNDOS}`
+      `${URL_VITRINE_CROQUIS}${url.search}`,
+      301,
+      `public, max-age=86400, s-maxage=${TTL_BORDA_UM_ANO_SEGUNDOS}`
     );
   }
 
